@@ -74,9 +74,9 @@ function ResultRoot({ figure, title, description, button }: ResultProps) {
 
 export const Result = Object.assign(ResultRoot, { Button });
 
-export function Toast({ open, text, ...props }: { position?: string; open: boolean; text: string; 'aria-live'?: 'off' | 'polite' | 'assertive' }) {
+export function Toast({ open, text, className = '', ...props }: { position?: string; open: boolean; text: string; className?: string; 'aria-live'?: 'off' | 'polite' | 'assertive' }) {
   if (!open) return null;
-  return <div className="web-toast" role="status" aria-live={props['aria-live'] ?? 'polite'}>{text}</div>;
+  return <div className={`web-toast ${className}`} role="status" aria-live={props['aria-live'] ?? 'polite'}>{text}</div>;
 }
 
 export function TextButton({ color, variant, size, className = '', style, ...props }: WebButtonProps & { style?: CSSProperties }) {

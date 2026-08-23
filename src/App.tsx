@@ -68,7 +68,7 @@ export default function App() {
   async function handleFed() {
     if (!selected || busy) return;
     const method = nextUnlockMethod(allowance);
-    if (!method) { setToast('오늘은 네 친구를 모두 만났어요. 내일 다시 만나요!'); return; }
+    if (!method) { setToast('오늘은 네 친구를 모두 만났어요\n내일 다시 만나요'); return; }
     setBusy(true);
     try {
       let sessionId: string | undefined;
@@ -95,7 +95,7 @@ export default function App() {
       />
     </main>
   );
-  if (screen === 'play' && selected) return <><PlayScene pet={selected} onFed={handleFed} onBack={() => setScreen('home')} onSound={playSound} /><Toast position="bottom" open={Boolean(toast)} text={toast} aria-live={busy ? 'assertive' : 'polite'} />{photoUrl && <RevealCard pet={selected} photoUrl={photoUrl} onClose={() => { setPhotoUrl(undefined); setScreen('home'); }} onUpload={() => { setPhotoUrl(undefined); setScreen('upload'); }} onReport={async () => { await reportPet(selected.id).catch(() => undefined); setToast('신고가 접수됐어요. 확인 후 처리할게요.'); setPhotoUrl(undefined); setScreen('home'); }} />}</>;
+  if (screen === 'play' && selected) return <><PlayScene pet={selected} onFed={handleFed} onBack={() => setScreen('home')} onSound={playSound} /><Toast className="app-toast" position="bottom" open={Boolean(toast)} text={toast} aria-live={busy ? 'assertive' : 'polite'} />{photoUrl && <RevealCard pet={selected} photoUrl={photoUrl} onClose={() => { setPhotoUrl(undefined); setScreen('home'); }} onUpload={() => { setPhotoUrl(undefined); setScreen('upload'); }} onReport={async () => { await reportPet(selected.id).catch(() => undefined); setToast('신고가 접수됐어요. 확인 후 처리할게요.'); setPhotoUrl(undefined); setScreen('home'); }} />}</>;
 
   return (
     <main className="home-screen">
@@ -124,7 +124,7 @@ export default function App() {
           <Button size="medium" color="dark" variant="weak" onClick={loadHouse}>다시 불러오기</Button>
         </section>
       ) : <House pets={pets} onSelect={choosePet} onSound={playSound} />}
-      <Toast position="bottom" open={Boolean(toast)} text={toast} />
+      <Toast className="app-toast" position="bottom" open={Boolean(toast)} text={toast} />
     </main>
   );
 }
