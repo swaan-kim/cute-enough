@@ -12,6 +12,27 @@ button, input, select { font: inherit; }
 button { -webkit-tap-highlight-color: transparent; }
 h1, h2, p, figure { margin: 0; }
 
+.web-top { padding-left:24px; padding-right:24px; }
+.web-top-title { color:#191f28; font-weight:750; line-height:1.25; letter-spacing:-.035em; }
+.web-top-subtitle { margin-top:8px; color:#6b7684; font-size:16px; font-weight:500; line-height:1.45; letter-spacing:-.02em; }
+.web-top-navigation { min-height:48px; padding:0 14px; display:grid; grid-template-columns:44px 1fr 44px; align-items:center; }
+.web-top-navigation > strong { grid-column:2; font-size:17px; }
+.web-back-button { grid-column:1; width:42px; height:42px; border:0; background:transparent; color:#191f28; font-size:36px; line-height:1; cursor:pointer; }
+.web-button { min-height:44px; border:0; border-radius:14px; padding:0 18px; background:#3182f6; color:#fff; font-weight:700; cursor:pointer; transition:transform .15s,opacity .15s; }
+.web-button:active { transform:scale(.98); }
+.web-button:disabled { opacity:.45; cursor:default; }
+.web-button.size-large { min-height:54px; font-size:16px; }
+.web-button.is-full { width:100%; }
+.web-button.color-dark.variant-weak,.web-button.variant-weak { background:#f2f4f6; color:#333d4b; }
+.web-text-button { border:0; background:transparent; padding:8px; cursor:pointer; font-size:13px; }
+.web-text-button:hover { text-decoration:underline; }
+.web-asset-image { display:inline-block; object-fit:contain; vertical-align:middle; }
+.web-asset-icon { width:40px; height:40px; border-radius:50%; display:inline-grid; place-items:center; font-size:22px; flex:0 0 auto; }
+.web-result { width:min(100%,430px); display:flex; flex-direction:column; align-items:center; gap:14px; text-align:center; color:#4e5968; }
+.web-result h1 { color:#191f28; font-size:24px; }
+.web-result > .web-button { margin-top:8px; }
+.web-toast { position:fixed; z-index:100; left:50%; bottom:max(22px,env(safe-area-inset-bottom)); transform:translateX(-50%); max-width:calc(100% - 36px); padding:13px 18px; border-radius:999px; background:rgba(51,61,75,.88); color:#fff; font-size:14px; font-weight:650; box-shadow:0 8px 24px rgba(0,0,0,.18); text-align:center; }
+
 .home-screen,
 .play-screen,
 .upload-screen,

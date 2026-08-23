@@ -10,6 +10,14 @@ let rewardedAdState: 'idle' | 'loading' | 'loaded' = 'idle';
 let rewardedAdLoad: Promise<void> | undefined;
 let unregisterRewardedLoad: (() => void) | undefined;
 
+function isRewardedAdSupported(): boolean {
+  try {
+    return loadFullScreenAd.isSupported() && showFullScreenAd.isSupported();
+  } catch {
+    return false;
+  }
+}
+
 export async function getUserHash(): Promise<string> {
   try {
     const result = await getAnonymousKey();
@@ -45,7 +53,7 @@ export async function pickOnePhoto(): Promise<string | null> {
 }
 
 export function preloadRewardedAd(): Promise<void> {
-  if (!loadFullScreenAd.isSupported() || !showFullScreenAd.isSupported()) {
+  if (!isRewardedAdSupported()) {
     return Promise.resolve();
   }
 
@@ -73,7 +81,7 @@ export function preloadRewardedAd(): Promise<void> {
 }
 
 export async function showRewardedAd(): Promise<void> {
-  if (!loadFullScreenAd.isSupported() || !showFullScreenAd.isSupported()) {
+  if (!isRewardedAdSupported()) {
     await new Promise((resolve) => setTimeout(resolve, 900));
     return;
   }
