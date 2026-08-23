@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { Asset, Top, TopNavigation, TopNavigationBackButton } from '@toss/tds-mobile';
+import { Asset, Top } from '@toss/tds-mobile';
 import type { SoundEffect } from '../lib/sound';
 import type { PetSummary } from '../types';
 import { PetArtwork } from './PetArtwork';
@@ -30,7 +30,7 @@ function getTreatDragLift(event: ReactPointerEvent<HTMLElement>, drag: DragState
   return TREAT_DRAG_MAX_LIFT_Y * easedProgress;
 }
 
-export function PlayScene({ pet, onFed, onBack, onSound }: { pet: PetSummary; onFed: () => void; onBack: () => void; onSound: (effect: SoundEffect, variant?: number) => void }) {
+export function PlayScene({ pet, onFed, onSound }: { pet: PetSummary; onFed: () => void; onSound: (effect: SoundEffect, variant?: number) => void }) {
   const [selectedTreat, setSelectedTreat] = useState<TreatId>();
   const [phase, setPhase] = useState<Phase>('treat');
   const [eating, setEating] = useState(false);
@@ -53,8 +53,8 @@ export function PlayScene({ pet, onFed, onBack, onSound }: { pet: PetSummary; on
     if (phase === 'happy') return `${selected?.label ?? '간식'}을 맛있게 먹고 있어요`;
     if (phase === 'petting') return '기분이 좋아졌어요. 머리를 살살 쓰다듬어 주세요';
     if (phase === 'done') return '마음이 전해졌어요';
-    if (selected) return `${selected.objectLabel} 강아지에게 끌어주세요`;
-    return '간식 하나를 골라 입까지 끌어주세요';
+    if (selected) return `${selected.objectLabel} 끌어주거나 강아지를 톡 눌러주세요`;
+    return '간식을 끌어주거나 톡 눌러 골라주세요';
   }, [phase, selected]);
 
   function giveTreat(treatId: TreatId) {
@@ -150,7 +150,6 @@ export function PlayScene({ pet, onFed, onBack, onSound }: { pet: PetSummary; on
 
   return (
     <main className="play-screen" onPointerMoveCapture={moveTreat} onPointerUpCapture={finishTreatDrag} onPointerCancelCapture={finishTreatDrag}>
-      <TopNavigation leading={<TopNavigationBackButton onClick={onBack} aria-label="집으로 돌아가기" />} background="transparent" withSafeAreaTop={false} />
       <Top
         className="play-copy"
         upperGap={4}
@@ -201,6 +200,11 @@ export function PlayScene({ pet, onFed, onBack, onSound }: { pet: PetSummary; on
                   aria-label={`${treat.label} 간식${selectedTreat === treat.id ? ', 선택됨' : ''}`}
                   aria-pressed={selectedTreat === treat.id}
                   onPointerDown={(event) => startTreatDrag(event, treat.id)}
+                  onClick={(event) => {
+                    if (phase !== 'treat') return;
+                    if (event.detail === 0) onSound('pick');
+                    setSelectedTreat(treat.id);
+                  }}
                 >
                   <Asset.Image src={treat.image} frameShape={{ width: 42, height: 42 }} alt="" />
                   <span>{treat.label}</span>

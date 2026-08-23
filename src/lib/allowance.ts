@@ -1,6 +1,7 @@
 import type { DailyAllowance, UnlockMethod } from '../types';
 
 export const MAX_REWARDED_PER_DAY = 2;
+export const MAX_REGULAR_PETS_PER_DAY = 1 + MAX_REWARDED_PER_DAY;
 const STORAGE_KEY = 'cute-enough:allowance';
 
 export function getKstDate(now = new Date()): string {
@@ -23,16 +24,21 @@ export function readAllowance(storage: Pick<Storage, 'getItem'> = localStorage, 
         rewardedUsed: Math.max(0, Math.min(MAX_REWARDED_PER_DAY, Number(stored.rewardedUsed) || 0)),
         uploadCredit: Boolean(stored.uploadCredit),
         uploadUsed: Boolean(stored.uploadUsed),
+        uploadRewardPetId: typeof stored.uploadRewardPetId === 'string' ? stored.uploadRewardPetId : undefined,
       };
     }
   } catch { /* corrupted local demo state resets safely */ }
   return emptyAllowance(now);
 }
 
-export function nextUnlockMethod(allowance: DailyAllowance): UnlockMethod | null {
+export function nextUnlockMethod(
+  allowance: DailyAllowance,
+  petId?: string,
+  rewardedAdsEnabled = true,
+): UnlockMethod | null {
+  if (allowance.uploadCredit && !allowance.uploadUsed && allowance.uploadRewardPetId === petId) return 'UPLOAD';
   if (!allowance.freeUsed) return 'FREE';
-  if (allowance.uploadCredit && !allowance.uploadUsed) return 'UPLOAD';
-  if (allowance.rewardedUsed < MAX_REWARDED_PER_DAY) return 'REWARDED';
+  if (rewardedAdsEnabled && allowance.rewardedUsed < MAX_REWARDED_PER_DAY) return 'REWARDED';
   return null;
 }
 
@@ -49,7 +55,7 @@ export function consumeAllowance(
     return { ...allowance, uploadUsed: true };
   }
   if (allowance.rewardedUsed >= MAX_REWARDED_PER_DAY) {
-    throw new Error('오늘 볼 수 있는 사진을 모두 만났어요.');
+    throw new Error('오늘의 귀여움은 여기까지예요.');
   }
   return { ...allowance, rewardedUsed: allowance.rewardedUsed + 1 };
 }
@@ -58,12 +64,21 @@ export function saveAllowance(allowance: DailyAllowance, storage: Pick<Storage, 
   storage.setItem(STORAGE_KEY, JSON.stringify(allowance));
 }
 
-export function grantUploadCredit(allowance: DailyAllowance): DailyAllowance {
-  return { ...allowance, uploadCredit: true, uploadUsed: false };
+export function grantUploadCredit(allowance: DailyAllowance, petId: string): DailyAllowance {
+  return { ...allowance, uploadCredit: true, uploadUsed: false, uploadRewardPetId: petId };
 }
 
-export function remainingCount(allowance: DailyAllowance): number {
+/** 홈의 일반 잔여 횟수. 업로드 보너스는 별도 배지로 보여준다. */
+export function regularRemainingCount(allowance: DailyAllowance, rewardedAdsEnabled = true): number {
   return (allowance.freeUsed ? 0 : 1)
-    + (allowance.uploadCredit && !allowance.uploadUsed ? 1 : 0)
-    + Math.max(0, MAX_REWARDED_PER_DAY - allowance.rewardedUsed);
+    + (rewardedAdsEnabled ? Math.max(0, MAX_REWARDED_PER_DAY - allowance.rewardedUsed) : 0);
+}
+
+export function hasUploadBonus(allowance: DailyAllowance): boolean {
+  return Boolean(allowance.uploadCredit && !allowance.uploadUsed && allowance.uploadRewardPetId);
+}
+
+/** 실제로 입장 가능한 전체 횟수. 홈 표기에는 regularRemainingCount를 사용한다. */
+export function remainingCount(allowance: DailyAllowance): number {
+  return regularRemainingCount(allowance) + (hasUploadBonus(allowance) ? 1 : 0);
 }

@@ -82,3 +82,36 @@ export function Toast({ open, text, className = '', ...props }: { position?: str
 export function TextButton({ color, variant, size, className = '', style, ...props }: WebButtonProps & { style?: CSSProperties }) {
   return <button {...props} className={`web-text-button ${className}`} style={{ ...style, color }} type="button" />;
 }
+
+type ConfirmDialogProps = {
+  open?: boolean;
+  title?: ReactNode;
+  description?: ReactNode;
+  cancelButton?: ReactNode;
+  confirmButton?: ReactNode;
+  closeOnBackEvent?: boolean;
+  onClose?: () => void;
+};
+
+function ConfirmDialogRoot({ open, title, description, cancelButton, confirmButton, onClose }: ConfirmDialogProps) {
+  if (!open) return null;
+  return (
+    <div className="web-dialog-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose?.(); }}>
+      <section className="web-dialog" role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : '안내'}>
+        <h2>{title}</h2>
+        <p>{description}</p>
+        <div className="web-dialog-actions">{cancelButton}{confirmButton}</div>
+      </section>
+    </div>
+  );
+}
+
+function ConfirmButton(props: WebButtonProps) {
+  return <Button {...props} size="large" />;
+}
+
+function CancelButton(props: WebButtonProps) {
+  return <Button {...props} size="large" color="dark" variant="weak" />;
+}
+
+export const ConfirmDialog = Object.assign(ConfirmDialogRoot, { ConfirmButton, CancelButton });

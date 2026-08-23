@@ -114,6 +114,7 @@ export function House({ pets, onSelect, onSound }: { pets: PetSummary[]; onSelec
             aria-label={`${pet.name ?? '이름 없는 강아지'} 옮기기 또는 선택`}
           >
             <PetArtwork pet={pet} size={index === 2 ? 132 : 114} panting />
+            {pet.approvalStatus === 'pending' && <span className="owner-pet-badge">내 강아지</span>}
           </button>
         );
       })}

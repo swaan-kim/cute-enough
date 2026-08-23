@@ -1,28 +1,30 @@
 import {
-  fetchAlbumItems,
-  getAnonymousKey,
-  loadFullScreenAd,
-  showFullScreenAd,
+  Device,
+  getSchemeUri,
+  User,
+  Share,
 } from '@apps-in-toss/web-framework';
-
-const AD_GROUP_ID = import.meta.env.VITE_REWARDED_AD_GROUP_ID || 'ait-ad-test-rewarded-id';
-let rewardedAdState: 'idle' | 'loading' | 'loaded' = 'idle';
-let rewardedAdLoad: Promise<void> | undefined;
-let unregisterRewardedLoad: (() => void) | undefined;
-
-function isRewardedAdSupported(): boolean {
-  try {
-    return loadFullScreenAd.isSupported() && showFullScreenAd.isSupported();
-  } catch {
-    return false;
-  }
-}
+import { isPreviewRuntime, runtimeEnvironment, shareOgUrl } from './runtime';
+import { getPrivateDeploymentIdFromUri } from './deepLink';
 
 export async function getUserHash(): Promise<string> {
   try {
-    const result = await getAnonymousKey();
-    if (result && typeof result === 'object' && result.type === 'HASH') return result.hash;
-  } catch { /* browser preview */ }
+    if (!User.getAnonymousKey.isSupported()) throw new Error('UNSUPPORTED_APP_VERSION');
+    const result: unknown = await User.getAnonymousKey();
+    if (!result) throw new Error('UNSUPPORTED_APP_VERSION');
+    if (result === 'INVALID_CATEGORY') throw new Error('INVALID_CATEGORY');
+    if (result === 'ERROR') throw new Error('USER_KEY_ERROR');
+    if (typeof result === 'object' && 'type' in result && 'hash' in result
+      && result.type === 'HASH' && typeof result.hash === 'string' && result.hash) return result.hash;
+    throw new Error('UNKNOWN_ERROR');
+  } catch (error) {
+    if (!isPreviewRuntime) {
+      const code = bridgeErrorCode(error);
+      if (code === 'UNSUPPORTED_APP_VERSION') throw new Error('토스앱을 최신 버전으로 업데이트한 뒤 다시 시도해 주세요.');
+      if (code === 'INVALID_CATEGORY') throw new Error('앱 설정을 확인하고 있어요. 잠시 뒤 다시 시도해 주세요.');
+      throw new Error('사용자 정보를 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.');
+    }
+  }
   let preview = localStorage.getItem('cute-enough:preview-user');
   if (!preview) {
     preview = crypto.randomUUID();
@@ -33,9 +35,18 @@ export async function getUserHash(): Promise<string> {
 
 export async function pickOnePhoto(): Promise<string | null> {
   try {
-    const items = await fetchAlbumItems({ types: ['PHOTO'], maxCount: 1, maxWidth: 1024, base64: true });
+    if (!Device.getAlbumItems.isSupported()) throw new Error('UNSUPPORTED_APP_VERSION');
+    const items = await Device.getAlbumItems({ types: ['PHOTO'], maxCount: 1, maxWidth: 2048, base64: true });
     return items[0]?.dataUri ?? null;
-  } catch { /* use the browser picker in local preview */ }
+  } catch (error) {
+    const code = bridgeErrorCode(error);
+    if (code === 'CANCELED' || code === 'CANCELLED' || code === 'USER_CANCELED') return null;
+    if (!isPreviewRuntime) {
+      if (code === 'UNSUPPORTED_APP_VERSION') throw new Error('사진 선택을 사용하려면 토스앱을 최신 버전으로 업데이트해 주세요.');
+      if (code.includes('PERMISSION') || code === 'DENIED') throw new Error('강아지 사진을 고르려면 사진 접근을 허용해 주세요.');
+      throw new Error('사진을 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.');
+    }
+  }
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -52,67 +63,44 @@ export async function pickOnePhoto(): Promise<string | null> {
   });
 }
 
-export function preloadRewardedAd(): Promise<void> {
-  if (!isRewardedAdSupported()) {
-    return Promise.resolve();
-  }
-
-  if (rewardedAdState === 'loaded') return Promise.resolve();
-  if (rewardedAdState === 'loading' && rewardedAdLoad) return rewardedAdLoad;
-
-  rewardedAdState = 'loading';
-  rewardedAdLoad = new Promise((resolve, reject) => {
-    unregisterRewardedLoad?.();
-    unregisterRewardedLoad = loadFullScreenAd({
-      options: { adGroupId: AD_GROUP_ID },
-      onEvent: (event) => {
-        if (event.type !== 'loaded') return;
-        rewardedAdState = 'loaded';
-        resolve();
-      },
-      onError: (error) => {
-        rewardedAdState = 'idle';
-        rewardedAdLoad = undefined;
-        reject(error);
-      },
-    });
-  });
-  return rewardedAdLoad;
+function bridgeErrorCode(error: unknown): string {
+  if (!error || typeof error !== 'object') return String(error ?? '').toUpperCase();
+  const candidate = error as { code?: unknown; name?: unknown; message?: unknown };
+  return String(candidate.code ?? candidate.name ?? candidate.message ?? '').toUpperCase();
 }
 
-export async function showRewardedAd(): Promise<void> {
-  if (!isRewardedAdSupported()) {
-    await new Promise((resolve) => setTimeout(resolve, 900));
-    return;
+export async function sharePet(petId: string, petName?: string): Promise<void> {
+  const webUrl = `${window.location.origin}/pet/${encodeURIComponent(petId)}`;
+  let url: string;
+  if (isPreviewRuntime) {
+    url = webUrl;
+  } else {
+    if (!shareOgUrl) throw new Error('공유 이미지 설정을 확인하고 있어요. 잠시 뒤 다시 시도해 주세요.');
+    const scheme = runtimeEnvironment === 'private' ? 'intoss-private' : 'intoss';
+    let privateQuery = '';
+    if (runtimeEnvironment === 'private') {
+      let deploymentId: string | undefined;
+      try { deploymentId = getPrivateDeploymentIdFromUri(getSchemeUri()); } catch { deploymentId = undefined; }
+      if (!deploymentId) throw new Error('비공개 테스트 링크 정보를 불러오지 못했어요. QR로 앱을 다시 열어 주세요.');
+      privateQuery = `?_deploymentId=${encodeURIComponent(deploymentId)}`;
+    }
+    try {
+      url = await Share.createLink({
+        path: `${scheme}://cute-enough/pet/${encodeURIComponent(petId)}${privateQuery}`,
+        ogImageUrl: shareOgUrl,
+      });
+    } catch {
+      throw new Error('공유 링크를 만들지 못했어요. 잠시 뒤 다시 시도해 주세요.');
+    }
   }
-
-  await preloadRewardedAd();
-  return new Promise((resolve, reject) => {
-    let rewarded = false;
-    const unregisterShow = showFullScreenAd({
-      options: { adGroupId: AD_GROUP_ID },
-      onEvent: (event) => {
-        if (event.type === 'userEarnedReward') rewarded = true;
-        if (event.type === 'failedToShow') {
-          rewardedAdState = 'idle';
-          unregisterShow();
-          reject(new Error('광고를 보여드리지 못했어요. 잠시 뒤 다시 시도해 주세요.'));
-        }
-        if (event.type === 'dismissed') {
-          rewardedAdState = 'idle';
-          rewardedAdLoad = undefined;
-          unregisterShow();
-          void preloadRewardedAd().catch(() => undefined);
-          if (rewarded) resolve();
-          else reject(new Error('광고 시청을 완료해야 사진을 볼 수 있어요.'));
-        }
-      },
-      onError: (error) => {
-        rewardedAdState = 'idle';
-        rewardedAdLoad = undefined;
-        unregisterShow();
-        reject(error);
-      },
-    });
-  });
+  const message = `${petName ?? '귀여운 강아지'}가 기다리고 있어요 🐶\n${url}`;
+  try {
+    await Share.sendMessage({ message });
+  }
+  catch {
+    if (!isPreviewRuntime) throw new Error('공유 화면을 열지 못했어요. 잠시 뒤 다시 시도해 주세요.');
+    if (navigator.share) return navigator.share({ title: '오늘의 강아지', text: `${petName ?? '귀여운 강아지'}가 기다리고 있어요 🐶`, url });
+    await navigator.clipboard.writeText(url);
+    throw new Error('링크를 복사했어요.');
+  }
 }

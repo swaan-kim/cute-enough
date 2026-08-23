@@ -123,3 +123,11 @@ export function playSoundEffect(effect: SoundEffect, enabled: boolean, variant =
   }
   scheduleSound(context, effect, variant);
 }
+
+export async function suspendSound() {
+  if (audioContext?.state === 'running') await audioContext.suspend().catch(() => undefined);
+}
+
+export async function resumeSound(enabled: boolean) {
+  if (enabled && audioContext?.state === 'suspended') await audioContext.resume().catch(() => undefined);
+}

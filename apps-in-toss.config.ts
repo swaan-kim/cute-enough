@@ -5,6 +5,13 @@ export default defineConfig({
   brand: {
     primaryColor: '#FF6B8A',
   },
+  navigationBar: {
+    withBackButton: true,
+    withHomeButton: true,
+    withTitle: true,
+    transparentBackground: false,
+    theme: 'light',
+  },
   webView: {},
   permissions: [{ name: 'photos', access: 'read' }],
   webBundleDir: 'dist',
