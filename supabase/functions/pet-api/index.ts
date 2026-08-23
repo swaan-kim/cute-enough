@@ -49,7 +49,7 @@ Deno.serve(async (request) => {
         .neq('status', 'deleted');
       if (uploadCheckError) throw uploadCheckError;
       if (body.unlockMethod === 'FREE' && freeUsed) return json({ error: '오늘의 무료 사진을 이미 봤어요.' }, 409);
-      if (body.unlockMethod === 'REWARDED' && rewardedUsed >= 3) return json({ error: '오늘 볼 수 있는 사진을 모두 만났어요.' }, 409);
+      if (body.unlockMethod === 'REWARDED' && rewardedUsed >= 2) return json({ error: '오늘 볼 수 있는 사진을 모두 만났어요.' }, 409);
       if (body.unlockMethod === 'REWARDED' && !body.adSessionId) return json({ error: '광고 완료 값이 필요해요.' }, 400);
       if (body.unlockMethod === 'UPLOAD') {
         if (uploadUsed) return json({ error: '사진 등록으로 받은 만남을 이미 사용했어요.' }, 409);

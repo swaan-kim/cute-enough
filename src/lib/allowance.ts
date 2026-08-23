@@ -1,6 +1,6 @@
 import type { DailyAllowance, UnlockMethod } from '../types';
 
-export const MAX_REWARDED_PER_DAY = 3;
+export const MAX_REWARDED_PER_DAY = 2;
 const STORAGE_KEY = 'cute-enough:allowance';
 
 export function getKstDate(now = new Date()): string {
@@ -20,7 +20,7 @@ export function readAllowance(storage: Pick<Storage, 'getItem'> = localStorage, 
       return {
         date: stored.date,
         freeUsed: Boolean(stored.freeUsed),
-        rewardedUsed: Number(stored.rewardedUsed) || 0,
+        rewardedUsed: Math.max(0, Math.min(MAX_REWARDED_PER_DAY, Number(stored.rewardedUsed) || 0)),
         uploadCredit: Boolean(stored.uploadCredit),
         uploadUsed: Boolean(stored.uploadUsed),
       };

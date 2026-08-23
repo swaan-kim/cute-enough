@@ -51,6 +51,11 @@ export default function App() {
 
   useEffect(() => { void loadHouse(); }, []);
   const remaining = useMemo(() => remainingCount(allowance), [allowance]);
+  const dailyStatus = !allowance.freeUsed
+    ? '첫 만남은 무료예요'
+    : remaining > 0
+      ? '다음 친구는 광고 후 만나요'
+      : '오늘의 만남을 모두 봤어요';
 
   function choosePet(pet: PetSummary) {
     playSound('bark');
@@ -107,7 +112,7 @@ export default function App() {
       <section className="daily-card" aria-label={`오늘 ${remaining}마리 더 만날 수 있어요`}>
         <div className="daily-card-label">
           <Asset.Icon name="heart-line" color="#ff506f" backgroundColor="#fff0f3" frameShape={Asset.frameShape.CircleLarge} aria-hidden="true" />
-          <span><small>오늘 만날 수 있는 친구</small><strong>첫 만남은 무료예요</strong></span>
+          <span><small>오늘 만날 수 있는 친구</small><strong>{dailyStatus}</strong></span>
         </div>
         <b>{remaining}<small>마리</small></b>
       </section>
