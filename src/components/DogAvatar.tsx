@@ -45,10 +45,10 @@ export function DogAvatar({ traits, expression = { browStyle: 'none', tongueShap
         <path d="M83 82 Q90 76 97 82 Q95 91 90 91 Q85 91 83 82" fill="#27242A" />
         <path d="M90 91 L90 98 M90 98 Q82 105 77 98 M90 98 Q98 105 103 98" fill="none" stroke="#25222A" strokeWidth="3.5" strokeLinecap="round" />
         <g className={`dog-tongue dog-tongue--${expression.tongueShape}`} data-tongue-shape={expression.tongueShape}>
-          {expression.tongueShape === 'drop' && <path d="M85 100 Q90 116 95 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
-          {expression.tongueShape === 'round' && <path d="M84 100 C84 110 86 117 90 117 C94 117 96 110 96 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
-          {expression.tongueShape === 'wide' && <path d="M82 100 C82 110 85 116 90 116 C95 116 98 110 98 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
-          {expression.tongueShape === 'side' && <path d="M87 100 C91 102 98 103 100 108 C102 113 99 117 95 116 C91 114 89 107 87 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
+          {expression.tongueShape === 'drop' && <path d="M86 100 Q90 113 94 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
+          {expression.tongueShape === 'round' && <path d="M85 100 C85 108 87 114 90 114 C93 114 95 108 95 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
+          {expression.tongueShape === 'wide' && <path d="M83 100 C83 108 86 113 90 113 C94 113 97 108 97 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
+          {expression.tongueShape === 'side' && <path d="M88 100 C91 102 97 103 98 107 C100 111 98 114 95 113 C92 112 90 106 88 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
         </g>
         <path d="M50 128v15M130 128v15" stroke="#25222A" strokeWidth="7" strokeLinecap="round" />
       </svg>
