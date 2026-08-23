@@ -1,0 +1,7 @@
+project_id = "cute-enough"
+
+[functions.pet-api]
+verify_jwt = false
+
+[functions.analyze-pet]
+verify_jwt = false
