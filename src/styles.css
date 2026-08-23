@@ -114,6 +114,9 @@ h1, h2, p, figure { margin: 0; }
 .pet-button.is-grabbed .dog-tail { animation:grabwag .11s cubic-bezier(.45,0,.55,1) infinite alternate; }
 .pet-button.is-grabbed .dog-avatar { animation:grabhop .24s ease-in-out infinite alternate; }
 .pet-button.is-grabbed .pet-artwork-image img { animation:grabwiggle .16s ease-in-out infinite alternate; }
+@media (hover:hover) {
+  .pet-button:not(.is-grabbed):hover .dog-tail { animation-duration:.72s; }
+}
 .pet-button.pos-a { left:4%; top:46%; animation-delay:-1s; }
 .pet-button.pos-b { left:32%; top:36%; animation-delay:-2.4s; }
 .pet-button.pos-c { left:37%; bottom:1%; animation-delay:-.2s; }
