@@ -140,8 +140,8 @@ h1, h2, p, figure { margin: 0; }
 @keyframes wag { to { transform:rotate(14deg); } }
 @keyframes nibble { to { transform:translateY(9px) rotate(2deg); } }
 @keyframes lick { to { transform:scaleY(1.2); } }
-@keyframes pant { from { transform:scaleY(.72) translateY(-1px); } to { transform:scaleY(1.12) translateY(2px); } }
-@keyframes pant-side { from { transform:rotate(-3deg) scale(.78) translate(-1px,-1px); } to { transform:rotate(5deg) scale(1.06) translate(2px,2px); } }
+@keyframes pant { from { transform:scaleY(.82) translateY(-1px); } to { transform:scaleY(1.04) translateY(1px); } }
+@keyframes pant-side { from { transform:rotate(-2deg) scale(.84) translate(-1px,-1px); } to { transform:rotate(3deg) scale(1.02) translate(1px,1px); } }
 
 .pet-artwork-image { display:flex; flex-direction:column; align-items:center; filter:drop-shadow(0 6px 8px rgba(0,0,0,.12)); transition:transform .2s ease; }
 .pet-artwork-image img { display:block; width:100%; aspect-ratio:1; object-fit:contain; }
