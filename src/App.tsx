@@ -8,7 +8,7 @@ import { UploadFlow } from './components/UploadFlow';
 import { fetchHouse, reportPet, revealPet } from './lib/api';
 import { grantUploadCredit, nextUnlockMethod, readAllowance, remainingCount, saveAllowance } from './lib/allowance';
 import { preloadRewardedAd, showRewardedAd } from './lib/toss';
-import { playSoundEffect, readSoundEnabled, saveSoundEnabled, type SoundEffect } from './lib/sound';
+import { getPetSoundVariant, playSoundEffect, readSoundEnabled, saveSoundEnabled, type SoundEffect } from './lib/sound';
 import type { AppScreen, DailyAllowance, PetSummary } from './types';
 
 export default function App() {
@@ -58,7 +58,7 @@ export default function App() {
       : '오늘의 만남을 모두 봤어요';
 
   function choosePet(pet: PetSummary) {
-    playSound('bark');
+    playSound('bark', getPetSoundVariant(pet.id));
     setSelected(pet);
     setScreen('play');
     setPhotoUrl(undefined);

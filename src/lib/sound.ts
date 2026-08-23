@@ -4,6 +4,15 @@ const SOUND_ENABLED_KEY = 'cute-enough:sound-enabled';
 
 let audioContext: AudioContext | undefined;
 
+export function getPetSoundVariant(petId: string): 0 | 1 | 2 {
+  let hash = 2166136261;
+  for (const character of petId) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return (hash % 3) as 0 | 1 | 2;
+}
+
 export function readSoundEnabled() {
   try {
     return window.localStorage.getItem(SOUND_ENABLED_KEY) !== 'false';
@@ -65,18 +74,18 @@ function scheduleSound(context: AudioContext, effect: SoundEffect, variant: numb
   const now = context.currentTime + 0.01;
 
   if (effect === 'bark') {
-    softNoise(context, now, 0.13, 0.055, 920);
-    tone(context, now, 175, 0.15, 0.062, 92);
-    tone(context, now + 0.012, 340, 0.11, 0.028, 170);
-    softNoise(context, now + 0.14, 0.075, 0.026, 760);
-    tone(context, now + 0.14, 145, 0.085, 0.032, 90);
+    const pitchScale = [0.9, 1, 1.3][variant % 3];
+    const durationScale = pitchScale > 1 ? 0.88 : 1;
+    softNoise(context, now, 0.13 * durationScale, 0.055, 920 * pitchScale);
+    tone(context, now, 175 * pitchScale, 0.15 * durationScale, 0.062, 92 * pitchScale);
+    tone(context, now + 0.012, 340 * pitchScale, 0.11 * durationScale, 0.028, 170 * pitchScale);
+    softNoise(context, now + 0.14 * durationScale, 0.075 * durationScale, 0.026, 760 * pitchScale);
+    tone(context, now + 0.14 * durationScale, 145 * pitchScale, 0.085 * durationScale, 0.032, 90 * pitchScale);
     return;
   }
   if (effect === 'pant') {
-    [0, 0.13, 0.26].forEach((offset, index) => {
-      softNoise(context, now + offset, 0.075, 0.025 - index * 0.003, 1050 - index * 100);
-      tone(context, now + offset, 230 - index * 15, 0.065, 0.009, 175 - index * 12);
-    });
+    softNoise(context, now, 0.085, 0.025, 1050);
+    tone(context, now, 230, 0.075, 0.009, 175);
     return;
   }
   if (effect === 'pick') {
