@@ -116,7 +116,6 @@ export default function App() {
         </div>
         <b>{remaining}<small>마리</small></b>
       </section>
-      <p className="home-hint" aria-live="polite">{status}</p>
       {houseError ? (
         <section className="house-error">
           <Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F415.png" frameShape={{ width: 76, height: 76 }} alt="강아지" />
@@ -124,6 +123,7 @@ export default function App() {
           <Button size="medium" color="dark" variant="weak" onClick={loadHouse}>다시 불러오기</Button>
         </section>
       ) : <House pets={pets} onSelect={choosePet} onSound={playSound} />}
+      <p className="home-hint" aria-live="polite">{status}</p>
       <Toast className="app-toast" position="bottom" open={Boolean(toast)} text={toast} />
     </main>
   );
