@@ -22,6 +22,7 @@ export function House({ pets, onSelect, onSound }: { pets: PetSummary[]; onSelec
     offsetX: number;
     offsetY: number;
     moved: boolean;
+    pantPlayed: boolean;
   }>();
   const suppressClickRef = useRef<string>();
   const [grabbedId, setGrabbedId] = useState<string>();
@@ -29,7 +30,6 @@ export function House({ pets, onSelect, onSound }: { pets: PetSummary[]; onSelec
 
   function startDrag(petId: string, event: ReactPointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) return;
-    onSound('grab');
     const buttonRect = event.currentTarget.getBoundingClientRect();
     const roomRect = roomRef.current?.getBoundingClientRect();
     if (roomRect) {
@@ -46,6 +46,7 @@ export function House({ pets, onSelect, onSound }: { pets: PetSummary[]; onSelec
       offsetX: event.clientX - buttonRect.left,
       offsetY: event.clientY - buttonRect.top,
       moved: false,
+      pantPlayed: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
     setGrabbedId(petId);
@@ -59,6 +60,10 @@ export function House({ pets, onSelect, onSound }: { pets: PetSummary[]; onSelec
     const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
     if (!drag.moved && distance < 7) return;
     drag.moved = true;
+    if (!drag.pantPlayed) {
+      drag.pantPlayed = true;
+      onSound('pant');
+    }
     const roomRect = room.getBoundingClientRect();
     const buttonRect = event.currentTarget.getBoundingClientRect();
     const liftY = getDragLift(distance);

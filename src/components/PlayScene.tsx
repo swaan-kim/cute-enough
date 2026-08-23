@@ -34,6 +34,7 @@ export function PlayScene({ pet, onFed, onBack, onSound }: { pet: PetSummary; on
   const [selectedTreat, setSelectedTreat] = useState<TreatId>();
   const [phase, setPhase] = useState<Phase>('treat');
   const [eating, setEating] = useState(false);
+  const [greeting, setGreeting] = useState(true);
   const [petCount, setPetCount] = useState(0);
   const [dragGhost, setDragGhost] = useState<{ treatId: TreatId; x: number; y: number }>();
   const zoneRef = useRef<HTMLDivElement>(null);
@@ -42,7 +43,10 @@ export function PlayScene({ pet, onFed, onBack, onSound }: { pet: PetSummary; on
   const timersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const completedRef = useRef(false);
 
-  useEffect(() => () => timersRef.current.forEach(clearTimeout), []);
+  useEffect(() => {
+    timersRef.current.push(setTimeout(() => setGreeting(false), 520));
+    return () => timersRef.current.forEach(clearTimeout);
+  }, []);
 
   const selected = TREATS.find((treat) => treat.id === selectedTreat);
   const hint = useMemo(() => {
@@ -156,7 +160,7 @@ export function PlayScene({ pet, onFed, onBack, onSound }: { pet: PetSummary; on
       />
 
       <div
-        className={`feed-zone phase-${phase} ${dragGhost ? 'is-dragging-treat' : ''}`}
+        className={`feed-zone phase-${phase} ${greeting ? 'is-greeting' : ''} ${dragGhost ? 'is-dragging-treat' : ''}`}
         ref={zoneRef}
         role="button"
         tabIndex={0}

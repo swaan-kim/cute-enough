@@ -36,8 +36,6 @@ export default function App() {
     });
   }
 
-  const soundToggle = <SoundToggle enabled={soundEnabled} onToggle={toggleSound} />;
-
   async function loadHouse() {
     setHouseError(false);
     setStatus('강아지들이 놀러 오는 중…');
@@ -55,6 +53,7 @@ export default function App() {
   const remaining = useMemo(() => remainingCount(allowance), [allowance]);
 
   function choosePet(pet: PetSummary) {
+    playSound('bark');
     setSelected(pet);
     setScreen('play');
     setPhotoUrl(undefined);
@@ -75,33 +74,36 @@ export default function App() {
     finally { setBusy(false); }
   }
 
-  if (screen === 'upload') return <><UploadFlow onBack={() => setScreen('home')} onSubmitted={() => {
+  if (screen === 'upload') return <UploadFlow onBack={() => setScreen('home')} onSubmitted={() => {
     const credited = grantUploadCredit(readAllowance());
     saveAllowance(credited);
     setAllowance(credited);
     setScreen('submitted');
-  }} />{soundToggle}</>;
+  }} />;
   if (screen === 'submitted') return (
-    <><main className="submitted-screen">
+    <main className="submitted-screen">
       <Result
         figure={<Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F48C.png" frameShape={{ width: 96, height: 96 }} alt="마음이 담긴 편지" />}
         title="소중한 사진을 맡겨주셔서 고마워요"
         description={<>오늘 한 친구를 광고 없이 더 만날 수 있어요.<br />사진은 안전 검사를 거쳐 승인되면 집에 등장해요.</>}
         button={<Result.Button onClick={() => setScreen('home')}>집으로 돌아가기</Result.Button>}
       />
-    </main>{soundToggle}</>
+    </main>
   );
-  if (screen === 'play' && selected) return <><PlayScene pet={selected} onFed={handleFed} onBack={() => setScreen('home')} onSound={playSound} /><Toast position="bottom" open={Boolean(toast)} text={toast} aria-live={busy ? 'assertive' : 'polite'} />{photoUrl && <RevealCard pet={selected} photoUrl={photoUrl} onClose={() => { setPhotoUrl(undefined); setScreen('home'); }} onUpload={() => { setPhotoUrl(undefined); setScreen('upload'); }} onReport={async () => { await reportPet(selected.id).catch(() => undefined); setToast('신고가 접수됐어요. 확인 후 처리할게요.'); setPhotoUrl(undefined); setScreen('home'); }} />}{soundToggle}</>;
+  if (screen === 'play' && selected) return <><PlayScene pet={selected} onFed={handleFed} onBack={() => setScreen('home')} onSound={playSound} /><Toast position="bottom" open={Boolean(toast)} text={toast} aria-live={busy ? 'assertive' : 'polite'} />{photoUrl && <RevealCard pet={selected} photoUrl={photoUrl} onClose={() => { setPhotoUrl(undefined); setScreen('home'); }} onUpload={() => { setPhotoUrl(undefined); setScreen('upload'); }} onReport={async () => { await reportPet(selected.id).catch(() => undefined); setToast('신고가 접수됐어요. 확인 후 처리할게요.'); setPhotoUrl(undefined); setScreen('home'); }} />}</>;
 
   return (
-    <><main className="home-screen">
-      <Top
-        className="home-top"
-        upperGap={16}
-        lowerGap={10}
-        title={<Top.TitleParagraph size={28}>귀엽기만 해도<br />되나요?</Top.TitleParagraph>}
-        subtitleBottom={<Top.SubtitleParagraph>오늘의 조그만 행복을 만나보세요</Top.SubtitleParagraph>}
-      />
+    <main className="home-screen">
+      <section className="home-heading">
+        <Top
+          className="home-top"
+          upperGap={16}
+          lowerGap={10}
+          title={<Top.TitleParagraph size={28}>귀엽기만 해도<br />되나요?</Top.TitleParagraph>}
+          subtitleBottom={<Top.SubtitleParagraph>오늘의 조그만 행복을 만나보세요</Top.SubtitleParagraph>}
+        />
+        <div className="home-sound-control"><SoundToggle enabled={soundEnabled} onToggle={toggleSound} /></div>
+      </section>
       <section className="daily-card" aria-label={`오늘 ${remaining}마리 더 만날 수 있어요`}>
         <div className="daily-card-label">
           <Asset.Icon name="heart-line" color="#ff506f" backgroundColor="#fff0f3" frameShape={Asset.frameShape.CircleLarge} aria-hidden="true" />
@@ -118,6 +120,6 @@ export default function App() {
         </section>
       ) : <House pets={pets} onSelect={choosePet} onSound={playSound} />}
       <Toast position="bottom" open={Boolean(toast)} text={toast} />
-    </main>{soundToggle}</>
+    </main>
   );
 }

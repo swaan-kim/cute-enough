@@ -1,4 +1,4 @@
-export type SoundEffect = 'grab' | 'pick' | 'eat' | 'pet' | 'reveal' | 'toggle';
+export type SoundEffect = 'bark' | 'pant' | 'pick' | 'eat' | 'pet' | 'reveal' | 'toggle';
 
 const SOUND_ENABLED_KEY = 'cute-enough:sound-enabled';
 
@@ -64,8 +64,19 @@ function softNoise(context: AudioContext, startAt: number, duration: number, vol
 function scheduleSound(context: AudioContext, effect: SoundEffect, variant: number) {
   const now = context.currentTime + 0.01;
 
-  if (effect === 'grab') {
-    tone(context, now, 270, 0.075, 0.035, 350);
+  if (effect === 'bark') {
+    softNoise(context, now, 0.13, 0.055, 920);
+    tone(context, now, 175, 0.15, 0.062, 92);
+    tone(context, now + 0.012, 340, 0.11, 0.028, 170);
+    softNoise(context, now + 0.14, 0.075, 0.026, 760);
+    tone(context, now + 0.14, 145, 0.085, 0.032, 90);
+    return;
+  }
+  if (effect === 'pant') {
+    [0, 0.13, 0.26].forEach((offset, index) => {
+      softNoise(context, now + offset, 0.075, 0.025 - index * 0.003, 1050 - index * 100);
+      tone(context, now + offset, 230 - index * 15, 0.065, 0.009, 175 - index * 12);
+    });
     return;
   }
   if (effect === 'pick') {
