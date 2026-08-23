@@ -2,6 +2,13 @@ export type EarShape = 'floppy' | 'upright' | 'semi';
 export type HeadShape = 'round' | 'oval' | 'long';
 export type MarkingPattern = 'none' | 'brow' | 'mask' | 'blaze' | 'spots';
 export type CoatColor = 'cream' | 'caramel' | 'chocolate' | 'black' | 'gray' | 'white';
+export type BrowStyle = 'none' | 'soft' | 'caterpillar' | 'angled';
+export type TongueShape = 'drop' | 'round' | 'wide' | 'side';
+
+export interface PetExpression {
+  browStyle: BrowStyle;
+  tongueShape: TongueShape;
+}
 
 export interface PetTraitsV1 {
   schemaVersion: 1;

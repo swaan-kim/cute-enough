@@ -1,4 +1,4 @@
-import type { PetTraitsV1 } from '../types';
+import type { PetExpression, PetTraitsV1 } from '../types';
 
 const COLORS: Record<PetTraitsV1['baseColor'], string> = {
   cream: '#F6DEB3', caramel: '#C98955', chocolate: '#714536', black: '#3C3B41', gray: '#A8A6AE', white: '#FFFDF8',
@@ -6,6 +6,7 @@ const COLORS: Record<PetTraitsV1['baseColor'], string> = {
 
 interface Props {
   traits: PetTraitsV1;
+  expression?: PetExpression;
   name?: string;
   active?: boolean;
   eating?: boolean;
@@ -14,7 +15,7 @@ interface Props {
   size?: number;
 }
 
-export function DogAvatar({ traits, name, active = false, eating = false, panting = false, happy = false, size = 150 }: Props) {
+export function DogAvatar({ traits, expression = { browStyle: 'none', tongueShape: 'drop' }, name, active = false, eating = false, panting = false, happy = false, size = 150 }: Props) {
   const base = COLORS[traits.baseColor];
   const secondary = COLORS[traits.secondaryColor];
   const upright = traits.earShape === 'upright';
@@ -32,11 +33,23 @@ export function DogAvatar({ traits, name, active = false, eating = false, pantin
         {traits.markingPattern === 'mask' && <path d="M33 54 Q48 28 73 40 L67 72 Q43 80 33 54M147 54 Q132 28 107 40 L113 72 Q137 80 147 54" fill={secondary} opacity=".9" />}
         {traits.markingPattern === 'brow' && <><ellipse cx="61" cy="43" rx="11" ry="7" fill={secondary} /><ellipse cx="119" cy="43" rx="11" ry="7" fill={secondary} /></>}
         {traits.markingPattern === 'spots' && <><circle cx="53" cy="39" r="13" fill={secondary} /><circle cx="126" cy="83" r="10" fill={secondary} /></>}
+        {expression.browStyle !== 'none' && (
+          <g className={`dog-brows dog-brows--${expression.browStyle}`} data-brow-style={expression.browStyle} fill="none" stroke="#3B2A22" strokeLinecap="round">
+            {expression.browStyle === 'soft' && <><path d="M54 49 Q61 45 68 49" strokeWidth="4" /><path d="M112 49 Q119 45 126 49" strokeWidth="4" /></>}
+            {expression.browStyle === 'caterpillar' && <><path d="M52 48 Q56 43 61 47 Q66 42 70 48" strokeWidth="6" /><path d="M110 48 Q114 42 119 47 Q124 43 128 48" strokeWidth="6" /></>}
+            {expression.browStyle === 'angled' && <><path d="M53 44 L68 50" strokeWidth="5" /><path d="M112 50 L127 44" strokeWidth="5" /></>}
+          </g>
+        )}
         <circle cx="65" cy="65" r="5.5" fill="#25222A" /><circle cx="115" cy="65" r="5.5" fill="#25222A" />
         <ellipse cx="90" cy="88" rx={traits.muzzle === 'long' ? 29 : 24} ry="20" fill={secondary} stroke="#25222A" strokeWidth="3.5" />
         <path d="M83 82 Q90 76 97 82 Q95 91 90 91 Q85 91 83 82" fill="#27242A" />
         <path d="M90 91 L90 98 M90 98 Q82 105 77 98 M90 98 Q98 105 103 98" fill="none" stroke="#25222A" strokeWidth="3.5" strokeLinecap="round" />
-        <g className="dog-tongue"><path d="M84 100 Q90 121 96 100" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" /></g>
+        <g className={`dog-tongue dog-tongue--${expression.tongueShape}`} data-tongue-shape={expression.tongueShape}>
+          {expression.tongueShape === 'drop' && <path d="M84 100 Q90 122 96 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
+          {expression.tongueShape === 'round' && <path d="M83 100 C83 115 85 122 90 122 C95 122 97 115 97 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
+          {expression.tongueShape === 'wide' && <path d="M80 100 C80 115 84 121 90 121 C96 121 100 115 100 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
+          {expression.tongueShape === 'side' && <path d="M86 100 C91 102 101 104 103 111 C105 117 101 122 96 121 C90 119 89 109 86 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
+        </g>
         <path d="M50 128v15M130 128v15" stroke="#25222A" strokeWidth="7" strokeLinecap="round" />
       </svg>
       {name && <span className="dog-name">{name}</span>}

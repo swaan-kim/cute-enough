@@ -1,5 +1,6 @@
 import type { PetSummary, PetTraitsV1 } from '../types';
 import { getPetArtwork } from '../data/petArtwork';
+import { getPetExpression } from '../lib/petExpression';
 import { DogAvatar } from './DogAvatar';
 
 type PetArtworkProps = {
@@ -31,6 +32,7 @@ export function PetArtwork({ pet, traits, name, size, active, eating, panting, h
   return (
     <DogAvatar
       traits={resolvedTraits}
+      expression={getPetExpression(pet?.id)}
       name={pet?.name ?? name}
       size={size}
       active={active}

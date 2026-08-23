@@ -130,12 +130,15 @@ h1, h2, p, figure { margin: 0; }
 .dog-tail { transform-origin:145px 112px; animation:wag .6s ease-in-out infinite alternate; }
 .dog-tongue { opacity:0; transform-origin:90px 100px; }
 .is-panting .dog-tongue { opacity:1; animation:pant .65s ease-in-out infinite alternate; }
+.dog-tongue--side { transform-origin:87px 101px; }
+.is-panting .dog-tongue--side { animation-name:pant-side; }
 .is-eating { animation:nibble .18s ease-in-out 4 alternate; }
 .is-eating .dog-tongue { opacity:1; animation:lick .3s ease-in-out 2 alternate; }
 @keyframes wag { to { transform:rotate(14deg); } }
 @keyframes nibble { to { transform:translateY(9px) rotate(2deg); } }
 @keyframes lick { to { transform:scaleY(1.2); } }
 @keyframes pant { from { transform:scaleY(.72) translateY(-1px); } to { transform:scaleY(1.12) translateY(2px); } }
+@keyframes pant-side { from { transform:rotate(-3deg) scale(.78) translate(-1px,-1px); } to { transform:rotate(5deg) scale(1.06) translate(2px,2px); } }
 
 .pet-artwork-image { display:flex; flex-direction:column; align-items:center; filter:drop-shadow(0 6px 8px rgba(0,0,0,.12)); transition:transform .2s ease; }
 .pet-artwork-image img { display:block; width:100%; aspect-ratio:1; object-fit:contain; }
