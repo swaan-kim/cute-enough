@@ -3,6 +3,7 @@ import type { PetSummary } from '../types';
 import { PetArtwork } from './PetArtwork';
 
 const POSITIONS = ['pos-a', 'pos-b', 'pos-c', 'pos-d', 'pos-e'];
+const DOG_DRAG_LIFT_Y = 60;
 
 export function House({ pets, onSelect }: { pets: PetSummary[]; onSelect: (pet: PetSummary) => void }) {
   const roomRef = useRef<HTMLElement>(null);
@@ -45,7 +46,7 @@ export function House({ pets, onSelect }: { pets: PetSummary[]; onSelect: (pet: 
     const roomRect = room.getBoundingClientRect();
     const buttonRect = event.currentTarget.getBoundingClientRect();
     const left = Math.max(0, Math.min(roomRect.width - buttonRect.width, event.clientX - roomRect.left - drag.offsetX));
-    const top = Math.max(0, Math.min(roomRect.height - buttonRect.height, event.clientY - roomRect.top - drag.offsetY));
+    const top = Math.max(0, Math.min(roomRect.height - buttonRect.height, event.clientY - roomRect.top - drag.offsetY - DOG_DRAG_LIFT_Y));
     setDraggedPositions((current) => ({ ...current, [drag.petId]: { left, top } }));
   }
 

@@ -11,6 +11,7 @@ const TREATS: Array<{ id: TreatId; label: string; objectLabel: string; image: st
   { id: 'bone', label: '개껌', objectLabel: '개껌을', image: 'https://static.toss.im/2d-emojis/png/4x/u1F9B4.png' },
   { id: 'meat', label: '고기', objectLabel: '고기를', image: 'https://static.toss.im/2d-emojis/png/4x/u1F356.png' },
 ];
+const TREAT_DRAG_LIFT_Y = 58;
 
 type DragState = {
   treatId: TreatId;
@@ -86,14 +87,16 @@ export function PlayScene({ pet, onFed, onBack }: { pet: PetSummary; onFed: () =
     const drag = treatDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 7) drag.moved = true;
-    if (drag.moved) setDragGhost({ treatId: drag.treatId, x: event.clientX, y: event.clientY });
+    if (drag.moved) setDragGhost({ treatId: drag.treatId, x: event.clientX, y: event.clientY - TREAT_DRAG_LIFT_Y });
   }
 
   function finishTreatDrag(event: ReactPointerEvent<HTMLElement>) {
     const drag = treatDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     const zone = zoneRef.current?.getBoundingClientRect();
-    const droppedOnDog = drag.moved && zone && event.clientX >= zone.left && event.clientX <= zone.right && event.clientY >= zone.top && event.clientY <= zone.bottom;
+    const dropX = event.clientX;
+    const dropY = event.clientY - TREAT_DRAG_LIFT_Y;
+    const droppedOnDog = drag.moved && zone && dropX >= zone.left && dropX <= zone.right && dropY >= zone.top && dropY <= zone.bottom;
     if (drag.target?.hasPointerCapture(event.pointerId)) drag.target.releasePointerCapture(event.pointerId);
     treatDragRef.current = undefined;
     setDragGhost(undefined);
@@ -141,7 +144,7 @@ export function PlayScene({ pet, onFed, onBack }: { pet: PetSummary; onFed: () =
       />
 
       <div
-        className={`feed-zone phase-${phase}`}
+        className={`feed-zone phase-${phase} ${dragGhost ? 'is-dragging-treat' : ''}`}
         ref={zoneRef}
         role="button"
         tabIndex={0}
@@ -188,7 +191,6 @@ export function PlayScene({ pet, onFed, onBack }: { pet: PetSummary; onFed: () =
                 </button>
               ))}
             </div>
-            <small>끌기 어렵다면 간식을 고른 뒤 강아지를 눌러도 돼요</small>
           </div>
         )}
 

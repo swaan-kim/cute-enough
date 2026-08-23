@@ -137,9 +137,11 @@ h1, h2, p, figure { margin: 0; }
 .play-screen { display:flex; flex-direction:column; align-items:stretch; background:linear-gradient(#fff 0 31%, #fff8eb 31% 100%); text-align:center; overflow:hidden; }
 .play-copy { position:relative; z-index:2; text-align:left; }
 .feed-zone { z-index:2; width:min(92vw,420px); min-height:310px; margin:0 auto; display:grid; place-items:center; cursor:pointer; position:relative; touch-action:none; user-select:none; -webkit-user-select:none; outline:none; }
-.feed-zone::before { content:''; position:absolute; z-index:-1; left:11%; right:11%; bottom:31px; height:76px; border-radius:50%; background:radial-gradient(ellipse,rgba(162,111,63,.16),rgba(162,111,63,0) 70%); }
+.feed-zone::before { content:''; position:absolute; z-index:-1; left:11%; right:11%; bottom:31px; height:76px; border-radius:50%; background:radial-gradient(ellipse,rgba(162,111,63,.16),rgba(162,111,63,0) 70%); transition:background .18s,transform .18s; }
 .feed-zone .dog-avatar,.feed-zone .pet-artwork-image { transition:transform .2s; }
 .feed-zone:hover .dog-avatar,.feed-zone:hover .pet-artwork-image { transform:translateY(-3px); }
+.feed-zone.is-dragging-treat::before { background:radial-gradient(ellipse,rgba(255,107,138,.28),rgba(255,107,138,0) 72%); transform:scale(1.08); }
+.feed-zone.is-dragging-treat .dog-avatar,.feed-zone.is-dragging-treat .pet-artwork-image { transform:translateY(-5px) scale(1.025); }
 .feed-zone:focus-visible { border-radius:28px; box-shadow:inset 0 0 0 3px #3182f6; }
 .feed-zone.phase-petting { cursor:grab; }
 .feed-zone.phase-petting:active { cursor:grabbing; }
