@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Asset, Top, TopNavigation, TopNavigationBackButton } from '@toss/tds-mobile';
+import type { SoundEffect } from '../lib/sound';
 import type { PetSummary } from '../types';
 import { PetArtwork } from './PetArtwork';
 
@@ -29,7 +30,7 @@ function getTreatDragLift(event: ReactPointerEvent<HTMLElement>, drag: DragState
   return TREAT_DRAG_MAX_LIFT_Y * easedProgress;
 }
 
-export function PlayScene({ pet, onFed, onBack }: { pet: PetSummary; onFed: () => void; onBack: () => void }) {
+export function PlayScene({ pet, onFed, onBack, onSound }: { pet: PetSummary; onFed: () => void; onBack: () => void; onSound: (effect: SoundEffect, variant?: number) => void }) {
   const [selectedTreat, setSelectedTreat] = useState<TreatId>();
   const [phase, setPhase] = useState<Phase>('treat');
   const [eating, setEating] = useState(false);
@@ -54,6 +55,7 @@ export function PlayScene({ pet, onFed, onBack }: { pet: PetSummary; onFed: () =
 
   function giveTreat(treatId: TreatId) {
     if (phase !== 'treat') return;
+    onSound('eat');
     setSelectedTreat(treatId);
     setEating(true);
     setPhase('happy');
@@ -67,6 +69,7 @@ export function PlayScene({ pet, onFed, onBack }: { pet: PetSummary; onFed: () =
     if (phase !== 'petting' || completedRef.current) return;
     setPetCount((count) => {
       const next = Math.min(3, count + 1);
+      onSound('pet', next - 1);
       if (next === 3) {
         completedRef.current = true;
         setPhase('done');
@@ -78,6 +81,7 @@ export function PlayScene({ pet, onFed, onBack }: { pet: PetSummary; onFed: () =
 
   function startTreatDrag(event: ReactPointerEvent<HTMLButtonElement>, treatId: TreatId) {
     if (phase !== 'treat') return;
+    onSound('pick');
     setSelectedTreat(treatId);
     treatDragRef.current = {
       treatId,

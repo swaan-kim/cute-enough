@@ -1,5 +1,6 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { PetSummary } from '../types';
+import type { SoundEffect } from '../lib/sound';
 import { PetArtwork } from './PetArtwork';
 
 const POSITIONS = ['pos-a', 'pos-b', 'pos-c', 'pos-d', 'pos-e'];
@@ -11,7 +12,7 @@ function getDragLift(distance: number) {
   return DOG_DRAG_MAX_LIFT_Y * easedProgress;
 }
 
-export function House({ pets, onSelect }: { pets: PetSummary[]; onSelect: (pet: PetSummary) => void }) {
+export function House({ pets, onSelect, onSound }: { pets: PetSummary[]; onSelect: (pet: PetSummary) => void; onSound: (effect: SoundEffect) => void }) {
   const roomRef = useRef<HTMLElement>(null);
   const dragRef = useRef<{
     petId: string;
@@ -28,6 +29,7 @@ export function House({ pets, onSelect }: { pets: PetSummary[]; onSelect: (pet: 
 
   function startDrag(petId: string, event: ReactPointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) return;
+    onSound('grab');
     const buttonRect = event.currentTarget.getBoundingClientRect();
     const roomRect = roomRef.current?.getBoundingClientRect();
     if (roomRect) {

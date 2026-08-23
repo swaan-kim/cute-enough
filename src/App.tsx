@@ -3,10 +3,12 @@ import { Asset, Button, Result, Toast, Top } from '@toss/tds-mobile';
 import { House } from './components/House';
 import { PlayScene } from './components/PlayScene';
 import { RevealCard } from './components/RevealCard';
+import { SoundToggle } from './components/SoundToggle';
 import { UploadFlow } from './components/UploadFlow';
 import { fetchHouse, reportPet, revealPet } from './lib/api';
 import { grantUploadCredit, nextUnlockMethod, readAllowance, remainingCount, saveAllowance } from './lib/allowance';
 import { preloadRewardedAd, showRewardedAd } from './lib/toss';
+import { playSoundEffect, readSoundEnabled, saveSoundEnabled, type SoundEffect } from './lib/sound';
 import type { AppScreen, DailyAllowance, PetSummary } from './types';
 
 export default function App() {
@@ -19,6 +21,22 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
   const [houseError, setHouseError] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(readSoundEnabled);
+
+  function playSound(effect: SoundEffect, variant = 0) {
+    playSoundEffect(effect, soundEnabled, variant);
+  }
+
+  function toggleSound() {
+    setSoundEnabled((enabled) => {
+      const next = !enabled;
+      saveSoundEnabled(next);
+      if (next) playSoundEffect('toggle', true);
+      return next;
+    });
+  }
+
+  const soundToggle = <SoundToggle enabled={soundEnabled} onToggle={toggleSound} />;
 
   async function loadHouse() {
     setHouseError(false);
@@ -52,31 +70,31 @@ export default function App() {
       let sessionId: string | undefined;
       if (method === 'REWARDED') { setToast('사진을 만나려면 짧은 광고를 봐주세요'); await showRewardedAd(); sessionId = crypto.randomUUID(); }
       const result = await revealPet(selected, method, sessionId);
-      setAllowance(result.allowance); setPhotoUrl(result.photoUrl); setToast('');
+      setAllowance(result.allowance); setPhotoUrl(result.photoUrl); setToast(''); playSound('reveal');
     } catch (error) { setToast(error instanceof Error ? error.message : '사진을 열지 못했어요.'); }
     finally { setBusy(false); }
   }
 
-  if (screen === 'upload') return <UploadFlow onBack={() => setScreen('home')} onSubmitted={() => {
+  if (screen === 'upload') return <><UploadFlow onBack={() => setScreen('home')} onSubmitted={() => {
     const credited = grantUploadCredit(readAllowance());
     saveAllowance(credited);
     setAllowance(credited);
     setScreen('submitted');
-  }} />;
+  }} />{soundToggle}</>;
   if (screen === 'submitted') return (
-    <main className="submitted-screen">
+    <><main className="submitted-screen">
       <Result
         figure={<Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F48C.png" frameShape={{ width: 96, height: 96 }} alt="마음이 담긴 편지" />}
         title="소중한 사진을 맡겨주셔서 고마워요"
         description={<>오늘 한 친구를 광고 없이 더 만날 수 있어요.<br />사진은 안전 검사를 거쳐 승인되면 집에 등장해요.</>}
         button={<Result.Button onClick={() => setScreen('home')}>집으로 돌아가기</Result.Button>}
       />
-    </main>
+    </main>{soundToggle}</>
   );
-  if (screen === 'play' && selected) return <><PlayScene pet={selected} onFed={handleFed} onBack={() => setScreen('home')} /><Toast position="bottom" open={Boolean(toast)} text={toast} aria-live={busy ? 'assertive' : 'polite'} />{photoUrl && <RevealCard pet={selected} photoUrl={photoUrl} onClose={() => { setPhotoUrl(undefined); setScreen('home'); }} onUpload={() => { setPhotoUrl(undefined); setScreen('upload'); }} onReport={async () => { await reportPet(selected.id).catch(() => undefined); setToast('신고가 접수됐어요. 확인 후 처리할게요.'); setPhotoUrl(undefined); setScreen('home'); }} />}</>;
+  if (screen === 'play' && selected) return <><PlayScene pet={selected} onFed={handleFed} onBack={() => setScreen('home')} onSound={playSound} /><Toast position="bottom" open={Boolean(toast)} text={toast} aria-live={busy ? 'assertive' : 'polite'} />{photoUrl && <RevealCard pet={selected} photoUrl={photoUrl} onClose={() => { setPhotoUrl(undefined); setScreen('home'); }} onUpload={() => { setPhotoUrl(undefined); setScreen('upload'); }} onReport={async () => { await reportPet(selected.id).catch(() => undefined); setToast('신고가 접수됐어요. 확인 후 처리할게요.'); setPhotoUrl(undefined); setScreen('home'); }} />}{soundToggle}</>;
 
   return (
-    <main className="home-screen">
+    <><main className="home-screen">
       <Top
         className="home-top"
         upperGap={16}
@@ -98,8 +116,8 @@ export default function App() {
           <strong>잠시 뒤 다시 불러와 주세요</strong>
           <Button size="medium" color="dark" variant="weak" onClick={loadHouse}>다시 불러오기</Button>
         </section>
-      ) : <House pets={pets} onSelect={choosePet} />}
+      ) : <House pets={pets} onSelect={choosePet} onSound={playSound} />}
       <Toast position="bottom" open={Boolean(toast)} text={toast} />
-    </main>
+    </main>{soundToggle}</>
   );
 }
