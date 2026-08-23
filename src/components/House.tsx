@@ -3,7 +3,13 @@ import type { PetSummary } from '../types';
 import { PetArtwork } from './PetArtwork';
 
 const POSITIONS = ['pos-a', 'pos-b', 'pos-c', 'pos-d', 'pos-e'];
-const DOG_DRAG_LIFT_Y = 60;
+const DOG_DRAG_MAX_LIFT_Y = 30;
+
+function getDragLift(distance: number) {
+  const progress = Math.max(0, Math.min(1, (distance - 7) / 65));
+  const easedProgress = progress * progress * (3 - 2 * progress);
+  return DOG_DRAG_MAX_LIFT_Y * easedProgress;
+}
 
 export function House({ pets, onSelect }: { pets: PetSummary[]; onSelect: (pet: PetSummary) => void }) {
   const roomRef = useRef<HTMLElement>(null);
@@ -23,6 +29,13 @@ export function House({ pets, onSelect }: { pets: PetSummary[]; onSelect: (pet: 
   function startDrag(petId: string, event: ReactPointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) return;
     const buttonRect = event.currentTarget.getBoundingClientRect();
+    const roomRect = roomRef.current?.getBoundingClientRect();
+    if (roomRect) {
+      setDraggedPositions((current) => ({
+        ...current,
+        [petId]: { left: buttonRect.left - roomRect.left, top: buttonRect.top - roomRect.top },
+      }));
+    }
     dragRef.current = {
       petId,
       pointerId: event.pointerId,
@@ -41,12 +54,14 @@ export function House({ pets, onSelect }: { pets: PetSummary[]; onSelect: (pet: 
     const room = roomRef.current;
     if (!drag || drag.pointerId !== event.pointerId || !room) return;
 
-    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 7) return;
+    const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+    if (!drag.moved && distance < 7) return;
     drag.moved = true;
     const roomRect = room.getBoundingClientRect();
     const buttonRect = event.currentTarget.getBoundingClientRect();
+    const liftY = getDragLift(distance);
     const left = Math.max(0, Math.min(roomRect.width - buttonRect.width, event.clientX - roomRect.left - drag.offsetX));
-    const top = Math.max(0, Math.min(roomRect.height - buttonRect.height, event.clientY - roomRect.top - drag.offsetY - DOG_DRAG_LIFT_Y));
+    const top = Math.max(0, Math.min(roomRect.height - buttonRect.height, event.clientY - roomRect.top - drag.offsetY - liftY));
     setDraggedPositions((current) => ({ ...current, [drag.petId]: { left, top } }));
   }
 

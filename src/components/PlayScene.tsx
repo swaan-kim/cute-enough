@@ -11,7 +11,7 @@ const TREATS: Array<{ id: TreatId; label: string; objectLabel: string; image: st
   { id: 'bone', label: '개껌', objectLabel: '개껌을', image: 'https://static.toss.im/2d-emojis/png/4x/u1F9B4.png' },
   { id: 'meat', label: '고기', objectLabel: '고기를', image: 'https://static.toss.im/2d-emojis/png/4x/u1F356.png' },
 ];
-const TREAT_DRAG_LIFT_Y = 58;
+const TREAT_DRAG_MAX_LIFT_Y = 32;
 
 type DragState = {
   treatId: TreatId;
@@ -21,6 +21,13 @@ type DragState = {
   moved: boolean;
   target?: HTMLButtonElement;
 };
+
+function getTreatDragLift(event: ReactPointerEvent<HTMLElement>, drag: DragState) {
+  const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+  const progress = Math.max(0, Math.min(1, (distance - 7) / 60));
+  const easedProgress = progress * progress * (3 - 2 * progress);
+  return TREAT_DRAG_MAX_LIFT_Y * easedProgress;
+}
 
 export function PlayScene({ pet, onFed, onBack }: { pet: PetSummary; onFed: () => void; onBack: () => void }) {
   const [selectedTreat, setSelectedTreat] = useState<TreatId>();
@@ -86,8 +93,9 @@ export function PlayScene({ pet, onFed, onBack }: { pet: PetSummary; onFed: () =
   function moveTreat(event: ReactPointerEvent<HTMLElement>) {
     const drag = treatDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 7) drag.moved = true;
-    if (drag.moved) setDragGhost({ treatId: drag.treatId, x: event.clientX, y: event.clientY - TREAT_DRAG_LIFT_Y });
+    const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+    if (distance > 7) drag.moved = true;
+    if (drag.moved) setDragGhost({ treatId: drag.treatId, x: event.clientX, y: event.clientY - getTreatDragLift(event, drag) });
   }
 
   function finishTreatDrag(event: ReactPointerEvent<HTMLElement>) {
@@ -95,7 +103,7 @@ export function PlayScene({ pet, onFed, onBack }: { pet: PetSummary; onFed: () =
     if (!drag || drag.pointerId !== event.pointerId) return;
     const zone = zoneRef.current?.getBoundingClientRect();
     const dropX = event.clientX;
-    const dropY = event.clientY - TREAT_DRAG_LIFT_Y;
+    const dropY = event.clientY - getTreatDragLift(event, drag);
     const droppedOnDog = drag.moved && zone && dropX >= zone.left && dropX <= zone.right && dropY >= zone.top && dropY <= zone.bottom;
     if (drag.target?.hasPointerCapture(event.pointerId)) drag.target.releasePointerCapture(event.pointerId);
     treatDragRef.current = undefined;

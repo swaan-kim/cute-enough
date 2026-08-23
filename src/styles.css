@@ -99,7 +99,7 @@ h1, h2, p, figure { margin: 0; }
 .pet-button { position:absolute; z-index:3; border:0; padding:0; background:transparent; cursor:grab; animation:wander 4s ease-in-out infinite alternate; touch-action:none; user-select:none; -webkit-user-select:none; }
 .pet-button:focus-visible { outline:4px solid #3182f6; outline-offset:5px; border-radius:30px; }
 .pet-button.is-positioned { right:auto!important; bottom:auto!important; }
-.pet-button.is-grabbed { z-index:12; cursor:grabbing; animation:none; transform:scale(1.06); filter:drop-shadow(0 12px 12px rgba(0,0,0,.18)); }
+.pet-button.is-grabbed { z-index:12; cursor:grabbing; animation:none; filter:drop-shadow(0 9px 9px rgba(0,0,0,.15)); }
 .pet-button.is-grabbed .dog-tail { animation-duration:.13s; animation-timing-function:linear; }
 .pet-button.is-grabbed .dog-avatar { animation:grabhop .24s ease-in-out infinite alternate; }
 .pet-button.is-grabbed .pet-artwork-image img { animation:grabwiggle .16s ease-in-out infinite alternate; }
