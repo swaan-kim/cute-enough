@@ -84,13 +84,15 @@ Deno.serve(async (request) => {
         return json({ error: '사진 안전 검사가 만료됐어요. 다시 분석해 주세요.' }, 422);
       }
       if (!body.traits || body.traits.schemaVersion !== 1) return json({ error: '캐릭터 특징을 다시 확인해 주세요.' }, 400);
+      const normalizedName = typeof body.name === 'string' ? body.name.trim().normalize('NFC') : '';
+      if (Array.from(normalizedName).length > 4) return json({ error: '강아지 이름은 네 글자까지 입력해 주세요.' }, 400);
       const ext = mime.split('/')[1].replace('jpeg', 'jpg');
       const id = crypto.randomUUID();
       const path = `${ownerHash}/${id}.${ext}`;
       const { error: uploadError } = await supabase.storage.from('pet-photos').upload(path, bytes, { contentType: mime, upsert: false });
       if (uploadError) throw uploadError;
       const { error: insertError } = await supabase.from('pets').insert({
-        id, owner_hash: ownerHash, name: typeof body.name === 'string' ? body.name.trim().slice(0, 12) || null : null,
+        id, owner_hash: ownerHash, name: normalizedName || null,
         storage_path: path, traits: body.traits, status: 'pending', moderation: { automatic: 'passed' },
       });
       if (insertError) { await supabase.storage.from('pet-photos').remove([path]); throw insertError; }

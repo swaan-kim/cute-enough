@@ -8,7 +8,7 @@ end $$;
 create table if not exists public.pets (
   id uuid primary key default gen_random_uuid(),
   owner_hash text not null,
-  name text check (char_length(name) <= 12),
+  name text check (char_length(name) <= 4),
   storage_path text not null unique,
   status public.pet_status not null default 'pending',
   traits jsonb not null,

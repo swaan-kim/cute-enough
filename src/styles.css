@@ -220,6 +220,7 @@ h1, h2, p, figure { margin: 0; }
 .trait-editor > label,.select-grid label { display:flex; flex-direction:column; gap:8px; color:#4e5968; font-size:13px; font-weight:700; margin-top:18px; text-align:left; }
 .trait-editor input,.trait-editor select { width:100%; min-height:52px; border:0; border-radius:14px; background:#f2f4f6; color:#191f28; padding:0 14px; outline:none; }
 .trait-editor input:focus,.trait-editor select:focus { box-shadow:0 0 0 2px #3182f6; background:#fff; }
+.trait-editor .input-help { color:#8b95a1; font-size:12px; font-weight:500; }
 .select-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
 .consent { flex-direction:row!important; align-items:flex-start; gap:10px!important; background:#f5f6f8; padding:15px; border-radius:16px; line-height:1.45; font-weight:500!important; color:#4e5968!important; }
 .consent input { width:20px; height:20px; min-height:0; flex:0 0 20px; accent-color:#3182f6; }

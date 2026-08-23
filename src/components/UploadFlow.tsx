@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Asset, Button, Top, TopNavigation, TopNavigationBackButton } from '@toss/tds-mobile';
 import type { CoatColor, EarShape, MarkingPattern, PetTraitsV1 } from '../types';
 import { analyzePet, submitPet } from '../lib/api';
+import { limitPetName, petNameLength, preparePetName } from '../lib/petName';
 import { pickOnePhoto } from '../lib/toss';
 import { PetArtwork } from './PetArtwork';
 
@@ -32,7 +33,7 @@ export function UploadFlow({ onBack, onSubmitted }: { onBack: () => void; onSubm
   async function submit() {
     if (!dataUri || !traits || !consented) return;
     setBusy(true); setError('');
-    try { await submitPet({ dataUri, name: name.trim() || undefined, traits, analysisToken }); onSubmitted(); }
+    try { await submitPet({ dataUri, name: preparePetName(name) || undefined, traits, analysisToken }); onSubmitted(); }
     catch (e) { setError(e instanceof Error ? e.message : '등록하지 못했어요.'); }
     finally { setBusy(false); }
   }
@@ -56,7 +57,7 @@ export function UploadFlow({ onBack, onSubmitted }: { onBack: () => void; onSubm
         {dataUri && !traits && <Button className="upload-cta" display="full" size="large" onClick={analyze} disabled={busy} loading={busy}>이 사진으로 캐릭터 만들기</Button>}
         {traits && <div className="trait-editor">
           <div className="preview-panel"><PetArtwork traits={traits} size={190} /><span><strong>이런 모습으로<br />집에 놀러 와요</strong><small>특징이 다르면 아래에서 바꿔주세요</small></span></div>
-          <label>강아지 이름 <small>선택</small><input value={name} maxLength={12} onChange={(e) => setName(e.target.value)} placeholder="예: 보리" /></label>
+          <label>강아지 이름 <small>선택 · {petNameLength(name)}/4</small><input value={name} maxLength={4} onChange={(e) => setName(limitPetName(e.target.value))} placeholder="예: 보리" aria-describedby="pet-name-help" /><span className="input-help" id="pet-name-help">네 글자까지 입력할 수 있어요.</span></label>
           <div className="select-grid">
             <label>귀 모양<select value={traits.earShape} onChange={(e) => update('earShape', e.target.value as EarShape)}><option value="floppy">접힌 귀</option><option value="upright">쫑긋 귀</option><option value="semi">반쯤 쫑긋</option></select></label>
             <label>주 털색<select value={traits.baseColor} onChange={(e) => update('baseColor', e.target.value as CoatColor)}><option value="cream">크림</option><option value="caramel">갈색</option><option value="chocolate">초콜릿</option><option value="black">검정</option><option value="gray">회색</option><option value="white">흰색</option></select></label>
