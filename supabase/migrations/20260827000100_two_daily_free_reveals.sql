@@ -1,18 +1,5 @@
-create table if not exists public.upload_rewards (
-  id uuid primary key default gen_random_uuid(),
-  owner_hash text not null,
-  reward_date date not null,
-  pet_id uuid not null references public.pets(id),
-  created_at timestamptz not null default now(),
-  used_at timestamptz,
-  unique(owner_hash, reward_date),
-  unique(pet_id)
-);
-
-create index if not exists upload_rewards_owner_day_idx
-  on public.upload_rewards(owner_hash, reward_date, used_at);
-
-alter table public.upload_rewards enable row level security;
+-- 매일 KST 기준 무료 만남 2회를 제공한다. 사용하지 않은 횟수는 다음 날로 이월되지 않는다.
+drop index if exists public.reveals_one_free_idx;
 
 create or replace function public.record_pet_reveal(
   p_owner_hash text,
@@ -27,6 +14,7 @@ set search_path = public
 as $$
 declare
   affected integer;
+  free_count integer;
   rewarded_count integer;
 begin
   perform pg_advisory_xact_lock(hashtextextended(p_owner_hash || ':' || p_reveal_date::text, 0));
@@ -40,13 +28,22 @@ begin
         and used_at is null;
     get diagnostics affected = row_count;
     if affected <> 1 then raise exception 'UPLOAD_REWARD_UNAVAILABLE'; end if;
+  elsif p_unlock_method = 'FREE' then
+    select count(*) into free_count
+      from public.daily_reveals
+      where owner_hash = p_owner_hash
+        and reveal_date = p_reveal_date
+        and unlock_method = 'FREE';
+    if free_count >= 2 then raise exception 'FREE_LIMIT_REACHED'; end if;
   elsif p_unlock_method = 'REWARDED' then
     if p_ad_session_id is null then raise exception 'AD_SESSION_REQUIRED'; end if;
     select count(*) into rewarded_count
       from public.daily_reveals
-      where owner_hash = p_owner_hash and reveal_date = p_reveal_date and unlock_method = 'REWARDED';
+      where owner_hash = p_owner_hash
+        and reveal_date = p_reveal_date
+        and unlock_method = 'REWARDED';
     if rewarded_count >= 2 then raise exception 'REWARDED_LIMIT_REACHED'; end if;
-  elsif p_unlock_method <> 'FREE' then
+  else
     raise exception 'INVALID_UNLOCK_METHOD';
   end if;
 
@@ -56,5 +53,7 @@ begin
 end;
 $$;
 
-revoke all on function public.record_pet_reveal(text,date,uuid,text,uuid) from public, anon, authenticated;
-grant execute on function public.record_pet_reveal(text,date,uuid,text,uuid) to service_role;
+revoke all on function public.record_pet_reveal(text,date,uuid,text,uuid)
+  from public, anon, authenticated;
+grant execute on function public.record_pet_reveal(text,date,uuid,text,uuid)
+  to service_role;

@@ -7,17 +7,13 @@ describe('getPetExpression', () => {
   });
 
   it('uses the planned expressions for the sample dogs', () => {
-    expect(getPetExpression('sample-bori')).toEqual({ browStyle: 'caterpillar', tongueShape: 'round' });
-    expect(getPetExpression('sample-mandu')).toEqual({ browStyle: 'none', tongueShape: 'drop' });
-    expect(getPetExpression('sample-kong')).toEqual({ browStyle: 'soft', tongueShape: 'side' });
-    expect(getPetExpression('sample-dubu')).toEqual({ browStyle: 'angled', tongueShape: 'wide' });
-    expect(getPetExpression('sample-maru')).toEqual({ browStyle: 'soft', tongueShape: 'round' });
+    expect(getPetExpression('sample-haneul')).toEqual({ browStyle: 'none', tongueShape: 'wide' });
+    expect(getPetExpression('sample-gureumi')).toEqual({ browStyle: 'soft', tongueShape: 'round' });
   });
 
-  it('covers all planned brow and tongue variants across the sample dogs', () => {
-    const expressions = ['sample-bori', 'sample-mandu', 'sample-kong', 'sample-dubu', 'sample-maru'].map(getPetExpression);
-    expect(new Set(expressions.map(({ browStyle }) => browStyle))).toEqual(new Set(['none', 'soft', 'caterpillar', 'angled']));
-    expect(new Set(expressions.map(({ tongueShape }) => tongueShape))).toEqual(new Set(['drop', 'round', 'wide', 'side']));
+  it('keeps the same expressions after the initial dogs are seeded with UUIDs', () => {
+    expect(getPetExpression('d5e1c8c1-4d66-4c6e-a0fe-2dc98c9bf003')).toEqual(getPetExpression('sample-haneul'));
+    expect(getPetExpression('d5e1c8c1-4d66-4c6e-a0fe-2dc98c9bf001')).toEqual(getPetExpression('sample-gureumi'));
   });
 
   it('falls back safely when a preview has no pet id yet', () => {

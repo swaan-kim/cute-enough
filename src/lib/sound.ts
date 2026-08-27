@@ -4,7 +4,16 @@ const SOUND_ENABLED_KEY = 'cute-enough:sound-enabled';
 
 let audioContext: AudioContext | undefined;
 
+const SAMPLE_SOUND_VARIANTS: Readonly<Record<string, 0 | 1 | 2>> = {
+  'sample-haneul': 1,
+  'd5e1c8c1-4d66-4c6e-a0fe-2dc98c9bf003': 1,
+  'sample-gureumi': 2,
+  'd5e1c8c1-4d66-4c6e-a0fe-2dc98c9bf001': 2,
+};
+
 export function getPetSoundVariant(petId: string): 0 | 1 | 2 {
+  const sampleVariant = SAMPLE_SOUND_VARIANTS[petId];
+  if (sampleVariant !== undefined) return sampleVariant;
   let hash = 2166136261;
   for (const character of petId) {
     hash ^= character.charCodeAt(0);

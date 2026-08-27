@@ -1,6 +1,6 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { DogAvatar } from './DogAvatar';
+import { COAT_COLOR_HEX, DogAvatar, EAR_VISUAL_SPECS, getEarVisualSpec } from './DogAvatar';
 import type { PetTraitsV1 } from '../types';
 
 const traits: PetTraitsV1 = {
@@ -26,5 +26,101 @@ describe('DogAvatar expressions', () => {
     expect(container.querySelector('[data-brow-style="caterpillar"]')).toBeInTheDocument();
     expect(container.querySelector('[data-tongue-shape="side"]')).toBeInTheDocument();
     expect(container.querySelector('.dog-tongue--side')).toBeInTheDocument();
+  });
+
+  it('renders a curated signature without changing ordinary dogs', () => {
+    const curated = render(<DogAvatar traits={traits} signature="sky-bandana" />);
+    expect(curated.container.querySelector('[data-pet-signature="sky-bandana"]')).toBeInTheDocument();
+    curated.unmount();
+
+    const ordinary = render(<DogAvatar traits={traits} />);
+    expect(ordinary.container.querySelector('[data-pet-signature]')).not.toBeInTheDocument();
+  });
+
+  it('uses the Haneul and Gureumi reference specs for ordinary upright and floppy ears', () => {
+    expect(getEarVisualSpec('floppy')).toBe(EAR_VISUAL_SPECS.floppy);
+    expect(getEarVisualSpec('floppy', 'high-floppy')).toBe(EAR_VISUAL_SPECS.floppy);
+    expect(getEarVisualSpec('upright')).toBe(EAR_VISUAL_SPECS.upright);
+    expect(getEarVisualSpec('upright', 'soft-upright')).toBe(EAR_VISUAL_SPECS.upright);
+
+    const upright = render(<DogAvatar traits={{ ...traits, earShape: 'upright' }} />);
+    const uprightEars = upright.container.querySelector('[data-ear-shape="upright"]');
+    expect(uprightEars).toHaveAttribute('data-ear-family', 'haneul');
+    expect(uprightEars).toHaveAttribute('data-ear-layer', 'back');
+    expect(uprightEars?.querySelector('[data-ear-part="left-fill"]')).toHaveAttribute('d', EAR_VISUAL_SPECS.upright.leftPath);
+    upright.unmount();
+
+    const floppy = render(<DogAvatar traits={traits} />);
+    const floppyEars = floppy.container.querySelector('[data-ear-shape="floppy"]');
+    expect(floppyEars).toHaveAttribute('data-ear-family', 'gureumi');
+    expect(floppyEars).toHaveAttribute('data-ear-layer', 'front');
+    expect(floppyEars?.querySelector('[data-ear-part="left-fill"]')).toHaveAttribute('d', EAR_VISUAL_SPECS.floppy.leftPath);
+    expect(floppyEars?.querySelector('[data-ear-part="left-fill"]')).toHaveAttribute('transform', expect.stringContaining('scale(.85)'));
+  });
+
+  it('keeps Gureumi white ears and Haneul hairpin as curated-only details', () => {
+    const ordinary = render(<DogAvatar traits={traits} />);
+    expect(ordinary.container.querySelector('[data-ear-shape="floppy"]')).toHaveAttribute('fill', COAT_COLOR_HEX.caramel);
+    expect(ordinary.container.querySelector('[data-pet-signature]')).not.toBeInTheDocument();
+    ordinary.unmount();
+
+    const gureumi = render(<DogAvatar traits={traits} signature="sky-bandana" earVariant="high-floppy" />);
+    expect(gureumi.container.querySelector('[data-ear-variant="high-floppy"]')).toHaveAttribute('fill', COAT_COLOR_HEX.white);
+    expect(gureumi.container.querySelector('[data-pet-signature="sky-bandana"]')).toBeInTheDocument();
+    gureumi.unmount();
+
+    const haneul = render(<DogAvatar traits={{ ...traits, earShape: 'upright' }} signature="peach-hairpin" earVariant="soft-upright" />);
+    expect(haneul.container.querySelector('[data-pet-signature="peach-hairpin"]')).toBeInTheDocument();
+    expect(haneul.container.querySelector('[data-ear-variant="soft-upright"]')).toHaveAttribute('data-ear-layer', 'back');
+  });
+
+  it('uses open attachment outlines on front ears so the forehead has no doubled seam', () => {
+    const { container } = render(<DogAvatar traits={traits} size={114} />);
+    const ears = container.querySelector('[data-ear-shape="floppy"]');
+    const headOutline = container.querySelector('[data-head-outline]');
+
+    if (!(ears && headOutline)) throw new Error('front ear layers should render');
+    expect(ears).toHaveAttribute('data-ear-seam', 'open-attachment');
+    expect(ears.querySelector('[data-ear-part="left-fill"]')).toHaveAttribute('stroke', 'none');
+    expect(ears.querySelector('[data-ear-part="left-outline"]')?.getAttribute('d')).not.toMatch(/Z$/);
+    expect(headOutline.compareDocumentPosition(ears) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('derives semi ears from Haneul and compact rounded ears from Gureumi', () => {
+    const semi = render(<DogAvatar traits={{ ...traits, earShape: 'semi' }} />);
+    const semiEars = semi.container.querySelector('[data-ear-shape="semi"]');
+    expect(semiEars).toHaveAttribute('data-ear-family', 'haneul');
+    expect(semiEars).toHaveAttribute('data-ear-layer', 'back');
+    expect(semiEars?.querySelector('[data-ear-part="left-fold"]')).toBeInTheDocument();
+    semi.unmount();
+
+    const { container } = render(<DogAvatar traits={{ ...traits, earShape: 'rounded' }} size={114} />);
+    const ears = container.querySelector('[data-ear-shape="rounded"]');
+    const headOutline = container.querySelector('[data-head-outline]');
+
+    if (!(ears && headOutline)) throw new Error('rounded ear layers should render');
+    expect(ears).toHaveAttribute('data-ear-family', 'gureumi');
+    expect(ears).toHaveAttribute('data-ear-layer', 'front');
+    expect(ears.querySelector('[data-ear-part="left-fill"]')).toHaveAttribute('d', EAR_VISUAL_SPECS.rounded.leftPath);
+    expect(ears.querySelector('[data-ear-part="left-fill"]')).toHaveAttribute('d', expect.stringContaining('M65 34'));
+    expect(headOutline.compareDocumentPosition(ears) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('clips photo-inspired markings to the face boundary', () => {
+    const { container } = render(<DogAvatar traits={{ ...traits, earShape: 'rounded', markingPattern: 'blaze' }} size={114} />);
+    const markings = container.querySelector('[data-head-markings]');
+
+    expect(markings).toHaveAttribute('clip-path', expect.stringMatching(/^url\(#dog-head-/));
+    const blaze = markings?.querySelector('[data-marking-pattern="blaze"]');
+    expect(blaze).toHaveAttribute('d', 'M90 16 C82 23 82 31 84.5 36 C86 39 88 41 90 43 C92 41 94 39 95.5 36 C98 31 98 23 90 16Z');
+    expect(blaze?.getAttribute('d')).not.toContain('70');
+  });
+
+  it('repairs legacy same-color visible markings at the render boundary', () => {
+    const { container } = render(<DogAvatar traits={{ ...traits, baseColor: 'white', secondaryColor: 'white', markingPattern: 'blaze' }} />);
+
+    expect(container.querySelector('[data-head-fill]')).toHaveAttribute('fill', COAT_COLOR_HEX.white);
+    expect(container.querySelector('[data-marking-pattern="blaze"]')).toHaveAttribute('fill', COAT_COLOR_HEX.caramel);
+    expect(container.querySelector('[data-ear-shape="floppy"]')).toHaveAttribute('fill', COAT_COLOR_HEX.caramel);
   });
 });

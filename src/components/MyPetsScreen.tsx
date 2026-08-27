@@ -3,19 +3,20 @@ import type { OwnedPetSummary, PetStatus } from '../types';
 import { PetArtwork } from './PetArtwork';
 
 const STATUS_COPY: Record<PetStatus, { label: string; description: string }> = {
-  pending: { label: '검수 중', description: '공유 링크에서는 캐릭터만 먼저 볼 수 있어요.' },
-  approved: { label: '승인됨', description: '다른 친구들의 집에도 놀러 갈 수 있어요.' },
+  pending: { label: '검수 중', description: '내 집과 공유 링크에서 캐릭터를 먼저 만날 수 있어요.' },
+  approved: { label: '승인됨', description: '이제 다른 사람의 집에도 놀러 갈 수 있어요.' },
   rejected: { label: '등록 보류', description: '현재 다른 사람에게 공개되지 않아요.' },
   paused: { label: '공개 중지', description: '확인을 위해 공개가 잠시 멈췄어요.' },
   deleted: { label: '삭제됨', description: '삭제된 사진이에요.' },
 };
 
-export function MyPetsScreen({ pets, loading, error, onRetry, onUpload, onShare }: {
+export function MyPetsScreen({ pets, loading, error, onRetry, onUpload, onMeet, onShare }: {
   pets: OwnedPetSummary[];
   loading: boolean;
   error: string;
   onRetry: () => void;
   onUpload: () => void;
+  onMeet: (pet: OwnedPetSummary) => void;
   onShare: (pet: OwnedPetSummary) => void;
 }) {
   return (
@@ -42,7 +43,10 @@ export function MyPetsScreen({ pets, loading, error, onRetry, onUpload, onShare 
                     <p>{copy.description}</p>
                     {pet.rejectionReason && <small>{pet.rejectionReason}</small>}
                   </div>
-                  {canShare && <Button className="my-pet-share" size="small" color="dark" variant="weak" onClick={() => onShare(pet)}>공유</Button>}
+                  {canShare && <div className="my-pet-actions">
+                    <Button size="small" onClick={() => onMeet(pet)}>만나기</Button>
+                    <Button size="small" color="dark" variant="weak" onClick={() => onShare(pet)}>공유</Button>
+                  </div>}
                 </article>;
               })}
             </section>}

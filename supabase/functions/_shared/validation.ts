@@ -1,19 +1,24 @@
 import { ApiError } from './api-error.ts';
+import {
+  isPetTraitColorContrastValid,
+  PET_COAT_COLORS,
+  type PetTraitColorFields,
+} from './pet-trait-colors.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UNSAFE_NAME = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/gu;
 const ALLOWED_NAME = /^[\p{L}\p{N} ]*$/u;
 const BLOCKED_NAMES = ['관리자', '운영자', '토스', '시발', '씨발', '병신', '개새끼', 'fuck', 'sex'];
 const TRAIT_ENUMS = {
-  earShape: ['floppy', 'upright', 'semi'],
+  earShape: ['floppy', 'upright', 'semi', 'rounded'],
   headShape: ['round', 'oval', 'long'],
-  baseColor: ['cream', 'caramel', 'chocolate', 'black', 'gray', 'white'],
-  secondaryColor: ['cream', 'caramel', 'chocolate', 'black', 'gray', 'white'],
+  baseColor: PET_COAT_COLORS,
+  secondaryColor: PET_COAT_COLORS,
   markingPattern: ['none', 'brow', 'mask', 'blaze', 'spots'],
   muzzle: ['short', 'medium', 'long'],
 } as const;
 
-export const PET_API_ACTIONS = ['house', 'shared', 'mine', 'reveal', 'submit', 'report', 'delete'] as const;
+export const PET_API_ACTIONS = ['house', 'shared', 'mine', 'reveal', 'submit', 'report'] as const;
 export type PetApiAction = typeof PET_API_ACTIONS[number];
 
 function graphemeLength(value: string): number {
@@ -65,6 +70,9 @@ export function requirePetTraits(value: unknown): Record<string, unknown> {
   }
   if (typeof traits.confidence !== 'number' || !Number.isFinite(traits.confidence) || traits.confidence < 0 || traits.confidence > 1) {
     throw new ApiError('INVALID_TRAITS', 400, '캐릭터 특징을 다시 확인해 주세요.');
+  }
+  if (!isPetTraitColorContrastValid(traits as unknown as PetTraitColorFields)) {
+    throw new ApiError('INVALID_TRAIT_COLOR_CONTRAST', 400, '얼굴 무늬와 다른 포인트 털색을 골라 주세요.');
   }
   return traits;
 }

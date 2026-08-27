@@ -1,3 +1,4 @@
+-- Limit user-visible pet names to four characters.
 alter table public.pets drop constraint if exists pets_name_check;
 
 alter table public.pets

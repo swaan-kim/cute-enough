@@ -1,3 +1,4 @@
+-- Add server-side request rate limiting.
 create table if not exists public.pet_api_rate_limits (
   owner_hash text not null,
   action text not null check (action in ('house', 'shared', 'mine', 'reveal', 'submit', 'report', 'delete')),

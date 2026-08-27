@@ -1,5 +1,6 @@
 import type { PetSummary, PetTraitsV1 } from '../types';
 import { getPetArtwork } from '../data/petArtwork';
+import { getPetEarVariant, getPetSignature } from '../data/petSignature';
 import { getPetExpression } from '../lib/petExpression';
 import { DogAvatar } from './DogAvatar';
 
@@ -33,6 +34,8 @@ export function PetArtwork({ pet, traits, name, size, active, eating, panting, h
     <DogAvatar
       traits={resolvedTraits}
       expression={getPetExpression(pet?.id)}
+      signature={getPetSignature(pet?.id)}
+      earVariant={getPetEarVariant(pet?.id)}
       name={pet?.name ?? name}
       size={size}
       active={active}

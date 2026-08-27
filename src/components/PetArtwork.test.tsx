@@ -26,4 +26,20 @@ describe('PetArtwork expressions', () => {
     expect(container.querySelector('[data-brow-style]')).not.toBeInTheDocument();
     expect(container.querySelector('[data-tongue-shape]')).not.toBeInTheDocument();
   });
+
+  it('adds a signature only to allowlisted trait artwork', () => {
+    const curated = render(<PetArtwork pet={{ ...illustratedPet, id: 'sample-gureumi', illustrationUrl: undefined }} size={114} />);
+    expect(curated.container.querySelector('[data-pet-signature="sky-bandana"]')).toBeInTheDocument();
+    expect(curated.container.querySelector('[data-ear-variant="high-floppy"]')).toBeInTheDocument();
+    curated.unmount();
+
+    const uploaded = render(<PetArtwork pet={{ ...illustratedPet, id: 'uploaded-dog', illustrationUrl: undefined }} size={114} />);
+    expect(uploaded.container.querySelector('[data-pet-signature]')).not.toBeInTheDocument();
+    expect(uploaded.container.querySelector('[data-ear-variant]')).not.toBeInTheDocument();
+  });
+
+  it('does not overlay a signature on finished curated artwork', () => {
+    const { container } = render(<PetArtwork pet={{ ...illustratedPet, id: 'sample-gureumi' }} size={114} />);
+    expect(container.querySelector('[data-pet-signature]')).not.toBeInTheDocument();
+  });
 });

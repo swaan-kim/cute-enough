@@ -1,3 +1,4 @@
+-- Add the upload-based daily unlock method.
 alter table public.daily_reveals
   drop constraint if exists daily_reveals_unlock_method_check;
 alter table public.daily_reveals

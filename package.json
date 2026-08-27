@@ -3,20 +3,24 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build:web": "node scripts/validate-release.mjs preview && tsc -b && vite build --mode preview && node scripts/prune-build-assets.mjs",
+    "build:web": "node scripts/validate-release.mjs preview && tsc -b && vite build --mode preview && node scripts/prune-build-assets.mjs preview && node scripts/assert-no-ait-devtools.mjs",
     "build": "npm run build:preview",
-    "build:preview": "node scripts/validate-release.mjs preview && vite build --mode preview && node scripts/prune-build-assets.mjs && ait build",
-    "build:private": "node scripts/validate-release.mjs private && vite build --mode private && node scripts/prune-build-assets.mjs && ait build",
-    "build:production": "node scripts/validate-release.mjs production && vite build --mode production && node scripts/prune-build-assets.mjs && ait build",
+    "build:preview": "node scripts/validate-release.mjs preview && vite build --mode preview && node scripts/prune-build-assets.mjs preview && node scripts/assert-no-ait-devtools.mjs && ait build",
+    "build:private": "node scripts/validate-release.mjs private && vite build --mode private && node scripts/prune-build-assets.mjs private && node scripts/assert-no-ait-devtools.mjs && ait build",
+    "build:production": "node scripts/validate-release.mjs production && vite build --mode production && node scripts/prune-build-assets.mjs production && node scripts/assert-no-ait-devtools.mjs && ait build",
     "deploy": "npm run build:production && ait deploy",
     "test": "vitest run --configLoader runner",
     "test:watch": "vitest --configLoader runner",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -b --pretty false",
+    "seed:initial-pets": "node scripts/seed-initial-pets.mjs"
   },
   "dependencies": {
-    "@apps-in-toss/web-framework": "3.0.5",
+    "@apps-in-toss/web-framework": "3.1.1",
     "@emotion/react": "^11.14.0",
     "@supabase/supabase-js": "^2.57.4",
     "@toss/tds-mobile": "^2.5.1",
@@ -26,7 +30,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@apps-in-toss/devtools": "3.0.5",
+    "@apps-in-toss/devtools": "3.1.1",
     "@testing-library/jest-dom": "^6.8.0",
     "@testing-library/react": "^16.3.0",
     "@types/react": "^18.3.24",

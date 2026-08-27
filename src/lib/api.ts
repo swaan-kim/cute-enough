@@ -2,7 +2,11 @@ import { createClient } from '@supabase/supabase-js';
 import { SAMPLE_PETS } from '../data/samplePets';
 import type { HouseResult, OwnedPetSummary, PetSummary, PetTraitsV1, RevealResult, SharedPetResult, SubmitPetResult, UnlockMethod } from '../types';
 import { consumeAllowance, readAllowance, saveAllowance } from './allowance';
+import { composeHousePets, orderDailyPets } from './housePets';
+import { findPreviewSubmission, markPreviewPetRevealed, readPreviewMyPets, readPreviewRevealedPetIds, savePreviewSubmission } from './previewPetStore';
 import { isPreviewRuntime } from './runtime';
+import { hasPetPhoto, selectPetPhotoUrl } from './petPhoto';
+import { normalizePetTraitColors } from './petTraits';
 import { getUserHash } from './toss';
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -40,75 +44,113 @@ async function invokePetApi<T>(body: Record<string, unknown>): Promise<T> {
   return data as T;
 }
 
-function shuffled<T>(items: T[]): T[] {
-  return [...items].sort(() => Math.random() - 0.5);
+function normalizePetSummaryColors<T extends PetSummary>(pet: T): T {
+  const traits = normalizePetTraitColors(pet.traits);
+  return traits === pet.traits ? pet : { ...pet, traits };
 }
 
-const PREVIEW_UPLOAD_KEY = 'cute-enough:preview-upload';
-const PREVIEW_MY_PETS_KEY = 'cute-enough:preview-my-pets';
-
-function readPreviewUpload(): PetSummary | undefined {
-  try { return JSON.parse(localStorage.getItem(PREVIEW_UPLOAD_KEY) ?? 'null') as PetSummary | undefined; }
-  catch { return undefined; }
-}
-
-function readPreviewMyPets(): OwnedPetSummary[] {
-  try { return JSON.parse(localStorage.getItem(PREVIEW_MY_PETS_KEY) ?? '[]') as OwnedPetSummary[]; }
-  catch { return []; }
+function normalizeSubmitResultColors(result: SubmitPetResult): SubmitPetResult {
+  const pet = normalizePetSummaryColors(result.pet);
+  return pet === result.pet ? result : { ...result, pet };
 }
 
 export async function fetchHouse(): Promise<HouseResult> {
   if (isPreviewRuntime) {
     const allowance = readAllowance();
-    const savedPet = readPreviewUpload();
-    const rewardPet = allowance.uploadCredit && !allowance.uploadUsed && allowance.uploadRewardPetId === savedPet?.id ? savedPet : undefined;
-    const pool: PetSummary[] = shuffled(SAMPLE_PETS).slice(0, rewardPet ? 4 : 5).map((pet) => ({ ...pet, approvalStatus: 'approved', shareable: true }));
-    if (rewardPet) pool.splice(2, 0, rewardPet);
-    return { pets: pool, allowance };
+    const viewerKey = await getUserHash();
+    const revealedIds = readPreviewRevealedPetIds(allowance.date);
+    const mine = readPreviewMyPets().map((pet) => normalizePetSummaryColors({ ...pet, revealedToday: revealedIds.has(pet.id) }));
+    const publicPets = orderDailyPets(SAMPLE_PETS, viewerKey, allowance.date).map((pet) => ({
+      ...normalizePetSummaryColors(pet),
+      approvalStatus: 'approved' as const,
+      shareable: true,
+      revealedToday: revealedIds.has(pet.id),
+    }));
+    return { pets: composeHousePets(mine, publicPets), allowance };
   }
-  return invokePetApi<HouseResult>({ action: 'house' });
+  const result = await invokePetApi<HouseResult>({ action: 'house' });
+  return { ...result, pets: result.pets.map(normalizePetSummaryColors).filter(hasPetPhoto) };
 }
 
 export async function fetchSharedPet(petId: string): Promise<SharedPetResult> {
   if (isPreviewRuntime) {
-    const pet = SAMPLE_PETS.find((item) => item.id === petId) ?? readPreviewMyPets().find((item) => item.id === petId);
+    const owned = readPreviewMyPets().find((item) => item.id === petId);
+    const pet = SAMPLE_PETS.find((item) => item.id === petId) ?? owned;
     if (!pet) throw new Error('이 친구는 지금 만날 수 없어요.');
-    return { pet: { ...pet, approvalStatus: pet.approvalStatus ?? 'approved', shareable: true }, allowance: readAllowance() };
+    const allowance = readAllowance();
+    return {
+      pet: normalizePetSummaryColors({
+        ...pet,
+        isMine: Boolean(owned),
+        ownerPinned: Boolean(owned),
+        approvalStatus: pet.approvalStatus ?? 'approved',
+        shareable: true,
+        revealedToday: readPreviewRevealedPetIds(allowance.date).has(pet.id),
+      }),
+      allowance,
+    };
   }
-  return invokePetApi<SharedPetResult>({ action: 'shared', petId });
+  const result = await invokePetApi<SharedPetResult>({ action: 'shared', petId });
+  return { ...result, pet: normalizePetSummaryColors(result.pet) };
 }
 
 export async function fetchMyPets(): Promise<OwnedPetSummary[]> {
-  if (isPreviewRuntime) return readPreviewMyPets();
+  if (isPreviewRuntime) return readPreviewMyPets().map(normalizePetSummaryColors);
   const data = await invokePetApi<{ pets: OwnedPetSummary[] }>({ action: 'mine' });
-  return data.pets;
+  return data.pets.map(normalizePetSummaryColors);
 }
 
 export async function revealPet(pet: PetSummary, method: UnlockMethod, adSessionId?: string): Promise<RevealResult> {
   if (isPreviewRuntime) {
-    const allowance = consumeAllowance(readAllowance(), method);
+    const current = readAllowance();
+    const viewerKey = await getUserHash();
+    const photoUrl = selectPetPhotoUrl(pet, current.date, viewerKey);
+    if (!photoUrl) throw new Error('이 친구의 사진을 불러오지 못했어요.');
+    const allowance = consumeAllowance(current, method);
     saveAllowance(allowance);
-    if (method === 'UPLOAD') localStorage.removeItem(PREVIEW_UPLOAD_KEY);
-    return { photoUrl: pet.photoUrl!, signedUrlExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), allowance };
+    markPreviewPetRevealed(pet.id, allowance.date);
+    return { photoUrl, signedUrlExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), allowance };
   }
   return invokePetApi<RevealResult>({ action: 'reveal', petId: pet.id, unlockMethod: method, adSessionId });
 }
 
-export async function submitPet(input: { dataUri: string; name?: string; traits: PetTraitsV1 }): Promise<SubmitPetResult> {
+/** 오늘 이미 공개한 같은 사진을 이용권 차감 없이 다시 연다. */
+export async function reopenPet(pet: PetSummary): Promise<RevealResult> {
   if (isPreviewRuntime) {
+    const allowance = readAllowance();
+    if (!readPreviewRevealedPetIds(allowance.date).has(pet.id)) {
+      throw new Error('오늘 만난 사진만 다시 볼 수 있어요.');
+    }
+    const viewerKey = await getUserHash();
+    const photoUrl = selectPetPhotoUrl(pet, allowance.date, viewerKey);
+    if (!photoUrl) throw new Error('이 친구의 사진을 불러오지 못했어요.');
+    return {
+      photoUrl,
+      signedUrlExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      allowance,
+    };
+  }
+  return invokePetApi<RevealResult>({ action: 'reveal', petId: pet.id, revisit: true });
+}
+
+export async function submitPet(input: { submissionId: string; dataUri: string; name?: string; traits: PetTraitsV1 }): Promise<SubmitPetResult> {
+  const normalizedInput = { ...input, traits: normalizePetTraitColors(input.traits) };
+  if (isPreviewRuntime) {
+    const existing = findPreviewSubmission(normalizedInput.submissionId);
+    if (existing) return normalizeSubmitResultColors(existing);
     await new Promise((resolve) => setTimeout(resolve, 600));
     const pet: PetSummary = {
-      id: crypto.randomUUID(), name: input.name, traits: input.traits, photoUrl: input.dataUri,
-      ownerPinned: true, approvalStatus: 'pending', shareable: true,
+      id: crypto.randomUUID(), name: normalizedInput.name, traits: normalizedInput.traits, photoUrl: normalizedInput.dataUri,
+      isMine: true, ownerPinned: true, approvalStatus: 'pending', shareable: true,
     };
     const current = readAllowance();
     const rewardGranted = !current.uploadCredit;
-    if (rewardGranted) localStorage.setItem(PREVIEW_UPLOAD_KEY, JSON.stringify(pet));
-    const mine: OwnedPetSummary = { ...pet, approvalStatus: 'pending', createdAt: new Date().toISOString() };
-    localStorage.setItem(PREVIEW_MY_PETS_KEY, JSON.stringify([mine, ...readPreviewMyPets()]));
-    return { pet, rewardGranted, uploadRewardPetId: rewardGranted ? pet.id : undefined };
+    const result = { pet, rewardGranted, uploadRewardPetId: rewardGranted ? pet.id : undefined };
+    savePreviewSubmission(normalizedInput.submissionId, result);
+    return result;
   }
-  return invokePetApi<SubmitPetResult>({ action: 'submit', ...input });
+  const result = await invokePetApi<SubmitPetResult>({ action: 'submit', ...normalizedInput });
+  return normalizeSubmitResultColors(result);
 }
 
 export async function reportPet(petId: string, reason = 'inappropriate'): Promise<void> {

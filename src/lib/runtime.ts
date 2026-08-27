@@ -1,7 +1,9 @@
 export type AppRuntimeEnvironment = 'preview' | 'private' | 'production';
 
 function environmentFromHost(hostname: string): AppRuntimeEnvironment {
+  if (hostname === 'cute-enough.private-web.tossmini.com') return 'private';
   if (hostname === 'cute-enough.private-apps.tossmini.com') return 'private';
+  if (hostname === 'cute-enough.web.tossmini.com') return 'production';
   if (hostname === 'cute-enough.apps.tossmini.com') return 'production';
   return 'preview';
 }

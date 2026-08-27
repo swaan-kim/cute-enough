@@ -1,6 +1,9 @@
 import {
   Device,
+  getPermission,
   getSchemeUri,
+  openPermissionDialog,
+  requestPermission,
   User,
   Share,
 } from '@apps-in-toss/web-framework';
@@ -20,8 +23,8 @@ export async function getUserHash(): Promise<string> {
   } catch (error) {
     if (!isPreviewRuntime) {
       const code = bridgeErrorCode(error);
-      if (code === 'UNSUPPORTED_APP_VERSION') throw new Error('토스앱을 최신 버전으로 업데이트한 뒤 다시 시도해 주세요.');
-      if (code === 'INVALID_CATEGORY') throw new Error('앱 설정을 확인하고 있어요. 잠시 뒤 다시 시도해 주세요.');
+      if (hasBridgeErrorCode(code, 'UNSUPPORTED_APP_VERSION')) throw new Error('토스앱을 최신 버전으로 업데이트한 뒤 다시 시도해 주세요.');
+      if (hasBridgeErrorCode(code, 'INVALID_CATEGORY')) throw new Error('앱 설정을 확인하고 있어요. 잠시 뒤 다시 시도해 주세요.');
       throw new Error('사용자 정보를 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.');
     }
   }
@@ -33,17 +36,37 @@ export async function getUserHash(): Promise<string> {
   return preview;
 }
 
+const photoPermission = { name: 'photos', access: 'read' } as const;
+
+async function ensurePhotoPermission(): Promise<void> {
+  const current = await getPermission(photoPermission);
+  if (current === 'allowed') return;
+
+  const result = current === 'notDetermined'
+    ? await requestPermission(photoPermission)
+    : await openPermissionDialog(photoPermission);
+  if (result !== 'allowed') throw new Error('NOT_ALLOWED');
+}
+
 export async function pickOnePhoto(): Promise<string | null> {
   try {
     if (!Device.getAlbumItems.isSupported()) throw new Error('UNSUPPORTED_APP_VERSION');
+    await ensurePhotoPermission();
     const items = await Device.getAlbumItems({ types: ['PHOTO'], maxCount: 1, maxWidth: 2048, base64: true });
     return items[0]?.dataUri ?? null;
   } catch (error) {
     const code = bridgeErrorCode(error);
-    if (code === 'CANCELED' || code === 'CANCELLED' || code === 'USER_CANCELED') return null;
+    if (hasBridgeErrorCode(code, 'CANCELED') || hasBridgeErrorCode(code, 'CANCELLED') || hasBridgeErrorCode(code, 'USER_CANCELED')) return null;
     if (!isPreviewRuntime) {
-      if (code === 'UNSUPPORTED_APP_VERSION') throw new Error('사진 선택을 사용하려면 토스앱을 최신 버전으로 업데이트해 주세요.');
-      if (code.includes('PERMISSION') || code === 'DENIED') throw new Error('강아지 사진을 고르려면 사진 접근을 허용해 주세요.');
+      if (hasBridgeErrorCode(code, 'UNSUPPORTED_APP_VERSION')) throw new Error('사진 선택을 사용하려면 토스앱을 최신 버전으로 업데이트해 주세요.');
+      if (
+        hasBridgeErrorCode(code, 'NOT_ALLOWED')
+        || hasBridgeErrorCode(code, 'NOTALLOWEDERROR')
+        || hasBridgeErrorCode(code, 'PERMISSION')
+        || hasBridgeErrorCode(code, 'DENIED')
+      ) throw new Error('강아지 사진을 고르려면 사진 접근을 허용해 주세요.');
+      if (hasBridgeErrorCode(code, 'INVALID_REQUEST')) throw new Error('사진 선택 요청을 처리하지 못했어요. 앱을 다시 열고 시도해 주세요.');
+      if (hasBridgeErrorCode(code, 'INVALID_DATA')) throw new Error('선택한 사진을 읽지 못했어요. 다른 사진을 골라 주세요.');
       throw new Error('사진을 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.');
     }
   }
@@ -66,7 +89,15 @@ export async function pickOnePhoto(): Promise<string | null> {
 function bridgeErrorCode(error: unknown): string {
   if (!error || typeof error !== 'object') return String(error ?? '').toUpperCase();
   const candidate = error as { code?: unknown; name?: unknown; message?: unknown };
-  return String(candidate.code ?? candidate.name ?? candidate.message ?? '').toUpperCase();
+  return [candidate.code, candidate.message, candidate.name]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => value.toUpperCase())
+    .join('|');
+}
+
+function hasBridgeErrorCode(details: string, expected: string): boolean {
+  const normalized = details.replace(/[\s-]+/g, '_');
+  return normalized.split('|').some((part) => part === expected || part.includes(expected));
 }
 
 export async function sharePet(petId: string, petName?: string): Promise<void> {

@@ -1,4 +1,5 @@
 import { ApiError } from './api-error.ts';
+import jpegJs from 'npm:jpeg-js@0.4.4';
 
 export async function hashUser(raw: string): Promise<string> {
   const salt = Deno.env.get('USER_HASH_SALT');
@@ -9,9 +10,11 @@ export async function hashUser(raw: string): Promise<string> {
 }
 
 export function kstDate(now = new Date()): string {
-  return new Intl.DateTimeFormat('en-CA', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(now);
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '';
+  return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
 function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | undefined {
@@ -42,9 +45,18 @@ export function decodeDataUri(dataUri: unknown): { bytes: Uint8Array; mime: 'ima
   try { binary = atob(match[2]); }
   catch { throw new ApiError('INVALID_IMAGE', 400, '올바른 사진 파일이 아니에요.'); }
   if (binary.length > 4 * 1024 * 1024) throw new ApiError('IMAGE_TOO_LARGE', 413, '사진 용량이 너무 커요. 다른 사진을 골라주세요.');
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  const dimensions = jpegDimensions(bytes);
+  const sourceBytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  const dimensions = jpegDimensions(sourceBytes);
   if (!dimensions || dimensions.width < 1 || dimensions.height < 1) throw new ApiError('INVALID_IMAGE', 400, '올바른 사진 파일이 아니에요.');
   if (Math.max(dimensions.width, dimensions.height) > 1024) throw new ApiError('IMAGE_DIMENSIONS_TOO_LARGE', 413, '사진을 다시 골라 크기를 줄여주세요.');
-  return { bytes, mime: 'image/jpeg' };
+  try {
+    const decoded = jpegJs.decode(sourceBytes, { useTArray: true, formatAsRGBA: true, tolerantDecoding: false });
+    if (decoded.width !== dimensions.width || decoded.height !== dimensions.height) throw new Error('JPEG dimensions changed while decoding');
+    const normalized = jpegJs.encode({ data: decoded.data, width: decoded.width, height: decoded.height }, 82).data;
+    if (normalized.length > 2 * 1024 * 1024) throw new ApiError('IMAGE_TOO_LARGE', 413, '사진 용량이 너무 커요. 다른 사진을 골라주세요.');
+    return { bytes: normalized, mime: 'image/jpeg' };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError('INVALID_IMAGE', 400, '사진을 안전하게 처리하지 못했어요. 다른 사진을 골라주세요.');
+  }
 }

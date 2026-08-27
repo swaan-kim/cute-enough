@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { Asset, Top } from '@toss/tds-mobile';
 import type { SoundEffect } from '../lib/sound';
 import type { PetSummary } from '../types';
+import { withSubjectParticle } from '../lib/koreanCopy';
 import { PetArtwork } from './PetArtwork';
 
 type TreatId = 'sweet-potato' | 'bone' | 'meat';
@@ -36,6 +37,7 @@ export function PlayScene({ pet, onFed, onSound }: { pet: PetSummary; onFed: () 
   const [eating, setEating] = useState(false);
   const [greeting, setGreeting] = useState(true);
   const [petCount, setPetCount] = useState(0);
+  const petCountRef = useRef(0);
   const [dragGhost, setDragGhost] = useState<{ treatId: TreatId; x: number; y: number }>();
   const zoneRef = useRef<HTMLDivElement>(null);
   const treatDragRef = useRef<DragState>();
@@ -50,7 +52,7 @@ export function PlayScene({ pet, onFed, onSound }: { pet: PetSummary; onFed: () 
 
   const selected = TREATS.find((treat) => treat.id === selectedTreat);
   const hint = useMemo(() => {
-    if (phase === 'happy') return `${selected?.label ?? '간식'}을 맛있게 먹고 있어요`;
+    if (phase === 'happy') return `${selected?.objectLabel ?? '간식을'} 맛있게 먹고 있어요`;
     if (phase === 'petting') return '기분이 좋아졌어요. 머리를 살살 쓰다듬어 주세요';
     if (phase === 'done') return '마음이 전해졌어요';
     if (selected) return `${selected.objectLabel} 끌어주거나 강아지를 톡 눌러주세요`;
@@ -71,16 +73,15 @@ export function PlayScene({ pet, onFed, onSound }: { pet: PetSummary; onFed: () 
 
   function addPet() {
     if (phase !== 'petting' || completedRef.current) return;
-    setPetCount((count) => {
-      const next = Math.min(3, count + 1);
-      onSound('pet', next - 1);
-      if (next === 3) {
-        completedRef.current = true;
-        setPhase('done');
-        timersRef.current.push(setTimeout(onFed, 450));
-      }
-      return next;
-    });
+    const next = Math.min(3, petCountRef.current + 1);
+    petCountRef.current = next;
+    setPetCount(next);
+    onSound('pet', next - 1);
+    if (next === 3) {
+      completedRef.current = true;
+      setPhase('done');
+      timersRef.current.push(setTimeout(onFed, 450));
+    }
   }
 
   function startTreatDrag(event: ReactPointerEvent<HTMLButtonElement>, treatId: TreatId) {
@@ -154,7 +155,7 @@ export function PlayScene({ pet, onFed, onSound }: { pet: PetSummary; onFed: () 
         className="play-copy"
         upperGap={4}
         lowerGap={0}
-        title={<Top.TitleParagraph size={28}>{pet.name ?? '이 친구'}가 기다리고 있어요</Top.TitleParagraph>}
+        title={<Top.TitleParagraph size={28}>{withSubjectParticle(pet.name ?? '이 친구')} 기다리고 있어요</Top.TitleParagraph>}
         subtitleBottom={<Top.SubtitleParagraph><span aria-live="polite">{hint}</span></Top.SubtitleParagraph>}
       />
 
@@ -163,7 +164,7 @@ export function PlayScene({ pet, onFed, onSound }: { pet: PetSummary; onFed: () 
         ref={zoneRef}
         role="button"
         tabIndex={0}
-        aria-label={phase === 'petting' ? `${pet.name ?? '강아지'} 쓰다듬기, ${petCount}번 완료` : phase === 'done' ? `${pet.name ?? '강아지'}와 교감 완료` : selectedTreat ? `${pet.name ?? '강아지'}에게 간식 주기` : `${pet.name ?? '강아지'}`}
+        aria-label={phase === 'petting' ? `${pet.name ?? '강아지'} 쓰다듬기, ${petCount}번 완료` : phase === 'done' ? `${pet.name ?? '강아지'} 교감 완료` : selectedTreat ? `${pet.name ?? '강아지'}에게 간식 주기` : `${pet.name ?? '강아지'}`}
         onClick={useSelectedTreat}
         onKeyDown={(event) => {
           if (event.key !== 'Enter' && event.key !== ' ') return;

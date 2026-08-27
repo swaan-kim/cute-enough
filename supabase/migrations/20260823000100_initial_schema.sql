@@ -1,3 +1,4 @@
+-- Initial schema for pets, reveals, reports, and private photo storage.
 create extension if not exists pgcrypto;
 
 do $$ begin

@@ -12,3 +12,12 @@ coverage/
 .vite/
 .idea/
 .vercel/
+supabase/.temp/
+
+# Local deployment credentials and certificates
+pw.txt
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx

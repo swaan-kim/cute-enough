@@ -1,4 +1,4 @@
-export type EarShape = 'floppy' | 'upright' | 'semi';
+export type EarShape = 'floppy' | 'upright' | 'semi' | 'rounded';
 export type HeadShape = 'round' | 'oval' | 'long';
 export type MarkingPattern = 'none' | 'brow' | 'mask' | 'blaze' | 'spots';
 export type CoatColor = 'cream' | 'caramel' | 'chocolate' | 'black' | 'gray' | 'white';
@@ -27,11 +27,20 @@ export interface PetSummary {
   name?: string;
   traits: PetTraitsV1;
   photoUrl?: string;
+  /** 웹 미리보기에서만 쓰는 실사 묶음. 운영에서는 서버가 한 장을 골라 서명 URL만 반환해요. */
+  photoUrls?: string[];
+  /** 비공개 실사를 직접 내려주지 않는 운영 목록에서 서버가 확인한 사진 보유 여부. */
+  photoAvailable?: boolean;
   /** 전달받은 캐릭터 이미지 또는 CDN URL. 없으면 trait 기반 SVG가 표시돼요. */
   illustrationUrl?: string;
+  /** 현재 이 화면을 보는 사용자가 등록한 강아지인지 여부. */
+  isMine?: boolean;
+  /** 소유자의 집에서 우선 보여줄 강아지인지 여부. */
   ownerPinned?: boolean;
   approvalStatus?: PetStatus;
   shareable?: boolean;
+  /** 오늘 이미 실제 사진을 본 강아지인지 여부. */
+  revealedToday?: boolean;
 }
 
 export interface OwnedPetSummary extends PetSummary {
@@ -41,8 +50,17 @@ export interface OwnedPetSummary extends PetSummary {
 }
 
 export interface DailyAllowance {
+  /** 오늘의 강아지 목록을 고정하는 KST 날짜. 무료 이용권 충전 주기와는 별개다. */
   date: string;
-  freeUsed: boolean;
+  /**
+   * 구버전 클라이언트 호환 값. 현재는 `2 - remaining`으로 계산하며
+   * 자정 초기화가 아니라 3시간 충전 상태를 나타낸다.
+   */
+  freeUsed: number;
+  /** 지금 사용할 수 있는 기본 이용권. 최대 2개다. */
+  remaining?: number;
+  /** 이용권이 2개보다 적을 때 다음 1개가 충전되는 시각. */
+  nextChargeAt?: string;
   rewardedUsed: number;
   uploadCredit: boolean;
   uploadUsed: boolean;

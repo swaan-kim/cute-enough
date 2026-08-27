@@ -4,11 +4,10 @@ const BROW_STYLES: BrowStyle[] = ['none', 'soft', 'caterpillar', 'angled'];
 const TONGUE_SHAPES: TongueShape[] = ['drop', 'round', 'wide', 'side'];
 
 const SAMPLE_EXPRESSIONS: Readonly<Record<string, PetExpression>> = {
-  'sample-bori': { browStyle: 'caterpillar', tongueShape: 'round' },
-  'sample-mandu': { browStyle: 'none', tongueShape: 'drop' },
-  'sample-kong': { browStyle: 'soft', tongueShape: 'side' },
-  'sample-dubu': { browStyle: 'angled', tongueShape: 'wide' },
-  'sample-maru': { browStyle: 'soft', tongueShape: 'round' },
+  'sample-haneul': { browStyle: 'none', tongueShape: 'wide' },
+  'd5e1c8c1-4d66-4c6e-a0fe-2dc98c9bf003': { browStyle: 'none', tongueShape: 'wide' },
+  'sample-gureumi': { browStyle: 'soft', tongueShape: 'round' },
+  'd5e1c8c1-4d66-4c6e-a0fe-2dc98c9bf001': { browStyle: 'soft', tongueShape: 'round' },
 };
 
 const DEFAULT_EXPRESSION: PetExpression = { browStyle: 'none', tongueShape: 'drop' };

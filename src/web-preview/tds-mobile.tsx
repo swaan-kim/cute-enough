@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, CSSProperties, HTMLAttributes, ReactNode } from 'react';
+import { useEffect, useState, type ButtonHTMLAttributes, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react';
 
 type FrameShape = { width?: number; height?: number } | string;
 
@@ -7,8 +7,8 @@ function AssetImage({ src, alt = '', frameShape }: { src: string; alt?: string; 
   return <img className="web-asset-image" src={src} alt={alt} style={{ width: shape?.width, height: shape?.height }} />;
 }
 
-function AssetIcon({ color = '#ff506f', backgroundColor, ...props }: HTMLAttributes<HTMLSpanElement> & { name: string; color?: string; backgroundColor?: string; frameShape?: FrameShape }) {
-  return <span {...props} className={`web-asset-icon ${props.className ?? ''}`} style={{ color, backgroundColor }} aria-hidden="true">♥</span>;
+function AssetIcon({ color = '#ff506f', backgroundColor, frameShape: _frameShape, className = '', style, ...props }: HTMLAttributes<HTMLSpanElement> & { name: string; color?: string; backgroundColor?: string; frameShape?: FrameShape }) {
+  return <span {...props} className={`web-asset-icon ${className}`} style={{ ...style, color, backgroundColor }} aria-hidden="true">♥</span>;
 }
 
 export const Asset = {
@@ -74,9 +74,46 @@ function ResultRoot({ figure, title, description, button }: ResultProps) {
 
 export const Result = Object.assign(ResultRoot, { Button });
 
-export function Toast({ open, text, className = '', ...props }: { position?: string; open: boolean; text: string; className?: string; 'aria-live'?: 'off' | 'polite' | 'assertive' }) {
-  if (!open) return null;
-  return <div className={`web-toast ${className}`} role="status" aria-live={props['aria-live'] ?? 'polite'}>{text}</div>;
+type ToastProps = {
+  position?: string;
+  open: boolean;
+  text: string;
+  className?: string;
+  duration?: number;
+  onClose?: () => void;
+  onExited?: () => void;
+  'aria-live'?: 'off' | 'polite' | 'assertive';
+};
+
+export function Toast({ open, text, className = '', duration, onClose, onExited, ...props }: ToastProps) {
+  const [rendered, setRendered] = useState(open);
+  const [closing, setClosing] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setRendered(true);
+      setClosing(false);
+      return;
+    }
+    if (!rendered) return;
+
+    setClosing(true);
+    const exitTimer = window.setTimeout(() => {
+      setRendered(false);
+      setClosing(false);
+      onExited?.();
+    }, 180);
+    return () => window.clearTimeout(exitTimer);
+  }, [onExited, open, rendered]);
+
+  useEffect(() => {
+    if (!open || !onClose || duration === Number.POSITIVE_INFINITY) return;
+    const timer = window.setTimeout(onClose, duration ?? 3_000);
+    return () => window.clearTimeout(timer);
+  }, [duration, onClose, open]);
+
+  if (!rendered) return null;
+  return <div className={`web-toast ${closing ? 'is-closing ' : ''}${className}`} role="status" aria-live={props['aria-live'] ?? 'polite'}>{text}</div>;
 }
 
 export function TextButton({ color, variant, size, className = '', style, ...props }: WebButtonProps & { style?: CSSProperties }) {
