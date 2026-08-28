@@ -56,6 +56,26 @@ describe('resolvePetAccess', () => {
       .toEqual({ kind: 'reveal', method: 'FREE' });
   });
 
+  it('uses the ticket that recharges at the exact revisit boundary', () => {
+    const boundary = new Date('2026-08-25T04:00:00.000Z');
+    const exhaustedUntilBoundary: DailyAllowance = {
+      date: '2026-08-25',
+      freeUsed: 2,
+      remaining: 0,
+      nextChargeAt: boundary.toISOString(),
+      rewardedUsed: 2,
+      uploadCredit: false,
+      uploadUsed: false,
+    };
+
+    expect(resolvePetAccess(pet({
+      approvalStatus: 'approved',
+      revisitUntil: boundary.toISOString(),
+      revealedToday: true,
+    }), exhaustedUntilBoundary, true, boundary))
+      .toEqual({ kind: 'reveal', method: 'FREE' });
+  });
+
   it('uses revealedToday only when a timestamp is absent for legacy responses', () => {
     expect(isPetRevisitActive(pet({ revealedToday: true }), new Date('2026-08-25T02:00:00.000Z'))).toBe(true);
     expect(isPetRevisitActive(pet({ revisitUntil: 'not-a-date', revealedToday: true }))).toBe(false);

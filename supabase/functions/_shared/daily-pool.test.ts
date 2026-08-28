@@ -17,6 +17,13 @@ describe('server daily pet pool', () => {
     expect(new Set(tomorrow.map(({ id }) => id))).toEqual(new Set(candidates.map(({ id }) => id)));
   });
 
+  it('uses the viewer identity as part of the daily shuffle', () => {
+    const viewerA = orderDailyPets(candidates, 'owner-a', '2026-08-28');
+    const viewerB = orderDailyPets(candidates, 'owner-b', '2026-08-28');
+
+    expect(viewerB).not.toEqual(viewerA);
+  });
+
   it('keeps revealed pets ahead of unrevealed pets without disturbing either daily order', () => {
     const ordered = [
       { id: 'new-a', revealedToday: false },

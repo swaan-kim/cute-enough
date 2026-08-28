@@ -88,6 +88,14 @@ describe('composeHousePets', () => {
     expect(new Set(first)).toEqual(new Set(candidates.map(({ id }) => id)));
   });
 
+  it('gives different viewers their own deterministic daily order', () => {
+    const candidates = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((id) => approved(id));
+    const viewerA = orderDailyPets(candidates, 'viewer-a', '2026-08-28').map(({ id }) => id);
+    const viewerB = orderDailyPets(candidates, 'viewer-b', '2026-08-28').map(({ id }) => id);
+
+    expect(viewerB).not.toEqual(viewerA);
+  });
+
   it('does not expose rejected owner uploads in the house', () => {
     expect(composeHousePets([owned('no', 'rejected')], [approved('a')]).map(({ id }) => id)).toEqual(['a']);
   });

@@ -110,4 +110,48 @@ describe('preview revisit windows', () => {
 
     expect(result.revisitUntil).toBe('2026-08-28T01:05:00.000Z');
   });
+
+  it('expires exactly at the recharge boundary and requires a fresh unlock afterward', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-28T01:00:00.000Z'));
+    localStorage.setItem('cute-enough:preview-user', 'viewer-a');
+    const pet = SAMPLE_PETS[0];
+
+    const first = await revealPet(pet, 'FREE');
+    expect(first.allowance.remaining).toBe(1);
+    expect(first.revisitUntil).toBe('2026-08-28T04:00:00.000Z');
+
+    vi.setSystemTime(new Date('2026-08-28T03:59:59.999Z'));
+    await expect(reopenPet(pet)).resolves.toMatchObject({
+      photoUrl: first.photoUrl,
+      revisitUntil: first.revisitUntil,
+    });
+
+    vi.setSystemTime(new Date('2026-08-28T04:00:00.000Z'));
+    await expect(reopenPet(pet)).rejects.toThrow('이용권이 충전되기 전에 만난 사진만 다시 볼 수 있어요.');
+
+    const second = await revealPet(pet, 'FREE');
+    expect(second.allowance.remaining).toBe(1);
+    expect(second.revisitUntil).toBe('2026-08-28T07:00:00.000Z');
+  });
+
+  it('gives two free reveals the same next recharge boundary and restores only one ticket there', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-28T01:00:00.000Z'));
+    localStorage.setItem('cute-enough:preview-user', 'viewer-a');
+
+    const first = await revealPet(SAMPLE_PETS[0], 'FREE');
+    vi.setSystemTime(new Date('2026-08-28T02:00:00.000Z'));
+    const second = await revealPet(SAMPLE_PETS[1], 'FREE');
+
+    expect(first.revisitUntil).toBe('2026-08-28T04:00:00.000Z');
+    expect(second.revisitUntil).toBe(first.revisitUntil);
+    expect(second.allowance.remaining).toBe(0);
+
+    vi.setSystemTime(new Date('2026-08-28T04:00:00.000Z'));
+    const third = await revealPet(SAMPLE_PETS[0], 'FREE');
+    expect(third.allowance.remaining).toBe(0);
+    expect(third.allowance.nextChargeAt).toBe('2026-08-28T07:00:00.000Z');
+    expect(third.revisitUntil).toBe('2026-08-28T07:00:00.000Z');
+  });
 });

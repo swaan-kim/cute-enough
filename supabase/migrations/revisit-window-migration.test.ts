@@ -31,4 +31,21 @@ describe('revisit window migration', () => {
     );
     expect(alignedBoundarySql).toContain('returns timestamptz');
   });
+
+  it('keeps the production token bucket capped at two and advances it one step per three hours', () => {
+    expect(alignedBoundarySql).toContain('values (p_owner_hash, 2, v_now, v_now)');
+    expect(alignedBoundarySql).toContain('/ 10800');
+    expect(alignedBoundarySql).toContain('current_balance := least(2, current_balance + refill_steps)');
+    expect(alignedBoundarySql).toContain('current_balance := current_balance - 1');
+    expect(alignedBoundarySql).toContain("when current_balance < 2 then refill_anchor + interval '3 hours'");
+    expect(alignedBoundarySql).toContain("else v_now + interval '3 hours'");
+  });
+
+  it('checks for an active revisit before consuming any unlock', () => {
+    const activeGuard = alignedBoundarySql.indexOf('reveal.revisit_until > v_now');
+    expect(activeGuard).toBeGreaterThan(-1);
+    expect(activeGuard).toBeLessThan(alignedBoundarySql.indexOf("if p_unlock_method = 'UPLOAD'"));
+    expect(activeGuard).toBeLessThan(alignedBoundarySql.indexOf("elsif p_unlock_method = 'FREE'"));
+    expect(activeGuard).toBeLessThan(alignedBoundarySql.indexOf("elsif p_unlock_method = 'REWARDED'"));
+  });
 });
