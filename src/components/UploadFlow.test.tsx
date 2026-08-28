@@ -86,7 +86,7 @@ async function prepareUploadFlow(onSubmitted = vi.fn()) {
 
 describe('UploadFlow introduction', () => {
   it('explains the immediate owner view and approval boundary before photo selection', () => {
-    render(
+    const { container } = render(
       <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
         <UploadFlow onSubmitted={() => undefined} />
       </TDSMobileAITProvider>,
@@ -97,6 +97,9 @@ describe('UploadFlow introduction', () => {
     expect(screen.getByText('내 집에 바로 나타나요')).toBeInTheDocument();
     expect(screen.getByText('승인 전 공유 링크에는 캐릭터만 보여요.')).toBeInTheDocument();
     expect(screen.getByText('승인되면 모두가 만나요')).toBeInTheDocument();
+    expect(container.querySelectorAll('.upload-step-heading')).toHaveLength(1);
+    expect(container.querySelectorAll('.upload-flow-guide > div > span')).toHaveLength(3);
+    expect(container.querySelector('.upload-flow-guide')).not.toHaveTextContent('1내 집에 바로 나타나요');
   });
 
   it('turns the same photo button into a web picker retry when the Toss picker cannot open', async () => {

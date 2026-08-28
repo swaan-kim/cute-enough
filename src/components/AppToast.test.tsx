@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach } from 'vitest';
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -114,6 +114,18 @@ describe('AppToast', () => {
     expect(onDismissDailyLimit).not.toHaveBeenCalled();
 
     act(() => vi.advanceTimersByTime(DAILY_LIMIT_TOAST_DURATION - 1));
+    expect(onDismissDailyLimit).toHaveBeenCalledOnce();
+  });
+
+  it('dismisses one toast event only once when TDS and the fallback timer both finish', () => {
+    vi.useFakeTimers();
+    const { onDismissDailyLimit } = setup({ text: '사진을 저장했어요.' });
+    const toast = screen.getByRole('button');
+
+    act(() => vi.advanceTimersByTime(APP_TOAST_DURATION));
+    expect(onDismissDailyLimit).toHaveBeenCalledOnce();
+
+    fireEvent.click(toast);
     expect(onDismissDailyLimit).toHaveBeenCalledOnce();
   });
 });

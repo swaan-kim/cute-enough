@@ -47,4 +47,8 @@ describe('pet-api action validation', () => {
   it('accepts the owner-scoped submission status action', () => {
     expect(requireAction('submissionStatus')).toBe('submissionStatus');
   });
+
+  it('accepts the owner-only photo action', () => {
+    expect(requireAction('ownerPhoto')).toBe('ownerPhoto');
+  });
 });

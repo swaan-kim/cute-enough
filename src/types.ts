@@ -35,6 +35,8 @@ export interface PetSummary {
   illustrationUrl?: string;
   /** 현재 이 화면을 보는 사용자가 등록한 강아지인지 여부. */
   isMine?: boolean;
+  /** 서버가 소유권과 활성 원본을 확인해 소유자 전용 사진 열람을 허용했는지 여부. */
+  ownerPhotoAvailable?: boolean;
   /** 소유자의 집에서 우선 보여줄 강아지인지 여부. */
   ownerPinned?: boolean;
   approvalStatus?: PetStatus;
@@ -78,6 +80,13 @@ export interface RevealResult {
   /** 서버가 결정한 이 사진의 무료 재열람 만료 시각. */
   revisitUntil?: string;
   allowance: DailyAllowance;
+}
+
+/** 소유자 전용 사진은 이용권이나 재열람 기록을 변경하지 않는다. */
+export interface OwnerPhotoResult {
+  photoUrl: string;
+  signedUrlExpiresAt: string;
+  ownerPhotoAvailable: true;
 }
 
 export interface HouseResult {

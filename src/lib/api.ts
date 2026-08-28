@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { SAMPLE_PETS } from '../data/samplePets';
-import type { HouseResult, OwnedPetSummary, PetSummary, PetTraitsV1, RevealResult, SharedPetResult, SubmissionStatusResult, SubmitPetResult, UnlockMethod } from '../types';
-import { consumeAllowance, FREE_RECHARGE_INTERVAL_MS, readAllowance, saveAllowance } from './allowance';
+import type { HouseResult, OwnedPetSummary, OwnerPhotoResult, PetSummary, PetTraitsV1, RevealResult, SharedPetResult, SubmissionStatusResult, SubmitPetResult, UnlockMethod } from '../types';
+import { consumeAllowance, FREE_RECHARGE_INTERVAL_MS, getKstDate, readAllowance, saveAllowance } from './allowance';
 import { composeHousePets, orderDailyPets } from './housePets';
 import {
   findActivePreviewReveal,
@@ -124,7 +124,7 @@ export async function fetchHouse(): Promise<HouseResult> {
     const revisitRecords = readActivePreviewReveals(allowance.date, now);
     const revisitByPetId = new Map(revisitRecords.map((record) => [record.petId, record]));
     const mine = readPreviewMyPets().map((pet) => normalizePetSummaryColors(
-      withPreviewRevisit(pet, revisitByPetId.get(pet.id)),
+      withPreviewRevisit({ ...pet, ownerPhotoAvailable: hasPetPhoto(pet) }, revisitByPetId.get(pet.id)),
     ));
     const publicPets = orderDailyPets(SAMPLE_PETS, viewerKey, allowance.date).map((pet) => ({
       ...normalizePetSummaryColors(withPreviewRevisit(pet, revisitByPetId.get(pet.id))),
@@ -149,6 +149,7 @@ export async function fetchSharedPet(petId: string): Promise<SharedPetResult> {
       pet: normalizePetSummaryColors(withPreviewRevisit({
         ...pet,
         isMine: Boolean(owned),
+        ownerPhotoAvailable: Boolean(owned && hasPetPhoto(owned)),
         ownerPinned: Boolean(owned),
         approvalStatus: pet.approvalStatus ?? 'approved',
         shareable: true,
@@ -167,7 +168,7 @@ export async function fetchMyPets(): Promise<OwnedPetSummary[]> {
     const revisitRecords = readActivePreviewReveals(allowance.date, now);
     const revisitByPetId = new Map(revisitRecords.map((record) => [record.petId, record]));
     return readPreviewMyPets().map((pet) => normalizePetSummaryColors(
-      withPreviewRevisit(pet, revisitByPetId.get(pet.id)),
+      withPreviewRevisit({ ...pet, ownerPhotoAvailable: hasPetPhoto(pet) }, revisitByPetId.get(pet.id)),
     ));
   }
   const data = await invokePetApi<{ pets: OwnedPetSummary[] }>({ action: 'mine' });
@@ -217,6 +218,25 @@ export async function reopenPet(pet: PetSummary): Promise<RevealResult> {
   return invokePetApi<RevealResult>({ action: 'reveal', petId: pet.id, revisit: true });
 }
 
+/** 등록한 사용자만 이용권 차감 없이 pending/approved 원본을 연다. */
+export async function openOwnerPhoto(pet: PetSummary): Promise<OwnerPhotoResult> {
+  if (isPreviewRuntime) {
+    if (!pet.isMine || !['pending', 'approved'].includes(pet.approvalStatus ?? 'approved')) {
+      throw new Error('내가 소개한 강아지의 사진만 바로 볼 수 있어요.');
+    }
+    const now = new Date();
+    const viewerKey = await getUserHash();
+    const photoUrl = selectPetPhotoUrl(pet, getKstDate(now), viewerKey);
+    if (!photoUrl) throw new Error('이 친구의 사진을 불러오지 못했어요.');
+    return {
+      photoUrl,
+      signedUrlExpiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+      ownerPhotoAvailable: true,
+    };
+  }
+  return invokePetApi<OwnerPhotoResult>({ action: 'ownerPhoto', petId: pet.id });
+}
+
 export async function fetchSubmissionStatus(submissionId: string): Promise<SubmissionStatusResult> {
   if (isPreviewRuntime) {
     const existing = findPreviewSubmission(submissionId);
@@ -236,7 +256,7 @@ export async function submitPet(input: SubmitPetInput): Promise<SubmitPetResult>
     await new Promise((resolve) => setTimeout(resolve, 600));
     const pet: PetSummary = {
       id: crypto.randomUUID(), name: normalizedInput.name, traits: normalizedInput.traits, photoUrl: normalizedInput.dataUri,
-      isMine: true, ownerPinned: true, approvalStatus: 'pending', shareable: true,
+      isMine: true, ownerPhotoAvailable: true, ownerPinned: true, approvalStatus: 'pending', shareable: true,
     };
     const current = readAllowance();
     const rewardGranted = !current.uploadCredit;

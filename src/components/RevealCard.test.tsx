@@ -86,4 +86,32 @@ describe('RevealCard', () => {
     });
     expect(onSave).toHaveBeenCalledTimes(1);
   });
+
+  it('replaces a failed photo with an in-place retry without closing the card', async () => {
+    const onRetryPhoto = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
+        <RevealCard
+          pet={pet}
+          photoUrl="/expired-haneul.jpg"
+          onClose={() => undefined}
+          onUpload={() => undefined}
+          onReport={() => undefined}
+          onRetryPhoto={onRetryPhoto}
+        />
+      </TDSMobileAITProvider>,
+    );
+
+    fireEvent.error(screen.getByRole('img', { name: '하늘의 실제 모습' }));
+    expect(screen.getByText('사진을 불러오지 못했어요')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '하늘 사진에 하트 보내기' })).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '다시 불러오기' }));
+      await Promise.resolve();
+    });
+
+    expect(onRetryPhoto).toHaveBeenCalledOnce();
+    expect(screen.getByRole('img', { name: '하늘의 실제 모습' })).toBeInTheDocument();
+  });
 });

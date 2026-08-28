@@ -3,6 +3,7 @@ import { nextUnlockMethod } from './allowance';
 
 export type PetAccessDecision =
   | { kind: 'reveal'; method: UnlockMethod }
+  | { kind: 'ownerPhoto' }
   | { kind: 'revisit' }
   | { kind: 'characterOnly'; reason: 'pending' }
   | { kind: 'unavailable' }
@@ -33,18 +34,20 @@ export function resolvePetAccess(
   if (pet.approvalStatus && ['rejected', 'paused', 'deleted'].includes(pet.approvalStatus)) {
     return { kind: 'unavailable' };
   }
+  const canUseUploadBonus = Boolean(
+    pet.isMine
+    && allowance.uploadCredit
+    && !allowance.uploadUsed
+    && allowance.uploadRewardPetId === pet.id,
+  );
+  if (canUseUploadBonus) return { kind: 'reveal', method: 'UPLOAD' };
+  if (
+    pet.isMine
+    && pet.ownerPhotoAvailable
+    && (!pet.approvalStatus || ['pending', 'approved'].includes(pet.approvalStatus))
+  ) return { kind: 'ownerPhoto' };
   if (isPetRevisitActive(pet, now)) return { kind: 'revisit' };
-  if (pet.approvalStatus === 'pending') {
-    const canUseUploadBonus = Boolean(
-      pet.isMine
-      && allowance.uploadCredit
-      && !allowance.uploadUsed
-      && allowance.uploadRewardPetId === pet.id,
-    );
-    return canUseUploadBonus
-      ? { kind: 'reveal', method: 'UPLOAD' }
-      : { kind: 'characterOnly', reason: 'pending' };
-  }
+  if (pet.approvalStatus === 'pending') return { kind: 'characterOnly', reason: 'pending' };
 
   const method = nextUnlockMethod(allowance, pet.id, rewardedAdsEnabled, now);
   return method ? { kind: 'reveal', method } : { kind: 'exhausted' };

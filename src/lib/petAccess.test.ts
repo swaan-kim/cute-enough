@@ -25,6 +25,31 @@ describe('resolvePetAccess', () => {
       .toEqual({ kind: 'characterOnly', reason: 'pending' });
   });
 
+  it('opens an owner photo without a ticket after the one-time upload visit is used', () => {
+    const ownedPending = pet({
+      id: 'mine-pending',
+      approvalStatus: 'pending',
+      isMine: true,
+      ownerPhotoAvailable: true,
+    });
+
+    expect(resolvePetAccess(ownedPending, allowance))
+      .toEqual({ kind: 'reveal', method: 'UPLOAD' });
+    expect(resolvePetAccess(ownedPending, { ...allowance, uploadUsed: true }))
+      .toEqual({ kind: 'ownerPhoto' });
+  });
+
+  it('requires the server-authored owner photo permission instead of trusting isMine alone', () => {
+    expect(resolvePetAccess(pet({
+      id: 'mine-pending', approvalStatus: 'pending', isMine: true,
+    }), { ...allowance, uploadUsed: true }))
+      .toEqual({ kind: 'characterOnly', reason: 'pending' });
+    expect(resolvePetAccess(pet({
+      approvalStatus: 'approved', isMine: true, ownerPhotoAvailable: true,
+    }), { ...allowance, uploadUsed: true }))
+      .toEqual({ kind: 'ownerPhoto' });
+  });
+
   it('uses the normal daily allowance for approved pets', () => {
     expect(resolvePetAccess(pet({ approvalStatus: 'approved' }), allowance))
       .toEqual({ kind: 'reveal', method: 'FREE' });

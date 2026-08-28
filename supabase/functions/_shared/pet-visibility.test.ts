@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canOpenOwnerPhoto,
   canRevealStoredPetPhoto,
   isRevisitActive,
   isShareablePetStatus,
@@ -16,6 +17,14 @@ describe('pending pet visibility boundaries', () => {
 
   it('lets only the owner reveal a pending photo when the server explicitly grants the exception', () => {
     expect(canRevealStoredPetPhoto({ status: 'pending', isOwner: true, allowPendingOwner: true })).toBe(true);
+  });
+
+  it('exposes ownerPhoto only to an owner whose pending or approved photo still exists', () => {
+    expect(canOpenOwnerPhoto({ status: 'pending', isOwner: true, hasExistingPhoto: true })).toBe(true);
+    expect(canOpenOwnerPhoto({ status: 'approved', isOwner: true, hasExistingPhoto: true })).toBe(true);
+    expect(canOpenOwnerPhoto({ status: 'pending', isOwner: false, hasExistingPhoto: true })).toBe(false);
+    expect(canOpenOwnerPhoto({ status: 'pending', isOwner: true, hasExistingPhoto: false })).toBe(false);
+    expect(canOpenOwnerPhoto({ status: 'paused', isOwner: true, hasExistingPhoto: true })).toBe(false);
   });
 
   it('makes approved pets shareable and revealable to other viewers', () => {

@@ -4,9 +4,9 @@
 
 | 상태 | 업로더의 집 | 다른 사람의 집 | 공유 링크 | 실제 사진 |
 | --- | --- | --- | --- | --- |
-| 업로드 직후 `pending` | 최신 1마리 캐릭터 즉시 노출 | 노출하지 않음 | 캐릭터와 놀기 가능 | 업로더의 당일 업로드 보너스 1회만 |
-| 보너스 사용 후 `pending` | 캐릭터 유지 | 노출하지 않음 | 캐릭터와 놀기 가능 | 승인 전까지 비공개 |
-| `approved` | 최신 본인 캐릭터 유지 | 공개 집 후보에 포함 | 일반 만남 흐름 | 무료/광고 이용권 후 서명 URL 제공, 분홍 로고와 강아지 이름표가 담긴 복사본 저장 가능 |
+| 업로드 직후 `pending` | 최신 1마리 캐릭터 즉시 노출 | 노출하지 않음 | 타인은 캐릭터만 | 첫 보너스는 간식 후 공개, 이후 업로더는 항상 무차감 재열람 |
+| 보너스 사용 후 `pending` | 캐릭터 유지 | 노출하지 않음 | 타인은 캐릭터만 | 업로더만 소유권 확인 후 무차감 재열람 |
+| `approved` | 최신 본인 캐릭터 유지 | 다음 KST 날짜부터 공개 집 후보 | 승인 즉시 일반 만남 흐름 | 업로더는 무차감, 타인은 이용권/광고 후 서명 URL 제공 |
 | `rejected`·`paused`·`deleted` | 집에서 제거, 내 목록에 상태 표시 | 노출하지 않음 | 이용 불가 | 비공개 |
 
 ## 데이터 흐름
@@ -15,18 +15,18 @@
 2. 사용자가 이름·귀·털색·무늬를 확인하고 공개 노출·강아지 이름표 포함 저장 권리 동의 후 제출한다.
 3. Edge Function이 앱인토스 익명키를 mTLS로 확인하고 사진을 다시 디코드·JPEG로 재인코딩한다.
 4. `submission_id` 멱등 키로 private Storage 업로드, `pets` 행, `pet_photos`의 0번 대표 사진, 당일 `upload_rewards`를 한 번만 만든다.
-5. `mine`은 소유자의 모든 비삭제 업로드를 최신순으로 반환하고, 오늘 이미 본 사진에는 재열람 표시를 함께 보낸다.
+5. `mine`은 소유자의 모든 비삭제 업로드와 서버가 검증한 `ownerPhotoAvailable`을 최신순으로 반환한다.
 6. `house`는 소유자의 최신 pending/approved 1마리와 승인 공개 강아지를 사용자·KST 날짜 기준으로 섞어 최대 5마리로 반환한다. 같은 날에는 목록과 순서가 유지된다.
 7. 검수자는 `review_pet_submission` RPC로 승인 또는 반려한다. 상태와 감사 로그가 한 트랜잭션으로 기록된다.
 8. `shared`는 pending/approved 캐릭터 정보만 반환한다. Storage 경로나 사진 URL은 반환하지 않는다.
-9. `reveal`은 approved 사진 또는 업로더 본인의 pending 사진+일치하는 미사용 `UPLOAD` 보너스에서만 10분 서명 URL을 발급한다.
+9. `reveal`은 타인의 approved 사진과 첫 `UPLOAD` 상호작용을 담당하고, `ownerPhoto`는 `pending`/`approved` 소유자에게만 이용권을 변경하지 않고 10분 서명 URL을 발급한다.
 10. 운영자가 사용 권리를 확인한 초기 강아지에 여러 사진을 연결한 경우, 사용자·강아지·KST 날짜 기준으로 한 장을 결정해 서명한다.
 
 ## 제작자·운영자 검수 방법
 
 현재 v1에는 공개 미니앱 안의 관리자 화면을 두지 않는다. 숨겨진 주소에 서비스 역할 키를 넣는 방식은 권한 보호가 되지 않으므로, 초기 운영은 로그인된 Supabase Dashboard에서 진행한다.
 
-1. Table Editor의 `pets`에서 `status = pending`인 항목을 오래된 순으로 확인한다.
+1. SQL Editor에서 `select * from public.pending_pet_review_queue order by created_at;`로 Storage 실존 여부를 포함한 대기 항목을 확인한다.
 2. 해당 행의 `storage_path`와 private `pet-photos` 버킷에서 실제 사진을 확인한다.
 3. 이름·사진 제공 권리·강아지 여부·캐릭터 특징을 확인한다.
 4. SQL Editor에서 아래 RPC로 승인한다. `actor`에는 검수한 운영자 식별값을 남긴다.
@@ -51,7 +51,7 @@ select public.review_pet_submission(
 );
 ```
 
-`pets.status`를 Table Editor에서 직접 바꾸면 감사 로그가 남지 않으므로 항상 RPC를 사용한다. 승인된 항목은 다음 `house` 조회부터 다른 사용자의 공개 후보가 되며, 운영자가 사진을 다시 업로드할 필요는 없다.
+`pets.status`를 Table Editor에서 직접 바꾸면 감사 로그가 남지 않으므로 항상 RPC를 사용한다. 승인 즉시 기존 공유 링크가 갱신되고, 다른 사용자의 공개 집 후보에는 다음 KST 날짜부터 편입된다. 운영자가 사진을 다시 업로드할 필요는 없다.
 
 localhost와 Vercel의 `preview` 업로드는 업로더 브라우저의 Local Storage에만 저장된다. 따라서 다른 사용자가 preview에서 올린 사진은 제작자에게 전달되지 않고 승인할 수도 없다. 실제 검수 대기열은 Supabase migrations·private Storage·`pet-api` Edge Function·mTLS secrets가 연결된 private/production Toss 빌드에서만 생성된다.
 
@@ -61,6 +61,7 @@ localhost와 Vercel의 `preview` 업로드는 업로더 브라우저의 Local St
 
 - 홈 노출 여부와 사진 공개 권한은 별개다.
 - pending 캐릭터와 노는 행위는 무료·광고 이용권을 차감하지 않는다.
+- `ownerPhoto`는 앱인토스 익명키와 `owner_hash`가 일치할 때만 허용하며, 타인에게는 pending 원본·Storage 경로·서명 URL을 반환하지 않는다.
 - 업로드 보너스를 사용해도 업로드 데이터와 캐릭터를 삭제하지 않는다.
 - 다른 브라우저로 전달되는 실제 공유는 Supabase가 연결된 private/production 앱인토스 빌드에서만 검증한다. Vercel preview의 업로드는 해당 브라우저 Local Storage에만 남는다.
 - private/production 번들에는 웹 데모용 실사 사진을 포함하지 않는다.

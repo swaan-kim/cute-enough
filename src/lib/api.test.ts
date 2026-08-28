@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SAMPLE_PETS } from '../data/samplePets';
 import { selectPetPhotoUrl } from './petPhoto';
-import { PetApiError, reopenPet, revealPet, toPetApiError } from './api';
+import { openOwnerPhoto, PetApiError, reopenPet, revealPet, toPetApiError } from './api';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -55,6 +55,33 @@ describe('pet api error normalization', () => {
 });
 
 describe('preview revisit windows', () => {
+  it('opens an owner photo without changing the allowance bucket', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-28T01:00:00.000Z'));
+    localStorage.setItem('cute-enough:preview-user', 'viewer-a');
+    const before = {
+      date: '2026-08-28', freeUsed: 1, remaining: 1, rewardedUsed: 0,
+      uploadCredit: true, uploadUsed: true,
+    };
+    localStorage.setItem('cute-enough:allowance', JSON.stringify(before));
+
+    const result = await openOwnerPhoto({
+      ...SAMPLE_PETS[0],
+      isMine: true,
+      ownerPhotoAvailable: true,
+      approvalStatus: 'pending',
+    });
+
+    expect(result).toMatchObject({ ownerPhotoAvailable: true });
+    expect(result).not.toHaveProperty('allowance');
+    expect(JSON.parse(localStorage.getItem('cute-enough:allowance') ?? '{}')).toEqual(before);
+  });
+
+  it('does not trust a non-owner caller for direct owner photo access', async () => {
+    await expect(openOwnerPhoto({ ...SAMPLE_PETS[0], approvalStatus: 'approved' }))
+      .rejects.toThrow('내가 소개한 강아지의 사진만 바로 볼 수 있어요.');
+  });
+
   it('uses the free allowance boundary and reopens the same photo across KST midnight', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-28T14:30:00.000Z'));

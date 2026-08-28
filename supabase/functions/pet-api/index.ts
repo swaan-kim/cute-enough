@@ -5,10 +5,10 @@ import { corsGuard, json } from '../_shared/cors.ts';
 import { orderDailyPets } from '../_shared/daily-pool.ts';
 import { decodeDataUri, hashUser, kstDate } from '../_shared/security.ts';
 import {
+  canOpenOwnerPhoto,
   canRevealStoredPetPhoto,
   isRevisitActive,
   isShareablePetStatus,
-  OWNER_VISIBLE_PET_STATUSES,
   SHARED_CHARACTER_PET_STATUSES,
 } from '../_shared/pet-visibility.ts';
 import {
@@ -37,6 +37,33 @@ type RevealRow = {
   reveal_date: string;
   revisit_until: string;
   created_at: string;
+};
+
+type HouseSnapshotPet = {
+  id: string;
+  name?: string | null;
+  traits: Record<string, unknown>;
+  status: 'pending' | 'approved';
+  ownerHash: string;
+};
+
+type HouseSnapshotReveal = {
+  petId: string;
+  unlockMethod: string;
+  revealDate: string;
+  revisitUntil: string;
+  createdAt: string;
+};
+
+type HouseSnapshot = {
+  date: string;
+  freeAllowance: FreeAllowance;
+  todayReveals: HouseSnapshotReveal[];
+  activeReveals: HouseSnapshotReveal[];
+  uploadReward?: { petId: string; usedAt: string | null } | null;
+  ownedPets: HouseSnapshotPet[];
+  approvedPets: HouseSnapshotPet[];
+  activePets: HouseSnapshotPet[];
 };
 
 function activeRevisitMap(rows: RevealRow[], now = Date.now()): Map<string, RevealRow> {
@@ -97,6 +124,15 @@ async function selectDailyPhotoPath(petId: string, ownerHash: string, date: stri
   return paths[index];
 }
 
+async function getExistingPetPhotos(petIds: string[]): Promise<Array<{ pet_id: string; storage_path: string; sort_order: number }>> {
+  if (!petIds.length) return [];
+  const { data, error } = await supabase.rpc('get_existing_pet_photos', {
+    p_pet_ids: petIds,
+  });
+  if (error) throw error;
+  return (data ?? []) as Array<{ pet_id: string; storage_path: string; sort_order: number }>;
+}
+
 async function createPetPhotoSignedUrl(
   petId: string,
   ownerHash: string,
@@ -115,12 +151,7 @@ async function createPetPhotoSignedUrl(
   });
   if (!canReveal) throw new ApiError('PHOTO_NOT_REVEALABLE', 404, '공개할 수 없는 사진이에요.');
 
-  const { data: photos, error: photoError } = await supabase.from('pet_photos')
-    .select('storage_path,sort_order')
-    .eq('pet_id', pet.id)
-    .eq('is_active', true)
-    .order('sort_order', { ascending: true });
-  if (photoError) throw photoError;
+  const photos = await getExistingPetPhotos([pet.id]);
   if (!photos?.length) {
     throw new ApiError('PHOTO_NOT_REVEALABLE', 404, '공개할 수 있는 사진이 없어요.');
   }
@@ -136,6 +167,7 @@ const RATE_LIMITS: Record<PetApiAction, { seconds: number; limit: number }> = {
   shared: { seconds: 60, limit: 60 },
   mine: { seconds: 60, limit: 30 },
   reveal: { seconds: 60, limit: 10 },
+  ownerPhoto: { seconds: 60, limit: 30 },
   submit: { seconds: 60 * 60, limit: 3 },
   submissionStatus: { seconds: 60, limit: 20 },
   report: { seconds: 60 * 60, limit: 10 },
@@ -178,11 +210,17 @@ async function findSubmissionResult(ownerHash: string, submissionId: string, dat
     .is('used_at', null)
     .maybeSingle();
   if (existingRewardError) throw existingRewardError;
+  const existingPhotos = await getExistingPetPhotos([existing.id]);
   const { status, ...pet } = existing;
   return {
     pet: {
       ...pet,
-      photoAvailable: true,
+      photoAvailable: existingPhotos.length > 0,
+      ownerPhotoAvailable: canOpenOwnerPhoto({
+        status,
+        isOwner: true,
+        hasExistingPhoto: existingPhotos.length > 0,
+      }),
       isMine: true,
       ownerPinned: true,
       approvalStatus: status,
@@ -224,82 +262,53 @@ Deno.serve(async (request) => {
 
     if (action === 'house') {
       const date = kstDate();
-      const [{ data: reveals, error: revealError }, activeRevealRows] = await Promise.all([
-        supabase.from('daily_reveals').select('unlock_method,pet_id').eq('owner_hash', ownerHash).eq('reveal_date', date),
-        getActiveReveals(ownerHash),
-      ]);
-      if (revealError) throw revealError;
-      const [{ data: uploadReward, error: rewardError }, freeAllowance] = await Promise.all([
-        supabase.from('upload_rewards').select('pet_id,used_at').eq('owner_hash', ownerHash).eq('reward_date', date).maybeSingle(),
-        getFreeAllowance(ownerHash),
-      ]);
-      if (rewardError) throw rewardError;
-      const activeReveals = activeRevisitMap(activeRevealRows);
-      const [{ data: ownedPets, error: ownedError }, { data: approvedPets, error: approvedError }] = await Promise.all([
-        supabase.from('pets')
-          .select('id,name,traits,status,pet_photos!inner(id)')
-          .eq('owner_hash', ownerHash)
-          .in('status', [...OWNER_VISIBLE_PET_STATUSES])
-          .eq('pet_photos.is_active', true)
-          .order('created_at', { ascending: false })
-          .limit(1),
-        supabase.from('pets')
-          .select('id,name,traits,pet_photos!inner(id)')
-          .eq('status', 'approved')
-          .neq('owner_hash', ownerHash)
-          .eq('pet_photos.is_active', true)
-          .order('reviewed_at', { ascending: false, nullsFirst: false })
-          .order('created_at', { ascending: false })
-          .limit(200),
-      ]);
-      if (ownedError || approvedError) throw ownedError ?? approvedError;
-      const activePetIds = [...activeReveals.keys()];
-      let activePets: Array<Record<string, unknown>> = [];
-      if (activePetIds.length) {
-        const { data, error } = await supabase.from('pets')
-          .select('id,name,traits,status,owner_hash,pet_photos!inner(id)')
-          .in('id', activePetIds)
-          .in('status', [...SHARED_CHARACTER_PET_STATUSES])
-          .eq('pet_photos.is_active', true);
-        if (error) throw error;
-        activePets = (data ?? []) as Array<Record<string, unknown>>;
-      }
-      const owned = (ownedPets ?? []).map(({ status, pet_photos: _photoRows, ...pet }) => ({
+      const { data: snapshotRow, error: snapshotError } = await supabase.rpc('get_pet_house_snapshot', {
+        p_owner_hash: ownerHash,
+        p_date: date,
+      }).single();
+      if (snapshotError || !snapshotRow) throw snapshotError ?? new Error('HOUSE_SNAPSHOT_UNAVAILABLE');
+      const snapshot = snapshotRow.snapshot as HouseSnapshot;
+      const activeReveals = new Map(snapshot.activeReveals.map((reveal) => [reveal.petId, reveal]));
+      const owned = snapshot.ownedPets.map(({ status, ownerHash: _petOwnerHash, ...pet }) => ({
         ...pet,
         photoAvailable: true,
+        ownerPhotoAvailable: true,
         isMine: true,
         ownerPinned: true,
         approvalStatus: status,
         shareable: true,
         revealedToday: activeReveals.has(pet.id),
-        revisitUntil: activeReveals.get(pet.id)?.revisit_until,
+        revisitUntil: activeReveals.get(pet.id)?.revisitUntil,
       }));
       const primaryOwnedPet = owned[0];
-      const candidateSummaries = (approvedPets ?? []).map(({ pet_photos: _photoRows, ...pet }) => ({
+      const candidateSummaries = snapshot.approvedPets.map(({ status: _status, ownerHash: _petOwnerHash, ...pet }) => ({
           ...pet,
           photoAvailable: true,
+          ownerPhotoAvailable: false,
           isMine: false,
           ownerPinned: false,
           approvalStatus: 'approved',
           shareable: true,
           revealedToday: activeReveals.has(pet.id),
-          revisitUntil: activeReveals.get(pet.id)?.revisit_until,
+          revisitUntil: activeReveals.get(pet.id)?.revisitUntil,
         }));
-      const activeSummaries = activePets
-        .filter((pet) => pet.status === 'approved' || pet.owner_hash === ownerHash)
+      const activeSummaries = snapshot.activePets
+        .filter((pet) => pet.status === 'approved' || pet.ownerHash === ownerHash)
         .map((pet) => {
-          const petId = String(pet.id);
+          const petId = pet.id;
+          const isMine = pet.ownerHash === ownerHash;
           return {
             id: petId,
-            name: typeof pet.name === 'string' ? pet.name : undefined,
+            name: pet.name ?? undefined,
             traits: pet.traits,
             photoAvailable: true,
-            isMine: pet.owner_hash === ownerHash,
-            ownerPinned: pet.owner_hash === ownerHash,
+            ownerPhotoAvailable: isMine,
+            isMine,
+            ownerPinned: isMine,
             approvalStatus: pet.status,
             shareable: isShareablePetStatus(pet.status),
             revealedToday: true,
-            revisitUntil: activeReveals.get(petId)?.revisit_until,
+            revisitUntil: activeReveals.get(petId)?.revisitUntil,
           };
         });
 
@@ -313,44 +322,51 @@ Deno.serve(async (request) => {
         pool.push(pet);
       };
       append(primaryOwnedPet);
-      for (const reveal of activeRevealRows) {
-        append(activeSummaries.find((pet) => pet.id === reveal.pet_id));
+      for (const reveal of snapshot.activeReveals) {
+        append(activeSummaries.find((pet) => pet.id === reveal.petId));
       }
       for (const pet of orderDailyPets(candidateSummaries, ownerHash, date)) append(pet);
-      const rewardedUsed = (reveals ?? []).filter((item) => item.unlock_method === 'REWARDED').length;
+      const rewardedUsed = snapshot.todayReveals.filter((item) => item.unlockMethod === 'REWARDED').length;
+      const uploadReward = snapshot.uploadReward
+        ? { pet_id: snapshot.uploadReward.petId, used_at: snapshot.uploadReward.usedAt }
+        : null;
       return reply({
         pets: pool,
-        allowance: allowancePayload(date, freeAllowance, rewardedUsed, uploadReward),
+        allowance: allowancePayload(date, snapshot.freeAllowance, rewardedUsed, uploadReward),
       });
     }
 
     if (action === 'shared') {
       const petId = requireUuid(body.petId);
       const { data: pet, error } = await supabase.from('pets')
-        .select('id,name,traits,status,owner_hash,pet_photos!inner(id)')
+        .select('id,name,traits,status,owner_hash')
         .eq('id', petId)
         .in('status', [...SHARED_CHARACTER_PET_STATUSES])
-        .eq('pet_photos.is_active', true)
         .maybeSingle();
       if (error) throw error;
       if (!pet) return reply({ error: '이 친구는 지금 만날 수 없어요.', code: 'PET_NOT_AVAILABLE' }, 404);
-      const { status, owner_hash: petOwnerHash, pet_photos: _photoRows, ...summary } = pet;
+      const existingPhotos = await getExistingPetPhotos([petId]);
+      if (!existingPhotos.length) return reply({ error: '이 친구는 지금 만날 수 없어요.', code: 'PET_NOT_AVAILABLE' }, 404);
+      const { status, owner_hash: petOwnerHash, ...summary } = pet;
       const date = kstDate();
-      const [{ data: reveals, error: revealError }, activeRows, { data: uploadReward, error: rewardError }, freeAllowance] = await Promise.all([
-        supabase.from('daily_reveals').select('unlock_method,pet_id').eq('owner_hash', ownerHash).eq('reveal_date', date),
-        getActiveReveals(ownerHash, petId),
-        supabase.from('upload_rewards').select('pet_id,used_at').eq('owner_hash', ownerHash).eq('reward_date', date).maybeSingle(),
-        getFreeAllowance(ownerHash),
-      ]);
-      if (revealError || rewardError) throw revealError ?? rewardError;
-      const activeReveal = activeRows[0];
-      const todayReveals = reveals ?? [];
+      const { data: snapshotRow, error: snapshotError } = await supabase.rpc('get_pet_house_snapshot', {
+        p_owner_hash: ownerHash,
+        p_date: date,
+      }).single();
+      if (snapshotError || !snapshotRow) throw snapshotError ?? new Error('HOUSE_SNAPSHOT_UNAVAILABLE');
+      const snapshot = snapshotRow.snapshot as HouseSnapshot;
+      const activeReveal = snapshot.activeReveals.find((reveal) => reveal.petId === petId);
+      const uploadReward = snapshot.uploadReward
+        ? { pet_id: snapshot.uploadReward.petId, used_at: snapshot.uploadReward.usedAt }
+        : null;
+      const isMine = petOwnerHash === ownerHash;
       return reply({
         pet: {
           ...summary,
           photoAvailable: true,
-          isMine: petOwnerHash === ownerHash,
-          ownerPinned: petOwnerHash === ownerHash,
+          ownerPhotoAvailable: canOpenOwnerPhoto({ status, isOwner: isMine, hasExistingPhoto: true }),
+          isMine,
+          ownerPinned: isMine,
           approvalStatus: status,
           shareable: true,
           revealedToday: Boolean(activeReveal),
@@ -358,8 +374,8 @@ Deno.serve(async (request) => {
         },
         allowance: allowancePayload(
           date,
-          freeAllowance,
-          todayReveals.filter((item) => item.unlock_method === 'REWARDED').length,
+          snapshot.freeAllowance,
+          snapshot.todayReveals.filter((item) => item.unlockMethod === 'REWARDED').length,
           uploadReward,
         ),
       });
@@ -377,8 +393,17 @@ Deno.serve(async (request) => {
       ]);
       if (error) throw error;
       const activeReveals = activeRevisitMap(activeRows);
+      const existingPhotoPetIds = new Set(
+        (await getExistingPetPhotos((pets ?? []).map((pet) => pet.id))).map((photo) => photo.pet_id),
+      );
       return reply({ pets: (pets ?? []).map(({ status, created_at, rejection_reason, ...pet }) => ({
         ...pet,
+        photoAvailable: existingPhotoPetIds.has(pet.id),
+        ownerPhotoAvailable: canOpenOwnerPhoto({
+          status,
+          isOwner: true,
+          hasExistingPhoto: existingPhotoPetIds.has(pet.id),
+        }),
         isMine: true,
         ownerPinned: true,
         approvalStatus: status,
@@ -388,6 +413,35 @@ Deno.serve(async (request) => {
         revealedToday: activeReveals.has(pet.id),
         revisitUntil: activeReveals.get(pet.id)?.revisit_until,
       })) });
+    }
+
+    if (action === 'ownerPhoto') {
+      const petId = requireUuid(body.petId);
+      const { data: pet, error: petError } = await supabase.from('pets')
+        .select('id,status,owner_hash')
+        .eq('id', petId)
+        .maybeSingle();
+      if (petError) throw petError;
+      if (!pet) throw new ApiError('PET_NOT_AVAILABLE', 404, '이 친구는 지금 만날 수 없어요.');
+      if (pet.owner_hash !== ownerHash) {
+        throw new ApiError('OWNER_PHOTO_FORBIDDEN', 403, '본인이 소개한 강아지 사진만 볼 수 있어요.');
+      }
+      const existingPhotos = await getExistingPetPhotos([petId]);
+      if (!canOpenOwnerPhoto({
+        status: pet.status,
+        isOwner: true,
+        hasExistingPhoto: existingPhotos.length > 0,
+      })) {
+        throw new ApiError('OWNER_PHOTO_NOT_AVAILABLE', 404, '지금은 사진을 볼 수 없어요.');
+      }
+
+      const date = kstDate();
+      const photoUrl = await createPetPhotoSignedUrl(petId, ownerHash, date, true);
+      return reply({
+        photoUrl,
+        signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+        ownerPhotoAvailable: true,
+      });
     }
 
     if (action === 'reveal') {
@@ -564,7 +618,17 @@ Deno.serve(async (request) => {
       const rewardGranted = Boolean(registered.reward_granted);
       const registeredPetId = String(registered.pet_id);
       return reply({
-        pet: { id: registeredPetId, name: normalizedName || undefined, traits, photoAvailable: true, isMine: true, ownerPinned: true, approvalStatus: 'pending', shareable: true },
+        pet: {
+          id: registeredPetId,
+          name: normalizedName || undefined,
+          traits,
+          photoAvailable: true,
+          ownerPhotoAvailable: true,
+          isMine: true,
+          ownerPinned: true,
+          approvalStatus: 'pending',
+          shareable: true,
+        },
         rewardGranted,
         uploadRewardPetId: rewardGranted ? registeredPetId : undefined,
       }, 201);

@@ -10,16 +10,26 @@ type RevealCardProps = {
   onReport: () => void;
   onShare?: () => void;
   onSave?: () => Promise<void> | void;
+  onRetryPhoto?: () => Promise<void> | void;
 };
 
-export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare, onSave }: RevealCardProps) {
+export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare, onSave, onRetryPhoto }: RevealCardProps) {
   const cardRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   const heartIdRef = useRef(0);
   const [tapHeart, setTapHeart] = useState<{ id: number; x: number; y: number }>();
   const [saving, setSaving] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const [retryingPhoto, setRetryingPhoto] = useState(false);
+  const [photoAttempt, setPhotoAttempt] = useState(0);
 
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
+  useEffect(() => {
+    setImageError(false);
+    setRetryingPhoto(false);
+    setPhotoAttempt(0);
+  }, [photoUrl]);
 
   useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
@@ -76,29 +86,52 @@ export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare
     }
   }
 
+  async function handleRetryPhoto() {
+    if (retryingPhoto) return;
+    setRetryingPhoto(true);
+    try {
+      await onRetryPhoto?.();
+      setPhotoAttempt((attempt) => attempt + 1);
+      setImageError(false);
+    } catch {
+      setImageError(true);
+    } finally {
+      setRetryingPhoto(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="강아지 실사 사진">
       <article className="photo-card" ref={cardRef} tabIndex={-1}>
         <div className="photo-media">
-          <button
-            className="photo-frame photo-like-surface"
-            type="button"
-            aria-label={`${pet.name ?? '강아지'} 사진에 하트 보내기`}
-            onPointerDown={handlePhotoPointerDown}
-            onKeyDown={handlePhotoKeyDown}
-          >
-            <img src={photoUrl} alt={`${pet.name ?? '강아지'}의 실제 모습`} />
-            <span className="photo-watermark-preview" aria-hidden="true"><i />{pet.name || '강아지'}</span>
-            {tapHeart && (
-              <span
-                key={tapHeart.id}
-                className="photo-tap-heart"
-                style={{ left: `${tapHeart.x}%`, top: `${tapHeart.y}%` }}
-                aria-hidden="true"
-              >♥</span>
-            )}
-          </button>
-          {onSave && (
+          {imageError ? (
+            <div className="photo-frame photo-error" role="status" aria-live="polite">
+              <span className="photo-error-icon" aria-hidden="true">♡</span>
+              <strong>사진을 불러오지 못했어요</strong>
+              <p>잠시 후 다시 불러와 주세요.</p>
+              <Button size="medium" color="dark" variant="weak" disabled={retryingPhoto} loading={retryingPhoto} onClick={() => void handleRetryPhoto()}>다시 불러오기</Button>
+            </div>
+          ) : (
+            <button
+              className="photo-frame photo-like-surface"
+              type="button"
+              aria-label={`${pet.name ?? '강아지'} 사진에 하트 보내기`}
+              onPointerDown={handlePhotoPointerDown}
+              onKeyDown={handlePhotoKeyDown}
+            >
+              <img key={`${photoUrl}-${photoAttempt}`} src={photoUrl} alt={`${pet.name ?? '강아지'}의 실제 모습`} onError={() => setImageError(true)} />
+              <span className="photo-watermark-preview" aria-hidden="true"><i />{pet.name || '강아지'}</span>
+              {tapHeart && (
+                <span
+                  key={tapHeart.id}
+                  className="photo-tap-heart"
+                  style={{ left: `${tapHeart.x}%`, top: `${tapHeart.y}%` }}
+                  aria-hidden="true"
+                >♥</span>
+              )}
+            </button>
+          )}
+          {onSave && !imageError && (
             <button
               className="photo-save-button"
               type="button"
@@ -111,7 +144,7 @@ export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare
         <div className="photo-card-actions">
           {pet.shareable && onShare && <Button display="full" size="large" onClick={onShare}>이 귀여움 같이 보기</Button>}
           <Button display="full" size="large" onClick={onUpload}>우리 강아지도 소개하기</Button>
-          <Button display="full" size="large" color="dark" variant="weak" onClick={onClose}>집으로 돌아가기</Button>
+          <Button display="full" size="large" color="dark" variant="weak" onClick={onClose}>돌아가기</Button>
         </div>
         <TextButton className="report-button" size="small" variant="underline" color="#8b95a1" onClick={onReport}>이 사진 신고하기</TextButton>
       </article>

@@ -253,6 +253,7 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
   const frozenSubmission = useRef<SubmitPetInput>();
   const submissionLocked = submissionPhase !== 'editing';
   const submissionBusy = submissionPhase === 'submitting' || submissionPhase === 'reconciling';
+  const currentNameError = getPetNameError(name);
 
   async function choose() {
     if (analyzing || submissionLocked || frozenSubmission.current) return;
@@ -370,28 +371,27 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
         subtitleBottom={<Top.SubtitleParagraph>사진 한 장이면 닮은 캐릭터가 집에 바로 놀러 와요.</Top.SubtitleParagraph>}
       />
       <section className="upload-card">
-        {!dataUri && (
-          <div className="upload-step-heading">
-            <span aria-hidden="true">1</span>
-            <div><strong>사진을 골라주세요</strong><small>얼굴과 귀가 잘 보이는 사진이 좋아요.</small></div>
-          </div>
-        )}
+        <div className="upload-step-heading">
+          <span aria-hidden="true">1</span>
+          <div><strong>{dataUri ? '고른 사진을 확인해 주세요' : '사진을 골라주세요'}</strong><small>얼굴과 귀가 잘 보이는 사진이 좋아요.</small></div>
+        </div>
         <button type="button" className={`photo-picker ${dataUri ? 'has-photo' : ''}`} onClick={choose} disabled={analyzing || submissionLocked}>
           {dataUri ? <><img src={dataUri} alt="선택한 강아지" /><span className="photo-change-badge">사진 바꾸기</span></> : <><span className="photo-picker-icon"><Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F4F7.png" frameShape={{ width: 64, height: 64 }} alt="카메라" /></span><strong>{useBrowserPhotoPicker ? '기기에서 사진 고르기' : '사진 한 장 고르기'}</strong><small>{useBrowserPhotoPicker ? '한 번 더 누르면 선택창이 열려요' : 'JPG, PNG, WEBP · 최대 1장'}</small></>}
         </button>
         {!dataUri && (
           <div className="upload-flow-guide" aria-label="강아지 소개 과정">
-            <div><span aria-hidden="true">1</span><p><strong>내 집에 바로 나타나요</strong><small>검수 중에도 캐릭터와 먼저 놀 수 있어요.</small></p></div>
-            <div><span aria-hidden="true">2</span><p><strong>친구에게 먼저 보여줄 수 있어요</strong><small>승인 전 공유 링크에는 캐릭터만 보여요.</small></p></div>
-            <div><span aria-hidden="true">3</span><p><strong>승인되면 모두가 만나요</strong><small>그때부터 실제 사진도 안전하게 공개돼요.</small></p></div>
+            <strong className="upload-flow-guide-title">등록하면 이렇게 돼요</strong>
+            <div><span aria-hidden="true">✓</span><p><strong>내 집에 바로 나타나요</strong><small>검수 중에도 캐릭터와 먼저 놀 수 있어요.</small></p></div>
+            <div><span aria-hidden="true">✓</span><p><strong>친구에게 먼저 보여줄 수 있어요</strong><small>승인 전 공유 링크에는 캐릭터만 보여요.</small></p></div>
+            <div><span aria-hidden="true">✓</span><p><strong>승인되면 모두가 만나요</strong><small>그때부터 실제 사진도 안전하게 공개돼요.</small></p></div>
           </div>
         )}
-        {dataUri && !traits && <><div className="upload-step-heading upload-step-heading--after-photo"><span aria-hidden="true">2</span><div><strong>사진을 확인해 주세요</strong><small>캐릭터는 기기에서 무료로 만들어요.</small></div></div><Button className="upload-cta" display="full" size="large" onClick={analyze} disabled={analyzing || submissionLocked} loading={analyzing}>캐릭터 만들어보기</Button></>}
+        {dataUri && !traits && <><p className="upload-analysis-note">사진은 기기 안에서 가볍게 분석해요.</p><Button className="upload-cta" display="full" size="large" onClick={analyze} disabled={analyzing || submissionLocked} loading={analyzing}>캐릭터 만들어보기</Button></>}
         {traits && <div className="trait-editor">
           <div className="upload-step-heading"><span aria-hidden="true">2</span><div><strong>캐릭터를 확인해 주세요</strong><small>조금 다르면 아래에서 직접 바꿀 수 있어요.</small></div></div>
           <div className="preview-panel"><PetArtwork traits={traits} size={190} /><span><strong>이 모습으로<br />집에 놀러 와요</strong><small>사진의 대표 털색을 참고했어요</small></span></div>
           {analysisNotice && <p className="input-help" role="status">{analysisNotice}</p>}
-          <label>강아지 이름 <small>선택 · {petNameLength(name)}/4</small><input value={name} disabled={submissionLocked} onChange={(e) => setName(limitPetName(e.target.value))} placeholder="예: 보리" aria-describedby="pet-name-help" /><span className="input-help" id="pet-name-help">네 글자까지 입력할 수 있어요.</span></label>
+          <label>강아지 이름 <small>선택 · {petNameLength(name)}/4</small><input value={name} disabled={submissionLocked} onChange={(e) => setName(limitPetName(e.target.value))} placeholder="예: 보리" aria-describedby="pet-name-help" aria-invalid={Boolean(currentNameError)} /><span className={`input-help${currentNameError ? ' input-help--error' : ''}`} id="pet-name-help" role={currentNameError ? 'alert' : undefined}>{currentNameError ?? '네 글자까지 입력할 수 있어요.'}</span></label>
           <EarShapePicker traits={traits} value={traits.earShape} disabled={submissionLocked} onChange={(earShape) => update('earShape', earShape)} />
           <FaceMarkingPicker traits={traits} disabled={submissionLocked} onChange={(markingPattern) => update('markingPattern', markingPattern)} />
           <CoatColorPickers
@@ -413,7 +413,7 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
             {submissionPhase === 'uncertain' ? '등록 상태 확인하기' : '이 모습으로 소개하기'}
           </Button>
         </div>}
-        {error && <p className="error-message" role="alert">{error}</p>}
+        {error && error !== currentNameError && <p className="error-message" role="alert">{error}</p>}
       </section>
     </main>
   );

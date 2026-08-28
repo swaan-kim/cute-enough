@@ -28,6 +28,25 @@ export function canRevealStoredPetPhoto({
   return status === 'approved' || (status === 'pending' && isOwner && allowPendingOwner);
 }
 
+/**
+ * `ownerPhotoAvailable` is authored by the server, after both ownership and an
+ * existing private Storage object have been checked. It must never be inferred
+ * from the client-side `isMine` flag alone.
+ */
+export function canOpenOwnerPhoto({
+  status,
+  isOwner,
+  hasExistingPhoto,
+}: {
+  status: unknown;
+  isOwner: boolean;
+  hasExistingPhoto: boolean;
+}): boolean {
+  return isOwner
+    && hasExistingPhoto
+    && (status === 'pending' || status === 'approved');
+}
+
 export function wasPetRevealedToday(petId: string, revealedPetIds: ReadonlySet<string>): boolean {
   return revealedPetIds.has(petId);
 }
