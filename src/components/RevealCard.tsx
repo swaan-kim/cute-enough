@@ -88,7 +88,7 @@ export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare
             onKeyDown={handlePhotoKeyDown}
           >
             <img src={photoUrl} alt={`${pet.name ?? '강아지'}의 실제 모습`} />
-            <span className="photo-watermark-preview" aria-hidden="true"><i />찰딱</span>
+            <span className="photo-watermark-preview" aria-hidden="true"><i />{pet.name || '강아지'}</span>
             {tapHeart && (
               <span
                 key={tapHeart.id}

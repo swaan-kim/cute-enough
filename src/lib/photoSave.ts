@@ -1,23 +1,26 @@
 import { File } from '@apps-in-toss/web-framework';
 import { isPreviewRuntime } from './runtime';
-
-const WATERMARK_TEXT = '찰딱';
+import { limitPetName } from './petName';
 
 export type PhotoSaveDestination = 'device' | 'download';
 
-export function buildBrandedPhotoFileName(petName?: string, now = new Date()): string {
-  const safeName = (petName ?? '강아지')
+export function getBrandedPhotoLabel(petName?: string): string {
+  const safeName = limitPetName((petName ?? '')
     .normalize('NFC')
     .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '')
-    .trim()
-    .slice(0, 4) || '강아지';
+    .trim());
+  return safeName || '강아지';
+}
+
+export function buildBrandedPhotoFileName(petName?: string, now = new Date()): string {
+  const safeName = getBrandedPhotoLabel(petName);
   const date = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Seoul',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   }).format(now).replaceAll('-', '');
-  return `찰딱-${safeName}-${date}.jpg`;
+  return `${safeName}-${date}.jpg`;
 }
 
 function roundedRectPath(
@@ -42,7 +45,7 @@ function roundedRectPath(
   context.closePath();
 }
 
-function drawWatermark(context: CanvasRenderingContext2D, width: number, height: number) {
+function drawWatermark(context: CanvasRenderingContext2D, width: number, height: number, label: string) {
   const scale = Math.max(0.72, Math.min(1.7, Math.min(width, height) / 640));
   const margin = Math.round(18 * scale);
   const pillHeight = Math.round(38 * scale);
@@ -53,7 +56,7 @@ function drawWatermark(context: CanvasRenderingContext2D, width: number, height:
   context.save();
   context.font = `800 ${fontSize}px -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif`;
   context.textBaseline = 'middle';
-  const textWidth = context.measureText(WATERMARK_TEXT).width;
+  const textWidth = context.measureText(label).width;
   const pillWidth = Math.ceil(horizontalPadding * 2 + iconSize + 7 * scale + textWidth);
   const x = width - margin - pillWidth;
   const y = height - margin - pillHeight;
@@ -80,7 +83,7 @@ function drawWatermark(context: CanvasRenderingContext2D, width: number, height:
   context.fill();
 
   context.fillStyle = '#4e342e';
-  context.fillText(WATERMARK_TEXT, iconX + iconSize + 7 * scale, y + pillHeight / 2 + 0.5 * scale);
+  context.fillText(label, iconX + iconSize + 7 * scale, y + pillHeight / 2 + 0.5 * scale);
   context.restore();
 }
 
@@ -99,7 +102,7 @@ async function loadImageFromUrl(photoUrl: string): Promise<{ image: HTMLImageEle
   return { image, objectUrl };
 }
 
-export async function createBrandedPhotoData(photoUrl: string): Promise<{ base64: string; dataUrl: string }> {
+export async function createBrandedPhotoData(photoUrl: string, petName?: string): Promise<{ base64: string; dataUrl: string }> {
   const { image, objectUrl } = await loadImageFromUrl(photoUrl);
   try {
     const canvas = document.createElement('canvas');
@@ -108,7 +111,7 @@ export async function createBrandedPhotoData(photoUrl: string): Promise<{ base64
     const context = canvas.getContext('2d');
     if (!context || canvas.width < 1 || canvas.height < 1) throw new Error('사진을 저장용으로 준비하지 못했어요.');
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    drawWatermark(context, canvas.width, canvas.height);
+    drawWatermark(context, canvas.width, canvas.height, getBrandedPhotoLabel(petName));
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
     return { dataUrl, base64: dataUrl.slice(dataUrl.indexOf(',') + 1) };
   } finally {
@@ -117,7 +120,7 @@ export async function createBrandedPhotoData(photoUrl: string): Promise<{ base64
 }
 
 export async function saveBrandedPetPhoto(photoUrl: string, petName?: string): Promise<PhotoSaveDestination> {
-  const { base64, dataUrl } = await createBrandedPhotoData(photoUrl);
+  const { base64, dataUrl } = await createBrandedPhotoData(photoUrl, petName);
   const fileName = buildBrandedPhotoFileName(petName);
 
   if (!isPreviewRuntime) {

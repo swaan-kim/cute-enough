@@ -573,8 +573,8 @@ export default function App() {
         try {
           const destination = await saveBrandedPetPhoto(photoUrl, selected.name);
           setToast(destination === 'device'
-            ? '찰딱 로고와 함께 기기에 저장했어요.'
-            : '찰딱 로고가 담긴 사진을 저장했어요.');
+            ? `${selected.name || '강아지'} 이름표와 함께 기기에 저장했어요.`
+            : `${selected.name || '강아지'} 이름표가 담긴 사진을 저장했어요.`);
         } catch (error) {
           setToast(error instanceof Error ? error.message : '사진을 저장하지 못했어요.');
         }

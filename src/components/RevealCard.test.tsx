@@ -66,7 +66,7 @@ describe('RevealCard', () => {
 
   it('offers a branded photo save without triggering the heart surface', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    const { container } = render(
       <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
         <RevealCard
           pet={pet}
@@ -79,7 +79,7 @@ describe('RevealCard', () => {
       </TDSMobileAITProvider>,
     );
 
-    expect(screen.getByText('찰딱')).toBeInTheDocument();
+    expect(container.querySelector('.photo-watermark-preview')).toHaveTextContent('하늘');
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '사진 저장' }));
       await Promise.resolve();

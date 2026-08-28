@@ -401,7 +401,7 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
             onPointColorChange={(secondaryColor) => update('secondaryColor', secondaryColor)}
           />
           <div className="upload-step-heading upload-submit-heading"><span aria-hidden="true">3</span><div><strong>소개를 마무리해요</strong><small>승인 전에는 다른 사람에게 실제 사진이 보이지 않아요.</small></div></div>
-          <label className="consent"><input type="checkbox" checked={consented} disabled={submissionLocked} onChange={(e) => setConsented(e.target.checked)} /><span>이 사진을 올릴 권리가 있으며, 승인 후 공개와 찰딱 로고가 포함된 사진 저장에 동의해요.</span></label>
+          <label className="consent"><input type="checkbox" checked={consented} disabled={submissionLocked} onChange={(e) => setConsented(e.target.checked)} /><span>이 사진을 올릴 권리가 있으며, 승인 후 공개와 강아지 이름표가 포함된 사진 저장에 동의해요.</span></label>
           <Button
             className="upload-cta"
             display="full"
