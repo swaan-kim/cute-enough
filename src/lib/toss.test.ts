@@ -11,7 +11,7 @@ const bridge = vi.hoisted(() => {
     vi.fn<(options?: unknown) => Promise<AlbumPhoto[]>>(),
     {
       getPermission: vi.fn(),
-      openPermissionDialog: vi.fn(),
+      openPermissionDialog: vi.fn<() => Promise<'allowed' | 'denied'>>(),
     },
   );
 
@@ -47,13 +47,14 @@ describe('pickOnePhoto', () => {
     bridge.getPhotos.mockResolvedValue([
       { id: 'legacy-photo-1', dataUri: 'LEGACY_PHOTO' },
     ]);
+    bridge.getPhotos.openPermissionDialog.mockResolvedValue('denied');
   });
 
   it('opens the modern selection-focused picker and normalizes its raw base64', async () => {
     await expect(pickOnePhoto()).resolves.toBe('data:image/jpeg;base64,PHOTO');
 
     expect(bridge.getAlbumItems).toHaveBeenCalledWith({
-      maxCount: 1, maxWidth: 1024, base64: true, types: ['PHOTO'],
+      maxCount: 2, maxWidth: 1024, base64: true, types: ['PHOTO'],
     });
     expect(bridge.getPhotos).not.toHaveBeenCalled();
   });
@@ -64,8 +65,44 @@ describe('pickOnePhoto', () => {
     await expect(pickOnePhoto()).resolves.toBe('data:image/jpeg;base64,LEGACY_PHOTO');
     expect(bridge.getAlbumItems).not.toHaveBeenCalled();
     expect(bridge.getPhotos).toHaveBeenCalledWith({
-      maxCount: 1, maxWidth: 1024, base64: true,
+      maxCount: 2, maxWidth: 1024, base64: true,
     });
+  });
+
+  it.each([
+    { code: 'NOT_ALLOWED' },
+    new Error('UNSUPPORTED_APP_VERSION'),
+    new Error('BRIDGE_UNAVAILABLE'),
+    new Error('INVALID_REQUEST: Max items must be higher than 1'),
+  ])('recovers from a modern picker compatibility failure through the permission-wrapped picker', async (nativeError) => {
+    bridge.getAlbumItems.mockRejectedValueOnce(nativeError);
+
+    await expect(pickOnePhoto()).resolves.toBe('data:image/jpeg;base64,LEGACY_PHOTO');
+    expect(bridge.getPhotos).toHaveBeenCalledWith({
+      maxCount: 2, maxWidth: 1024, base64: true,
+    });
+  });
+
+  it('opens the Toss permission dialog and retries the legacy picker when access was denied', async () => {
+    bridge.getAlbumItems.mockRejectedValueOnce({ code: 'NOT_ALLOWED' });
+    bridge.getPhotos
+      .mockRejectedValueOnce({ code: 'NO_PERMISSION' })
+      .mockResolvedValueOnce([{ id: 'legacy-photo-1', dataUri: 'AFTER_PERMISSION' }]);
+    bridge.getPhotos.openPermissionDialog.mockResolvedValueOnce('allowed');
+
+    await expect(pickOnePhoto()).resolves.toBe('data:image/jpeg;base64,AFTER_PERMISSION');
+    expect(bridge.getPhotos.openPermissionDialog).toHaveBeenCalledOnce();
+    expect(bridge.getPhotos).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the permission error when the user declines the recovery dialog', async () => {
+    bridge.getAlbumItems.mockRejectedValueOnce({ code: 'NOT_ALLOWED' });
+    bridge.getPhotos.mockRejectedValueOnce({ code: 'NO_PERMISSION' });
+    bridge.getPhotos.openPermissionDialog.mockResolvedValueOnce('denied');
+
+    await expect(pickOnePhoto()).rejects.toThrow('사진 접근이 꺼져 있어요.');
+    expect(bridge.getPhotos.openPermissionDialog).toHaveBeenCalledOnce();
+    expect(bridge.getPhotos).toHaveBeenCalledOnce();
   });
 
   it('keeps an already-prefixed data URI unchanged', async () => {
@@ -77,12 +114,24 @@ describe('pickOnePhoto', () => {
   });
 
   it.each([
-    [{ code: 'NOT_ALLOWED' }, '사진 접근이 꺼져 있어요. 한 번 더 눌러 기기 사진을 골라주세요.'],
-    [{ cause: { errorCode: 'NO_PERMISSION' } }, '사진 접근이 꺼져 있어요. 한 번 더 눌러 기기 사진을 골라주세요.'],
     [new Error('INVALID_DATA'), '선택한 사진을 읽지 못했어요. 한 번 더 눌러 다른 사진을 골라주세요.'],
-    [new Error('BRIDGE_UNAVAILABLE'), '토스 사진 선택창을 열지 못했어요. 한 번 더 눌러 기기 사진을 골라주세요.'],
   ])('maps the native album failure %# to a recoverable message', async (nativeError, message) => {
     bridge.getAlbumItems.mockRejectedValueOnce(nativeError);
+
+    const request = pickOnePhoto();
+    await expect(request).rejects.toThrow(message);
+    await request.catch((error) => expect(isPhotoPickerUnavailableError(error)).toBe(true));
+    expect(bridge.getPhotos).not.toHaveBeenCalled();
+    expect(bridge.getPhotos.openPermissionDialog).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ code: 'NOT_ALLOWED' }, '사진 접근이 꺼져 있어요. 한 번 더 눌러 기기 사진을 골라주세요.'],
+    [{ cause: { errorCode: 'NO_PERMISSION' } }, '사진 접근이 꺼져 있어요. 한 번 더 눌러 기기 사진을 골라주세요.'],
+    [new Error('BRIDGE_UNAVAILABLE'), '토스 사진 선택창을 열지 못했어요. 한 번 더 눌러 기기 사진을 골라주세요.'],
+  ])('maps the final compatibility picker failure %# to a recoverable message', async (nativeError, message) => {
+    bridge.getAlbumItems.mockRejectedValueOnce(nativeError);
+    bridge.getPhotos.mockRejectedValueOnce(nativeError);
 
     const request = pickOnePhoto();
     await expect(request).rejects.toThrow(message);
@@ -93,6 +142,8 @@ describe('pickOnePhoto', () => {
     bridge.getAlbumItems.mockRejectedValueOnce(new Error('USER_CANCELED'));
 
     await expect(pickOnePhoto()).resolves.toBeNull();
+    expect(bridge.getPhotos).not.toHaveBeenCalled();
+    expect(bridge.getPhotos.openPermissionDialog).not.toHaveBeenCalled();
   });
 
   it('returns null when the photo picker returns an empty selection', async () => {
@@ -104,6 +155,7 @@ describe('pickOnePhoto', () => {
   it('does not open a web input until the user explicitly retries', async () => {
     const inputClick = vi.spyOn(HTMLInputElement.prototype, 'click');
     bridge.getAlbumItems.mockRejectedValueOnce(new Error('BRIDGE_UNAVAILABLE'));
+    bridge.getPhotos.mockRejectedValueOnce(new Error('BRIDGE_UNAVAILABLE'));
 
     await expect(pickOnePhoto()).rejects.toThrow('한 번 더 눌러 기기 사진을 골라주세요.');
     expect(inputClick).not.toHaveBeenCalled();

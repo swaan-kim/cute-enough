@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { TDSMobileAITProvider } from '@toss/tds-mobile-ait';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoatColor, EarShape, MarkingPattern, PetTraitsV1, SubmitPetResult } from '../types';
@@ -166,15 +166,26 @@ describe('UploadFlow introduction', () => {
   });
 
   it('locks editing and retries the exact frozen payload while the outcome is uncertain', async () => {
+    let rejectInitialSubmission!: (error: Error) => void;
+    const initialSubmission = new Promise<SubmitPetResult>((_resolve, reject) => {
+      rejectInitialSubmission = reject;
+    });
     uploadMocks.submitPet
-      .mockRejectedValueOnce(new PetApiError('요청 결과를 아직 확인하지 못했어요.', 'REQUEST_TIMEOUT', 'unknown'))
+      .mockReturnValueOnce(initialSubmission)
       .mockResolvedValueOnce(submittedResult);
     uploadMocks.fetchSubmissionStatus.mockResolvedValue({ found: false });
     const onSubmitted = await prepareUploadFlow();
 
     fireEvent.click(screen.getByRole('button', { name: '이 모습으로 소개하기' }));
+    expect(uploadMocks.submitPet).toHaveBeenCalledOnce();
+    await act(async () => {
+      rejectInitialSubmission(new PetApiError('요청 결과를 아직 확인하지 못했어요.', 'REQUEST_TIMEOUT', 'unknown'));
+      await initialSubmission.catch(() => undefined);
+    });
 
-    const recovery = await screen.findByRole('button', { name: '등록 상태 확인하기' });
+    // TDS keeps its loader mounted briefly for the exit animation, so its
+    // transient accessible name can be "등록 상태 확인하기 loading".
+    const recovery = screen.getByRole('button', { name: /등록 상태 확인하기/ });
     expect(screen.getByRole('button', { name: /사진 바꾸기/ })).toBeDisabled();
     expect(screen.getByPlaceholderText('예: 보리')).toBeDisabled();
     expect(screen.getByRole('checkbox')).toBeDisabled();
@@ -182,13 +193,15 @@ describe('UploadFlow introduction', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('같은 강아지가 두 번 등록되지는 않아요.');
 
     const frozenInput = uploadMocks.submitPet.mock.calls[0][0];
-    fireEvent.click(recovery);
+    await act(async () => {
+      fireEvent.click(recovery);
+    });
 
-    await waitFor(() => expect(uploadMocks.submitPet).toHaveBeenCalledTimes(2));
+    expect(uploadMocks.submitPet).toHaveBeenCalledTimes(2);
     expect(uploadMocks.submitPet.mock.calls[1][0]).toEqual(frozenInput);
     expect(uploadMocks.fetchSubmissionStatus).toHaveBeenNthCalledWith(1, frozenInput.submissionId);
     expect(uploadMocks.fetchSubmissionStatus).toHaveBeenNthCalledWith(2, frozenInput.submissionId);
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalledWith(submittedResult));
+    expect(onSubmitted).toHaveBeenCalledWith(submittedResult);
   });
 });
 

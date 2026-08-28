@@ -34,7 +34,7 @@ export async function getUserHash(): Promise<string> {
   return preview;
 }
 
-const PHOTO_OPTIONS = { maxCount: 1, maxWidth: 1024, base64: true } as const;
+const PHOTO_OPTIONS = { maxCount: 2, maxWidth: 1024, base64: true } as const;
 
 export class PhotoPickerUnavailableError extends Error {
   readonly useBrowserFallback = true;
@@ -90,22 +90,34 @@ export function pickOnePhotoFromBrowser(): Promise<string | null> {
 export async function pickOnePhoto(): Promise<string | null> {
   if (isPreviewRuntime) return pickOnePhotoFromBrowser();
 
+  let modernPickerError: unknown;
   try {
     // getAlbumItems is the current, selection-focused API. Unlike getPhotos it
     // does not make a hidden requestPermission bridge call before the picker.
+    // Android's multi-photo contract rejects maxCount=1 before showing its UI,
+    // so request the smallest valid multi-select count and consume only item 0.
     if (Device.getAlbumItems.isSupported()) {
-      const items = await Device.getAlbumItems({ ...PHOTO_OPTIONS, types: ['PHOTO'] });
-      return normalizePickedPhoto(items[0]?.dataUri);
+      try {
+        const items = await Device.getAlbumItems({ ...PHOTO_OPTIONS, types: ['PHOTO'] });
+        return normalizePickedPhoto(items[0]?.dataUri);
+      } catch (error) {
+        const details = bridgeErrorCode(error);
+        if (isPhotoPickerCanceled(details)) return null;
+        if (!shouldTryLegacyPhotoPicker(details)) throw error;
+        modernPickerError = error;
+      }
     }
 
-    // Keep the permission-wrapped photo-only API for older Toss versions.
-    const items = await Device.getPhotos(PHOTO_OPTIONS);
+    // Keep the permission-wrapped photo-only API for older Toss versions and
+    // as a recovery path when the modern bridge cannot request album access.
+    const items = await pickWithPermissionWrappedPhotoPicker();
     return normalizePickedPhoto(items[0]?.dataUri);
   } catch (error) {
     const details = bridgeErrorCode(error);
-    if (hasBridgeErrorCode(details, 'CANCELED') || hasBridgeErrorCode(details, 'CANCELLED') || hasBridgeErrorCode(details, 'USER_CANCELED')) return null;
+    if (isPhotoPickerCanceled(details)) return null;
 
-    console.warn('[photo-picker]', details || 'UNKNOWN_ERROR');
+    const modernDetails = bridgeErrorCode(modernPickerError);
+    console.warn('[photo-picker]', [modernDetails, details].filter(Boolean).join(' -> ') || 'UNKNOWN_ERROR');
     if (error instanceof FetchAlbumPhotosPermissionError || isPhotoPermissionError(details)) {
       throw new PhotoPickerUnavailableError('사진 접근이 꺼져 있어요. 한 번 더 눌러 기기 사진을 골라주세요.');
     }
@@ -117,6 +129,39 @@ export async function pickOnePhoto(): Promise<string | null> {
     }
     throw new PhotoPickerUnavailableError('토스 사진 선택창을 열지 못했어요. 한 번 더 눌러 기기 사진을 골라주세요.');
   }
+}
+
+async function pickWithPermissionWrappedPhotoPicker() {
+  try {
+    return await Device.getPhotos(PHOTO_OPTIONS);
+  } catch (error) {
+    const details = bridgeErrorCode(error);
+    if (!isPhotoPermissionError(details)) throw error;
+
+    try {
+      const permission = await Device.getPhotos.openPermissionDialog();
+      if (permission === 'allowed') return await Device.getPhotos(PHOTO_OPTIONS);
+    } catch {
+      // Preserve the original permission error so the caller can show one
+      // consistent recovery message instead of exposing a bridge error.
+    }
+    throw error;
+  }
+}
+
+function isPhotoPickerCanceled(details: string): boolean {
+  return hasBridgeErrorCode(details, 'CANCELED')
+    || hasBridgeErrorCode(details, 'CANCELLED')
+    || hasBridgeErrorCode(details, 'USER_CANCELED');
+}
+
+function shouldTryLegacyPhotoPicker(details: string): boolean {
+  return isPhotoPermissionError(details)
+    || hasBridgeErrorCode(details, 'UNSUPPORTED_APP_VERSION')
+    || hasBridgeErrorCode(details, 'METHOD_NOT_FOUND')
+    || hasBridgeErrorCode(details, 'BRIDGE_UNAVAILABLE')
+    || hasBridgeErrorCode(details, 'INVALID_REQUEST')
+    || hasBridgeErrorCode(details, 'MAX_ITEMS');
 }
 
 function bridgeErrorCode(error: unknown, depth = 0): string {

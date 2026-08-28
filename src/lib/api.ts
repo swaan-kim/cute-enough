@@ -182,9 +182,8 @@ export async function revealPet(pet: PetSummary, method: UnlockMethod, adSession
     const photoUrl = selectPetPhotoUrl(pet, current.date, viewerKey);
     if (!photoUrl) throw new Error('이 친구의 사진을 불러오지 못했어요.');
     const allowance = consumeAllowance(current, method, now);
-    const revisitUntil = method === 'FREE'
-      ? allowance.nextChargeAt
-      : new Date(now.getTime() + FREE_RECHARGE_INTERVAL_MS).toISOString();
+    const revisitUntil = allowance.nextChargeAt
+      ?? new Date(now.getTime() + FREE_RECHARGE_INTERVAL_MS).toISOString();
     if (!revisitUntil) throw new Error('재열람 시간을 확인하지 못했어요. 다시 시도해 주세요.');
     saveAllowance(allowance);
     markPreviewPetRevealed(pet.id, revisitUntil, current.date);

@@ -11,13 +11,18 @@ export function isDailyLimitToast(text: string) {
 
 type AppToastProps = {
   text: string;
+  eventId?: number;
   onDismissDailyLimit: () => void;
   ariaLive?: 'polite' | 'assertive';
 };
 
-export function AppToast({ text, onDismissDailyLimit, ariaLive = 'polite' }: AppToastProps) {
+export function AppToast({ text, eventId = 0, onDismissDailyLimit, ariaLive = 'polite' }: AppToastProps) {
   const isDailyLimit = isDailyLimitToast(text);
   const duration = isDailyLimit ? DAILY_LIMIT_TOAST_DURATION : APP_TOAST_DURATION;
+  // TDS restarts its internal timer when `duration` changes. Alternating by a
+  // harmless 1ms lets the same message restart without remounting its portal
+  // (a keyed remount briefly leaves two animated toast layers behind).
+  const tdsDuration = duration + (eventId % 2);
 
   // TDS also owns a dismissal timer, but keeping the controlled `open` state on
   // an app timer prevents a stale native/WebView animation from leaving the
@@ -26,7 +31,7 @@ export function AppToast({ text, onDismissDailyLimit, ariaLive = 'polite' }: App
     if (!text) return undefined;
     const timer = window.setTimeout(onDismissDailyLimit, duration);
     return () => window.clearTimeout(timer);
-  }, [duration, onDismissDailyLimit, text]);
+  }, [duration, eventId, onDismissDailyLimit, text]);
 
   return (
     <Toast
@@ -35,7 +40,7 @@ export function AppToast({ text, onDismissDailyLimit, ariaLive = 'polite' }: App
       open={Boolean(text)}
       text={text}
       aria-live={ariaLive}
-      duration={duration}
+      duration={tdsDuration}
       onClose={onDismissDailyLimit}
     />
   );

@@ -73,7 +73,7 @@ describe('preview revisit windows', () => {
     expect(reopened.revisitUntil).toBe(revealed.revisitUntil);
   });
 
-  it('gives non-free preview reveals a three-hour revisit window', async () => {
+  it('falls back to three hours for a non-free reveal when the free bucket is full', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-28T01:00:00.000Z'));
     localStorage.setItem('cute-enough:preview-user', 'viewer-a');
@@ -81,5 +81,33 @@ describe('preview revisit windows', () => {
     const result = await revealPet(SAMPLE_PETS[0], 'REWARDED', crypto.randomUUID());
 
     expect(result.revisitUntil).toBe('2026-08-28T04:00:00.000Z');
+  });
+
+  it.each([
+    { method: 'REWARDED' as const, petIndex: 0 },
+    { method: 'UPLOAD' as const, petIndex: 1 },
+  ])('uses the actual next free recharge boundary for $method revisits', async ({ method, petIndex }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-28T01:00:00.000Z'));
+    localStorage.setItem('cute-enough:preview-user', 'viewer-a');
+    const pet = SAMPLE_PETS[petIndex];
+    localStorage.setItem('cute-enough:allowance', JSON.stringify({
+      date: '2026-08-28',
+      freeUsed: 2,
+      remaining: 0,
+      nextChargeAt: '2026-08-28T01:05:00.000Z',
+      rewardedUsed: 0,
+      uploadCredit: method === 'UPLOAD',
+      uploadUsed: false,
+      uploadRewardPetId: method === 'UPLOAD' ? pet.id : undefined,
+    }));
+
+    const result = await revealPet(
+      pet,
+      method,
+      method === 'REWARDED' ? crypto.randomUUID() : undefined,
+    );
+
+    expect(result.revisitUntil).toBe('2026-08-28T01:05:00.000Z');
   });
 });

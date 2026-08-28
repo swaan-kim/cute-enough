@@ -13,7 +13,7 @@ export function isShareablePetStatus(status: unknown): status is VisiblePetStatu
 
 /**
  * 실제 사진 공개는 승인 상태가 기본이다.
- * pending 예외는 서버가 소유자를 확인했고 업로드 보너스/당일 재열람처럼
+ * pending 예외는 서버가 소유자를 확인했고 업로드 보너스/충전 전 재열람처럼
  * 명시적으로 allowPendingOwner를 넘긴 경우에만 허용한다.
  */
 export function canRevealStoredPetPhoto({

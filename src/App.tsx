@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Asset, Button, ConfirmDialog, Result, Top } from '@toss/tds-mobile';
 import { AppToast, DAILY_LIMIT_TOAST } from './components/AppToast';
 import { House } from './components/House';
+import { PetArtwork } from './components/PetArtwork';
 import { PlayScene } from './components/PlayScene';
 import { RevealCard } from './components/RevealCard';
 import { SoundToggle } from './components/SoundToggle';
@@ -54,12 +55,14 @@ export default function App() {
   const adAbortRef = useRef<AbortController>();
   const [adStatus, setAdStatus] = useState<RewardedAdStatus>(getRewardedAdStatus);
   const [status, setStatus] = useState('강아지들이 놀러 오는 중…');
-  const [toast, setToast] = useState('');
+  const [toast, setToastText] = useState('');
+  const [toastEventId, setToastEventId] = useState(0);
   const [busy, setBusy] = useState(false);
   const [houseError, setHouseError] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(readSoundEnabled);
   const [sharedError, setSharedError] = useState('');
   const [uploadRewardGranted, setUploadRewardGranted] = useState(false);
+  const [submittedPet, setSubmittedPet] = useState<PetSummary>();
   const [myPets, setMyPets] = useState<OwnedPetSummary[]>([]);
   const [myPetsLoading, setMyPetsLoading] = useState(false);
   const [myPetsError, setMyPetsError] = useState('');
@@ -71,7 +74,12 @@ export default function App() {
   const lastHouseLoadedAtRef = useRef(0);
 
   const dismissDailyLimitToast = useCallback(() => {
-    setToast('');
+    setToastText('');
+  }, []);
+
+  const setToast = useCallback((text: string) => {
+    setToastText(text);
+    setToastEventId((current) => current + 1);
   }, []);
 
   useEffect(() => {
@@ -513,6 +521,7 @@ export default function App() {
     setAllowance(credited);
     allowanceRef.current = credited;
     setUploadRewardGranted(result.rewardGranted);
+    setSubmittedPet(result.pet);
     setPets((existing) => {
       const uploaded = { ...result.pet, isMine: true, ownerPinned: true };
       const publicPets = prioritizeRevealedPets(
@@ -526,26 +535,31 @@ export default function App() {
   if (screen === 'submitted') return (
     <main className="submitted-screen">
       <Result
-        figure={<Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F48C.png" frameShape={{ width: 96, height: 96 }} alt="마음이 담긴 편지" />}
-        title="소중한 사진을 맡겨주셔서 고마워요"
+        figure={submittedPet
+          ? <div className="submitted-pet"><span>검수 중</span><PetArtwork pet={submittedPet} size={176} happy panting /></div>
+          : <Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F48C.png" frameShape={{ width: 96, height: 96 }} alt="마음이 담긴 편지" />}
+        title={submittedPet ? `${submittedPet.name ?? '새 친구'}가 집에 놀러 왔어요` : '소중한 사진을 맡겨주셔서 고마워요'}
         description={uploadRewardGranted
           ? <>지금 집에서 이 친구에게 간식을 주면<br />광고 없이 실제 모습을 만날 수 있어요.</>
           : <>사진은 안전 검사를 거쳐 승인되면<br />다른 사람의 집에도 놀러 가요.</>}
-        button={<Result.Button onClick={goHome}>집으로 돌아가기</Result.Button>}
+        button={<Result.Button onClick={() => {
+          goHome();
+          if (submittedPet) choosePet(submittedPet);
+        }}>{submittedPet ? '지금 만나보기' : '집으로 돌아가기'}</Result.Button>}
       />
     </main>
   );
-  if (screen === 'mine') return <><Suspense fallback={screenFallback}><MyPetsScreen pets={myPets} loading={myPetsLoading} error={myPetsError} onRetry={() => void openMyPets()} onUpload={() => navigateTo({ screen: 'upload' })} onMeet={choosePet} onShare={(pet) => { void sharePet(pet.id, pet.name).catch((error) => setToast(error instanceof Error ? error.message : '공유하지 못했어요.')); }} /></Suspense><AppToast text={toast} onDismissDailyLimit={dismissDailyLimitToast} /></>;
+  if (screen === 'mine') return <><Suspense fallback={screenFallback}><MyPetsScreen pets={myPets} loading={myPetsLoading} error={myPetsError} onRetry={() => void openMyPets()} onUpload={() => navigateTo({ screen: 'upload' })} onMeet={choosePet} onShare={(pet) => { void sharePet(pet.id, pet.name).catch((error) => setToast(error instanceof Error ? error.message : '공유하지 못했어요.')); }} /></Suspense><AppToast text={toast} eventId={toastEventId} onDismissDailyLimit={dismissDailyLimitToast} /></>;
   if (screen === 'shared') {
     if (sharedError) return <main className="shared-screen shared-unavailable"><Result title={sharedError} description="공개가 끝났거나 잠시 쉬고 있는 친구일 수 있어요." button={<Result.Button onClick={goHome}>다른 친구 만나기</Result.Button>} /></main>;
     if (!selected) return <main className="shared-screen shared-loading"><p>친구를 만나러 가는 중…</p></main>;
-    return <><Suspense fallback={screenFallback}><SharedPetLanding pet={selected} onHome={goHome} onMeet={() => choosePet(selected)} /></Suspense>{adDialog}<AppToast text={toast} onDismissDailyLimit={dismissDailyLimitToast} /></>;
+    return <><Suspense fallback={screenFallback}><SharedPetLanding pet={selected} onHome={goHome} onMeet={() => choosePet(selected)} /></Suspense>{adDialog}<AppToast text={toast} eventId={toastEventId} onDismissDailyLimit={dismissDailyLimitToast} /></>;
   }
   if (screen === 'play' && selected) return <>
     {preparedVisit?.revisit
       ? <main className="revisit-screen" aria-hidden="true" />
       : <PlayScene pet={selected} onFed={handleFed} onSound={playSound} />}
-    <AppToast text={toast} onDismissDailyLimit={dismissDailyLimitToast} ariaLive={busy ? 'assertive' : 'polite'} />
+    <AppToast text={toast} eventId={toastEventId} onDismissDailyLimit={dismissDailyLimitToast} ariaLive={busy ? 'assertive' : 'polite'} />
     {photoUrl && <RevealCard
       pet={selected}
       photoUrl={photoUrl}
@@ -621,16 +635,25 @@ export default function App() {
         ) : dailyExhausted ? null : <b>{remaining}<small>마리</small></b>}
       </section>
       <button className="my-pets-link" type="button" onClick={() => void openMyPets()}>내가 올린 강아지</button>
-      {houseError ? (
+      {houseError && pets.length === 0 ? (
         <section className="house-error">
           <Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F415.png" frameShape={{ width: 76, height: 76 }} alt="강아지" />
           <strong>잠시 뒤 다시 불러와 주세요</strong>
           <Button size="medium" color="dark" variant="weak" onClick={() => void loadHouse(true)}>다시 불러오기</Button>
         </section>
       ) : <House pets={pets} onSelect={choosePet} onSound={playSound} />}
-      {!toast && <p className="home-hint" aria-live="polite">{status}</p>}
+      {!toast && houseError && pets.length > 0 ? (
+        <button
+          className="home-hint home-hint--retry"
+          type="button"
+          aria-live="polite"
+          onClick={() => void loadHouse(true)}
+        >
+          새 친구를 불러오지 못했어요 · 다시 눌러보기
+        </button>
+      ) : !toast && !houseError ? <p className="home-hint" aria-live="polite">{status}</p> : null}
       {adDialog}
-      <AppToast text={toast} onDismissDailyLimit={dismissDailyLimitToast} />
+      <AppToast text={toast} eventId={toastEventId} onDismissDailyLimit={dismissDailyLimitToast} />
     </main>
   );
 }

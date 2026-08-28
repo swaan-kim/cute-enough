@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { afterEach } from 'vitest';
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -39,7 +39,10 @@ function setup(props: Partial<Props> = {}) {
 }
 
 describe('AppToast', () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
 
   it('centers and auto-dismisses the daily-limit notice', () => {
     vi.useFakeTimers();
@@ -55,6 +58,7 @@ describe('AppToast', () => {
   });
 
   it('centers and auto-dismisses other messages too', () => {
+    vi.useFakeTimers();
     const { onDismissDailyLimit } = setup({ text: '사진을 저장했어요.' });
     const toast = screen.getByRole('button');
 
@@ -62,7 +66,54 @@ describe('AppToast', () => {
     expect(toast).not.toHaveClass('app-toast--daily-limit');
     expect(toast).toHaveAttribute('data-duration', String(APP_TOAST_DURATION));
 
-    fireEvent.click(toast);
+    act(() => vi.advanceTimersByTime(APP_TOAST_DURATION - 1));
+    expect(onDismissDailyLimit).not.toHaveBeenCalled();
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(onDismissDailyLimit).toHaveBeenCalledOnce();
+  });
+
+  it('restarts the dismissal timer when the text changes', () => {
+    vi.useFakeTimers();
+    const onDismissDailyLimit = vi.fn();
+    const { rerender } = render(
+      <AppToast text="첫 번째 안내" onDismissDailyLimit={onDismissDailyLimit} />,
+    );
+
+    act(() => vi.advanceTimersByTime(APP_TOAST_DURATION - 1));
+    expect(onDismissDailyLimit).not.toHaveBeenCalled();
+
+    rerender(
+      <AppToast text="두 번째 안내" onDismissDailyLimit={onDismissDailyLimit} />,
+    );
+    expect(screen.getByRole('button')).toHaveTextContent('두 번째 안내');
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(onDismissDailyLimit).not.toHaveBeenCalled();
+
+    act(() => vi.advanceTimersByTime(APP_TOAST_DURATION - 2));
+    expect(onDismissDailyLimit).not.toHaveBeenCalled();
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(onDismissDailyLimit).toHaveBeenCalledOnce();
+  });
+
+  it('restarts the dismissal timer when the same notice is requested again', () => {
+    vi.useFakeTimers();
+    const onDismissDailyLimit = vi.fn();
+    const { rerender } = render(
+      <AppToast text={DAILY_LIMIT_TOAST} eventId={1} onDismissDailyLimit={onDismissDailyLimit} />,
+    );
+
+    act(() => vi.advanceTimersByTime(DAILY_LIMIT_TOAST_DURATION - 1));
+    rerender(
+      <AppToast text={DAILY_LIMIT_TOAST} eventId={2} onDismissDailyLimit={onDismissDailyLimit} />,
+    );
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(onDismissDailyLimit).not.toHaveBeenCalled();
+
+    act(() => vi.advanceTimersByTime(DAILY_LIMIT_TOAST_DURATION - 1));
     expect(onDismissDailyLimit).toHaveBeenCalledOnce();
   });
 });
