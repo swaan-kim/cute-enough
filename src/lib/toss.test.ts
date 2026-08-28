@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-type AlbumPhoto = { id: string; dataUri: string };
+type AlbumPhoto = { id: string; dataUri: string; type?: 'PHOTO' };
 
 const bridge = vi.hoisted(() => {
+  const getAlbumItems = Object.assign(
+    vi.fn<(options?: unknown) => Promise<AlbumPhoto[]>>(),
+    { isSupported: vi.fn(() => true) },
+  );
   const getPhotos = Object.assign(
     vi.fn<(options?: unknown) => Promise<AlbumPhoto[]>>(),
     {
@@ -11,11 +15,12 @@ const bridge = vi.hoisted(() => {
     },
   );
 
-  return { getPhotos };
+  return { getAlbumItems, getPhotos };
 });
 
 vi.mock('@apps-in-toss/web-framework', () => ({
-  Device: { getPhotos: bridge.getPhotos },
+  Device: { getAlbumItems: bridge.getAlbumItems, getPhotos: bridge.getPhotos },
+  FetchAlbumPhotosPermissionError: class FetchAlbumPhotosPermissionError extends Error {},
   getSchemeUri: vi.fn(),
   Share: { createLink: vi.fn(), sendMessage: vi.fn() },
   User: {
@@ -29,62 +34,94 @@ vi.mock('./runtime', () => ({
   shareOgUrl: 'https://example.com/share.png',
 }));
 
-import { pickOnePhoto } from './toss';
+import { isPhotoPickerUnavailableError, pickOnePhoto, pickOnePhotoFromBrowser } from './toss';
 
 describe('pickOnePhoto', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    bridge.getAlbumItems.isSupported.mockReturnValue(true);
+    bridge.getAlbumItems.mockResolvedValue([
+      { id: 'photo-1', dataUri: 'PHOTO', type: 'PHOTO' },
+    ]);
     bridge.getPhotos.mockResolvedValue([
-      { id: 'photo-1', dataUri: 'data:image/jpeg;base64,PHOTO' },
+      { id: 'legacy-photo-1', dataUri: 'LEGACY_PHOTO' },
     ]);
   });
 
-  it('opens the permission-wrapped photo picker directly', async () => {
+  it('opens the modern selection-focused picker and normalizes its raw base64', async () => {
     await expect(pickOnePhoto()).resolves.toBe('data:image/jpeg;base64,PHOTO');
 
-    expect(bridge.getPhotos).toHaveBeenCalledWith({
-      maxCount: 1, maxWidth: 2048, base64: true,
+    expect(bridge.getAlbumItems).toHaveBeenCalledWith({
+      maxCount: 1, maxWidth: 1024, base64: true, types: ['PHOTO'],
     });
-    expect(bridge.getPhotos.getPermission).not.toHaveBeenCalled();
-    expect(bridge.getPhotos.openPermissionDialog).not.toHaveBeenCalled();
+    expect(bridge.getPhotos).not.toHaveBeenCalled();
+  });
+
+  it('uses the permission-wrapped photo API only on older Toss versions', async () => {
+    bridge.getAlbumItems.isSupported.mockReturnValueOnce(false);
+
+    await expect(pickOnePhoto()).resolves.toBe('data:image/jpeg;base64,LEGACY_PHOTO');
+    expect(bridge.getAlbumItems).not.toHaveBeenCalled();
+    expect(bridge.getPhotos).toHaveBeenCalledWith({
+      maxCount: 1, maxWidth: 1024, base64: true,
+    });
+  });
+
+  it('keeps an already-prefixed data URI unchanged', async () => {
+    bridge.getAlbumItems.mockResolvedValueOnce([
+      { id: 'photo-1', dataUri: 'data:image/png;base64,PHOTO', type: 'PHOTO' },
+    ]);
+
+    await expect(pickOnePhoto()).resolves.toBe('data:image/png;base64,PHOTO');
   });
 
   it.each([
-    [{ code: 'NOT_ALLOWED' }, '강아지 사진을 고르려면 사진 접근을 허용해 주세요.'],
-    [{ code: 'INVALID_REQUEST' }, '사진 선택 요청을 처리하지 못했어요. 앱을 다시 열고 시도해 주세요.'],
-    [new Error('INVALID_DATA'), '선택한 사진을 읽지 못했어요. 다른 사진을 골라 주세요.'],
-  ])('maps the native album failure %# to a useful message', async (nativeError, message) => {
-    bridge.getPhotos.mockRejectedValueOnce(nativeError);
+    [{ code: 'NOT_ALLOWED' }, '사진 접근이 꺼져 있어요. 한 번 더 눌러 기기 사진을 골라주세요.'],
+    [{ cause: { errorCode: 'NO_PERMISSION' } }, '사진 접근이 꺼져 있어요. 한 번 더 눌러 기기 사진을 골라주세요.'],
+    [new Error('INVALID_DATA'), '선택한 사진을 읽지 못했어요. 한 번 더 눌러 다른 사진을 골라주세요.'],
+    [new Error('BRIDGE_UNAVAILABLE'), '토스 사진 선택창을 열지 못했어요. 한 번 더 눌러 기기 사진을 골라주세요.'],
+  ])('maps the native album failure %# to a recoverable message', async (nativeError, message) => {
+    bridge.getAlbumItems.mockRejectedValueOnce(nativeError);
 
-    await expect(pickOnePhoto()).rejects.toThrow(message);
-  });
-
-  it('maps the SDK permission wrapper error without a separate permission preflight', async () => {
-    const permissionError = new Error('앨범 읽기 권한이 거부되었어요.');
-    permissionError.name = 'fetchAlbumPhotos permission error';
-    bridge.getPhotos.mockRejectedValueOnce(permissionError);
-
-    await expect(pickOnePhoto()).rejects.toThrow('강아지 사진을 고르려면 사진 접근을 허용해 주세요.');
-    expect(bridge.getPhotos.getPermission).not.toHaveBeenCalled();
+    const request = pickOnePhoto();
+    await expect(request).rejects.toThrow(message);
+    await request.catch((error) => expect(isPhotoPickerUnavailableError(error)).toBe(true));
   });
 
   it('returns null when the native picker is canceled', async () => {
-    bridge.getPhotos.mockRejectedValueOnce(new Error('USER_CANCELED'));
+    bridge.getAlbumItems.mockRejectedValueOnce(new Error('USER_CANCELED'));
 
     await expect(pickOnePhoto()).resolves.toBeNull();
   });
 
   it('returns null when the photo picker returns an empty selection', async () => {
-    bridge.getPhotos.mockResolvedValueOnce([]);
+    bridge.getAlbumItems.mockResolvedValueOnce([]);
 
     await expect(pickOnePhoto()).resolves.toBeNull();
   });
 
-  it('does not fall back to a browser file input inside Toss', async () => {
+  it('does not open a web input until the user explicitly retries', async () => {
     const inputClick = vi.spyOn(HTMLInputElement.prototype, 'click');
-    bridge.getPhotos.mockRejectedValueOnce(new Error('BRIDGE_UNAVAILABLE'));
+    bridge.getAlbumItems.mockRejectedValueOnce(new Error('BRIDGE_UNAVAILABLE'));
 
-    await expect(pickOnePhoto()).rejects.toThrow('사진을 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.');
+    await expect(pickOnePhoto()).rejects.toThrow('한 번 더 눌러 기기 사진을 골라주세요.');
     expect(inputClick).not.toHaveBeenCalled();
+  });
+
+  it('keeps waiting for the selected browser file even after the window regains focus', async () => {
+    const inputClick = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => undefined);
+    const request = pickOnePhotoFromBrowser();
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+    const file = new File(['PHOTO'], 'dog.png', { type: 'image/png' });
+    if (!input) throw new Error('browser photo input was not created');
+
+    window.dispatchEvent(new Event('focus'));
+    await new Promise((resolve) => window.setTimeout(resolve, 400));
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+    input.dispatchEvent(new Event('change'));
+
+    await expect(request).resolves.toMatch(/^data:image\/png;base64,/);
+    expect(inputClick).toHaveBeenCalledOnce();
   });
 });

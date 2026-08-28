@@ -5,7 +5,7 @@ import { fetchSubmissionStatus, isUnknownPetApiOutcome, submitPet, type SubmitPe
 import { normalizeAndAnalyzePetImage } from '../lib/petImage';
 import { getPetNameError, limitPetName, petNameLength, preparePetName } from '../lib/petName';
 import { normalizePetTraitColors } from '../lib/petTraits';
-import { pickOnePhoto } from '../lib/toss';
+import { isPhotoPickerUnavailableError, pickOnePhoto, pickOnePhotoFromBrowser } from '../lib/toss';
 import { COAT_COLOR_HEX } from './DogAvatar';
 import { PetArtwork } from './PetArtwork';
 
@@ -248,6 +248,7 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
   const [submissionPhase, setSubmissionPhase] = useState<SubmissionPhase>('editing');
   const [consented, setConsented] = useState(false);
   const [error, setError] = useState('');
+  const [useBrowserPhotoPicker, setUseBrowserPhotoPicker] = useState(false);
   const submissionId = useRef(crypto.randomUUID());
   const frozenSubmission = useRef<SubmitPetInput>();
   const submissionLocked = submissionPhase !== 'editing';
@@ -257,14 +258,16 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
     if (analyzing || submissionLocked || frozenSubmission.current) return;
     setError('');
     try {
-      const selected = await pickOnePhoto();
+      const selected = await (useBrowserPhotoPicker ? pickOnePhotoFromBrowser() : pickOnePhoto());
       if (!selected) return;
       setDataUri(selected.startsWith('data:') ? selected : `data:image/jpeg;base64,${selected}`);
       setTraits(undefined);
       setAnalysisNotice('');
+      setUseBrowserPhotoPicker(false);
       submissionId.current = crypto.randomUUID();
       frozenSubmission.current = undefined;
     } catch (caught) {
+      if (isPhotoPickerUnavailableError(caught)) setUseBrowserPhotoPicker(true);
       setError(caught instanceof Error ? caught.message : '사진을 불러오지 못했어요.');
     }
   }
@@ -374,7 +377,7 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
           </div>
         )}
         <button type="button" className={`photo-picker ${dataUri ? 'has-photo' : ''}`} onClick={choose} disabled={analyzing || submissionLocked}>
-          {dataUri ? <><img src={dataUri} alt="선택한 강아지" /><span className="photo-change-badge">사진 바꾸기</span></> : <><span className="photo-picker-icon"><Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F4F7.png" frameShape={{ width: 64, height: 64 }} alt="카메라" /></span><strong>사진 한 장 고르기</strong><small>JPG, PNG, WEBP · 최대 1장</small></>}
+          {dataUri ? <><img src={dataUri} alt="선택한 강아지" /><span className="photo-change-badge">사진 바꾸기</span></> : <><span className="photo-picker-icon"><Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F4F7.png" frameShape={{ width: 64, height: 64 }} alt="카메라" /></span><strong>{useBrowserPhotoPicker ? '기기에서 사진 고르기' : '사진 한 장 고르기'}</strong><small>{useBrowserPhotoPicker ? '한 번 더 누르면 선택창이 열려요' : 'JPG, PNG, WEBP · 최대 1장'}</small></>}
         </button>
         {!dataUri && (
           <div className="upload-flow-guide" aria-label="강아지 소개 과정">

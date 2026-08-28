@@ -5,12 +5,20 @@ import type { CoatColor, EarShape, MarkingPattern, PetTraitsV1, SubmitPetResult 
 
 const uploadMocks = vi.hoisted(() => ({
   pickOnePhoto: vi.fn<() => Promise<string | null>>(),
+  pickOnePhotoFromBrowser: vi.fn<() => Promise<string | null>>(),
   normalizeAndAnalyzePetImage: vi.fn(),
   fetchSubmissionStatus: vi.fn(),
   submitPet: vi.fn(),
 }));
 
-vi.mock('../lib/toss', () => ({ pickOnePhoto: uploadMocks.pickOnePhoto }));
+vi.mock('../lib/toss', () => ({
+  pickOnePhoto: uploadMocks.pickOnePhoto,
+  pickOnePhotoFromBrowser: uploadMocks.pickOnePhotoFromBrowser,
+  isPhotoPickerUnavailableError: (error: unknown) => Boolean(
+    error && typeof error === 'object' && 'useBrowserFallback' in error
+      && (error as { useBrowserFallback?: unknown }).useBrowserFallback === true,
+  ),
+}));
 vi.mock('../lib/petImage', () => ({ normalizeAndAnalyzePetImage: uploadMocks.normalizeAndAnalyzePetImage }));
 vi.mock('../lib/api', async () => ({
   ...await vi.importActual<typeof import('../lib/api')>('../lib/api'),
@@ -50,6 +58,7 @@ const submittedResult: SubmitPetResult = {
 
 beforeEach(() => {
   uploadMocks.pickOnePhoto.mockReset();
+  uploadMocks.pickOnePhotoFromBrowser.mockReset();
   uploadMocks.normalizeAndAnalyzePetImage.mockReset();
   uploadMocks.fetchSubmissionStatus.mockReset();
   uploadMocks.submitPet.mockReset();
@@ -77,13 +86,37 @@ async function prepareUploadFlow(onSubmitted = vi.fn()) {
 
 describe('UploadFlow introduction', () => {
   it('explains the immediate owner view and approval boundary before photo selection', () => {
-    render(<UploadFlow onSubmitted={() => undefined} />);
+    render(
+      <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
+        <UploadFlow onSubmitted={() => undefined} />
+      </TDSMobileAITProvider>,
+    );
 
     expect(screen.getByRole('heading', { name: /우리 집 강아지를 소개해 주세요/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /사진 한 장 고르기/ })).toBeInTheDocument();
     expect(screen.getByText('내 집에 바로 나타나요')).toBeInTheDocument();
     expect(screen.getByText('승인 전 공유 링크에는 캐릭터만 보여요.')).toBeInTheDocument();
     expect(screen.getByText('승인되면 모두가 만나요')).toBeInTheDocument();
+  });
+
+  it('turns the same photo button into a web picker retry when the Toss picker cannot open', async () => {
+    uploadMocks.pickOnePhoto.mockRejectedValueOnce(Object.assign(
+      new Error('토스 사진 선택창을 열지 못했어요. 한 번 더 눌러 기기 사진을 골라주세요.'),
+      { useBrowserFallback: true },
+    ));
+    uploadMocks.pickOnePhotoFromBrowser.mockResolvedValueOnce('data:image/png;base64,FALLBACK');
+    render(
+      <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
+        <UploadFlow onSubmitted={() => undefined} />
+      </TDSMobileAITProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /사진 한 장 고르기/ }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('한 번 더 눌러 기기 사진을 골라주세요.');
+
+    fireEvent.click(screen.getByRole('button', { name: /기기에서 사진 고르기/ }));
+    expect(uploadMocks.pickOnePhotoFromBrowser).toHaveBeenCalledOnce();
+    expect(await screen.findByRole('button', { name: '캐릭터 만들어보기' })).toBeInTheDocument();
   });
 
   it('carries the selected photo, name, confirmed traits, and consent through submission', async () => {

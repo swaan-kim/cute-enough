@@ -1,5 +1,6 @@
 import {
   Device,
+  FetchAlbumPhotosPermissionError,
   getSchemeUri,
   User,
   Share,
@@ -33,49 +34,96 @@ export async function getUserHash(): Promise<string> {
   return preview;
 }
 
-export async function pickOnePhoto(): Promise<string | null> {
-  try {
-    // The photo-only API performs its own permission request and is available on
-    // older Toss versions too. A separate permission bridge call can fail before
-    // the native picker is presented on some hosts.
-    const items = await Device.getPhotos({ maxCount: 1, maxWidth: 2048, base64: true });
-    return items[0]?.dataUri ?? null;
-  } catch (error) {
-    const code = bridgeErrorCode(error);
-    if (hasBridgeErrorCode(code, 'CANCELED') || hasBridgeErrorCode(code, 'CANCELLED') || hasBridgeErrorCode(code, 'USER_CANCELED')) return null;
-    if (!isPreviewRuntime) {
-      if (hasBridgeErrorCode(code, 'UNSUPPORTED_APP_VERSION')) throw new Error('사진 선택을 사용하려면 토스앱을 최신 버전으로 업데이트해 주세요.');
-      if (
-        hasBridgeErrorCode(code, 'NOT_ALLOWED')
-        || hasBridgeErrorCode(code, 'NOTALLOWEDERROR')
-        || hasBridgeErrorCode(code, 'PERMISSION')
-        || hasBridgeErrorCode(code, 'DENIED')
-      ) throw new Error('강아지 사진을 고르려면 사진 접근을 허용해 주세요.');
-      if (hasBridgeErrorCode(code, 'INVALID_REQUEST')) throw new Error('사진 선택 요청을 처리하지 못했어요. 앱을 다시 열고 시도해 주세요.');
-      if (hasBridgeErrorCode(code, 'INVALID_DATA')) throw new Error('선택한 사진을 읽지 못했어요. 다른 사진을 골라 주세요.');
-      throw new Error('사진을 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.');
-    }
-  }
-  return new Promise((resolve) => {
+const PHOTO_OPTIONS = { maxCount: 1, maxWidth: 1024, base64: true } as const;
+
+export class PhotoPickerUnavailableError extends Error {
+  readonly useBrowserFallback = true;
+}
+
+export function isPhotoPickerUnavailableError(error: unknown): error is PhotoPickerUnavailableError {
+  return error instanceof PhotoPickerUnavailableError
+    || Boolean(error && typeof error === 'object' && 'useBrowserFallback' in error
+      && (error as { useBrowserFallback?: unknown }).useBrowserFallback === true);
+}
+
+function normalizePickedPhoto(dataUri: unknown): string | null {
+  if (dataUri == null) return null;
+  if (typeof dataUri !== 'string' || dataUri.trim().length === 0) throw new Error('INVALID_DATA');
+  const value = dataUri.trim();
+  if (value.startsWith('data:image/')) return value;
+  if (value.startsWith('data:')) throw new Error('INVALID_DATA');
+  return `data:image/jpeg;base64,${value}`;
+}
+
+export function pickOnePhotoFromBrowser(): Promise<string | null> {
+  return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/jpeg,image/png,image/webp';
+    input.style.display = 'none';
+    let settled = false;
+    const finish = (value: string | null, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      if (error) reject(error);
+      else resolve(value);
+    };
     input.onchange = () => {
       const file = input.files?.[0];
-      if (!file) return resolve(null);
+      if (!file) return finish(null);
+      if (file.type && !['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(file.type)) {
+        finish(null, new Error('JPG, PNG 또는 WEBP 사진만 올릴 수 있어요.'));
+        return;
+      }
       const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => resolve(null);
+      reader.onload = () => finish(String(reader.result).replace(/^data:image\/jpg;/i, 'data:image/jpeg;'));
+      reader.onerror = () => finish(null, new Error('선택한 사진을 읽지 못했어요. 다른 사진을 골라 주세요.'));
       reader.readAsDataURL(file);
     };
+    input.addEventListener('cancel', () => finish(null), { once: true });
+    document.body.appendChild(input);
     input.click();
   });
 }
 
-function bridgeErrorCode(error: unknown): string {
+export async function pickOnePhoto(): Promise<string | null> {
+  if (isPreviewRuntime) return pickOnePhotoFromBrowser();
+
+  try {
+    // getAlbumItems is the current, selection-focused API. Unlike getPhotos it
+    // does not make a hidden requestPermission bridge call before the picker.
+    if (Device.getAlbumItems.isSupported()) {
+      const items = await Device.getAlbumItems({ ...PHOTO_OPTIONS, types: ['PHOTO'] });
+      return normalizePickedPhoto(items[0]?.dataUri);
+    }
+
+    // Keep the permission-wrapped photo-only API for older Toss versions.
+    const items = await Device.getPhotos(PHOTO_OPTIONS);
+    return normalizePickedPhoto(items[0]?.dataUri);
+  } catch (error) {
+    const details = bridgeErrorCode(error);
+    if (hasBridgeErrorCode(details, 'CANCELED') || hasBridgeErrorCode(details, 'CANCELLED') || hasBridgeErrorCode(details, 'USER_CANCELED')) return null;
+
+    console.warn('[photo-picker]', details || 'UNKNOWN_ERROR');
+    if (error instanceof FetchAlbumPhotosPermissionError || isPhotoPermissionError(details)) {
+      throw new PhotoPickerUnavailableError('사진 접근이 꺼져 있어요. 한 번 더 눌러 기기 사진을 골라주세요.');
+    }
+    if (hasBridgeErrorCode(details, 'UNSUPPORTED_APP_VERSION') || hasBridgeErrorCode(details, 'METHOD_NOT_FOUND')) {
+      throw new PhotoPickerUnavailableError('토스 사진 선택 기능을 열지 못했어요. 한 번 더 눌러 기기 사진을 골라주세요.');
+    }
+    if (hasBridgeErrorCode(details, 'INVALID_DATA')) {
+      throw new PhotoPickerUnavailableError('선택한 사진을 읽지 못했어요. 한 번 더 눌러 다른 사진을 골라주세요.');
+    }
+    throw new PhotoPickerUnavailableError('토스 사진 선택창을 열지 못했어요. 한 번 더 눌러 기기 사진을 골라주세요.');
+  }
+}
+
+function bridgeErrorCode(error: unknown, depth = 0): string {
   if (!error || typeof error !== 'object') return String(error ?? '').toUpperCase();
-  const candidate = error as { code?: unknown; name?: unknown; message?: unknown };
-  return [candidate.code, candidate.message, candidate.name]
+  const candidate = error as { code?: unknown; errorCode?: unknown; name?: unknown; message?: unknown; cause?: unknown };
+  const causeDetails = depth < 2 && candidate.cause !== error ? bridgeErrorCode(candidate.cause, depth + 1) : '';
+  return [candidate.code, candidate.errorCode, candidate.message, candidate.name, causeDetails]
     .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
     .map((value) => value.toUpperCase())
     .join('|');
@@ -84,6 +132,12 @@ function bridgeErrorCode(error: unknown): string {
 function hasBridgeErrorCode(details: string, expected: string): boolean {
   const normalized = details.replace(/[\s-]+/g, '_');
   return normalized.split('|').some((part) => part === expected || part.includes(expected));
+}
+
+function isPhotoPermissionError(details: string): boolean {
+  return ['NOT_ALLOWED', 'NOTALLOWEDERROR', 'NO_PERMISSION', 'PERMISSION', 'DENIED', 'AUTHORIZATION', '권한', '허용'].some(
+    (code) => hasBridgeErrorCode(details, code),
+  );
 }
 
 export async function sharePet(petId: string, petName?: string): Promise<void> {

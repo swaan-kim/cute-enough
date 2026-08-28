@@ -25,11 +25,11 @@ describe('three-hour free allowance', () => {
   it('uses both free reveals before requiring a rewarded unlock', () => {
     const now = new Date('2026-08-28T00:00:00Z');
     const afterFirst = consumeAllowance(emptyAllowance(now), 'FREE', now);
-    expect(nextUnlockMethod(afterFirst)).toBe('FREE');
-    expect(regularRemainingCount(afterFirst)).toBe(1);
+    expect(nextUnlockMethod(afterFirst, undefined, true, now)).toBe('FREE');
+    expect(regularRemainingCount(afterFirst, now)).toBe(1);
     const afterSecond = consumeAllowance(afterFirst, 'FREE', now);
-    expect(nextUnlockMethod(afterSecond)).toBe('REWARDED');
-    expect(regularRemainingCount(afterSecond)).toBe(0);
+    expect(nextUnlockMethod(afterSecond, undefined, true, now)).toBe('REWARDED');
+    expect(regularRemainingCount(afterSecond, now)).toBe(0);
     expect(() => consumeAllowance(afterSecond, 'FREE', now)).toThrow('이용권은 3시간마다 한 마리씩 충전돼요.');
   });
 
