@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError } from './api-error.ts';
-import { requirePetTraits } from './validation.ts';
+import { requireAction, requirePetTraits } from './validation.ts';
 
 function traits(overrides: Record<string, unknown> = {}) {
   return {
@@ -40,5 +40,11 @@ describe('pet-api trait color validation', () => {
     const submitted = traits({ baseColor: 'cream', secondaryColor: 'gray', markingPattern: 'spots' });
 
     expect(requirePetTraits(submitted)).toBe(submitted);
+  });
+});
+
+describe('pet-api action validation', () => {
+  it('accepts the owner-scoped submission status action', () => {
+    expect(requireAction('submissionStatus')).toBe('submissionStatus');
   });
 });

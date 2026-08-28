@@ -18,7 +18,7 @@ const TRAIT_ENUMS = {
   muzzle: ['short', 'medium', 'long'],
 } as const;
 
-export const PET_API_ACTIONS = ['house', 'shared', 'mine', 'reveal', 'submit', 'report'] as const;
+export const PET_API_ACTIONS = ['house', 'shared', 'mine', 'reveal', 'submit', 'submissionStatus', 'report'] as const;
 export type PetApiAction = typeof PET_API_ACTIONS[number];
 
 function graphemeLength(value: string): number {

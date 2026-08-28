@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { SAMPLE_PETS } from '../data/samplePets';
-import type { HouseResult, OwnedPetSummary, PetSummary, PetTraitsV1, RevealResult, SharedPetResult, SubmitPetResult, UnlockMethod } from '../types';
+import type { HouseResult, OwnedPetSummary, PetSummary, PetTraitsV1, RevealResult, SharedPetResult, SubmissionStatusResult, SubmitPetResult, UnlockMethod } from '../types';
 import { consumeAllowance, readAllowance, saveAllowance } from './allowance';
 import { composeHousePets, orderDailyPets } from './housePets';
 import { findPreviewSubmission, markPreviewPetRevealed, readPreviewMyPets, readPreviewRevealedPetIds, savePreviewSubmission } from './previewPetStore';
@@ -13,35 +13,80 @@ const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 const supabase = !isPreviewRuntime && url && key ? createClient(url, key) : null;
 
+export type PetApiErrorOutcome = 'definite' | 'unknown';
+
+export class PetApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly outcome: PetApiErrorOutcome,
+    public readonly status?: number,
+  ) {
+    super(message);
+    this.name = 'PetApiError';
+  }
+}
+
+export interface SubmitPetInput {
+  submissionId: string;
+  dataUri: string;
+  name?: string;
+  traits: PetTraitsV1;
+}
+
+export function isUnknownPetApiOutcome(error: unknown): error is PetApiError {
+  return error instanceof PetApiError && error.outcome === 'unknown';
+}
+
 function requireSupabase() {
-  if (!supabase) throw new Error('운영 서버 연결이 준비되지 않았어요. 잠시 뒤 다시 시도해 주세요.');
+  if (!supabase) throw new PetApiError('운영 서버 연결이 준비되지 않았어요. 잠시 뒤 다시 시도해 주세요.', 'API_UNAVAILABLE', 'definite');
   return supabase;
 }
 
-async function throwFunctionError(error: unknown): Promise<never> {
+function errorDetails(error: unknown): string {
+  if (!error || typeof error !== 'object') return String(error ?? '');
+  const candidate = error as { name?: unknown; message?: unknown; cause?: unknown };
+  return [candidate.name, candidate.message, candidate.cause]
+    .filter((value) => typeof value === 'string')
+    .join('|');
+}
+
+export async function toPetApiError(error: unknown): Promise<PetApiError> {
+  if (error instanceof PetApiError) return error;
   const context = error && typeof error === 'object' && 'context' in error
     ? (error as { context?: Response }).context
     : undefined;
   if (context && typeof context.json === 'function') {
     try {
       const payload = await context.json() as { error?: string; code?: string };
-      if (payload.error) throw new Error(payload.error);
-    } catch (contextError) {
-      if (contextError instanceof Error && contextError.message !== 'Unexpected end of JSON input') throw contextError;
-    }
+      if (payload.error) return new PetApiError(
+        payload.error,
+        payload.code ?? 'FUNCTION_ERROR',
+        context.status >= 500 && (!payload.code || payload.code === 'INTERNAL_ERROR') ? 'unknown' : 'definite',
+        context.status,
+      );
+    } catch { /* Fall through to a transport-safe error. */ }
   }
-  throw new Error('서버와 연결하지 못했어요. 네트워크를 확인한 뒤 다시 시도해 주세요.');
+  const details = errorDetails(error).toUpperCase();
+  if (details.includes('TIMEOUT') || details.includes('ABORT')) {
+    return new PetApiError('요청 결과를 아직 확인하지 못했어요.', 'REQUEST_TIMEOUT', 'unknown');
+  }
+  return new PetApiError('서버와 연결하지 못했어요. 네트워크를 확인한 뒤 다시 시도해 주세요.', 'NETWORK_ERROR', 'unknown');
 }
 
-async function invokePetApi<T>(body: Record<string, unknown>): Promise<T> {
+async function invokePetApi<T>(body: Record<string, unknown>, timeoutMs = 12_000): Promise<T> {
   const client = requireSupabase();
   const userHash = await getUserHash();
-  const { data, error } = await client.functions.invoke('pet-api', {
-    body: { ...body, userHash },
-    signal: AbortSignal.timeout(12_000),
-  });
-  if (error) return throwFunctionError(error);
-  return data as T;
+  try {
+    const { data, error } = await client.functions.invoke('pet-api', {
+      body: { ...body, userHash },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (error) throw await toPetApiError(error);
+    return data as T;
+  } catch (error) {
+    throw await toPetApiError(error);
+  }
 }
 
 function normalizePetSummaryColors<T extends PetSummary>(pet: T): T {
@@ -133,7 +178,18 @@ export async function reopenPet(pet: PetSummary): Promise<RevealResult> {
   return invokePetApi<RevealResult>({ action: 'reveal', petId: pet.id, revisit: true });
 }
 
-export async function submitPet(input: { submissionId: string; dataUri: string; name?: string; traits: PetTraitsV1 }): Promise<SubmitPetResult> {
+export async function fetchSubmissionStatus(submissionId: string): Promise<SubmissionStatusResult> {
+  if (isPreviewRuntime) {
+    const existing = findPreviewSubmission(submissionId);
+    return existing ? { found: true, result: normalizeSubmitResultColors(existing) } : { found: false };
+  }
+  const status = await invokePetApi<SubmissionStatusResult>({ action: 'submissionStatus', submissionId }, 8_000);
+  return status.found
+    ? { found: true, result: normalizeSubmitResultColors(status.result) }
+    : status;
+}
+
+export async function submitPet(input: SubmitPetInput): Promise<SubmitPetResult> {
   const normalizedInput = { ...input, traits: normalizePetTraitColors(input.traits) };
   if (isPreviewRuntime) {
     const existing = findPreviewSubmission(normalizedInput.submissionId);

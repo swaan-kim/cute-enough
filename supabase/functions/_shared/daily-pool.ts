@@ -7,6 +7,14 @@ function stablePoolScore(value: string): number {
   return hash >>> 0;
 }
 
+/** 제한된 집 자리에서는 오늘 이미 만난 친구를 새 후보보다 먼저 보존한다. */
+export function prioritizeRevealedPets<T extends { revealedToday?: boolean }>(pets: T[]): T[] {
+  return [
+    ...pets.filter((pet) => pet.revealedToday),
+    ...pets.filter((pet) => !pet.revealedToday),
+  ];
+}
+
 /** 서버의 공개 후보를 사용자와 KST 날짜별로 결정적으로 섞는다. */
 export function orderDailyPets<T extends { id: string }>(pets: T[], ownerHash: string, date: string): T[] {
   return [...pets].sort((left, right) => {

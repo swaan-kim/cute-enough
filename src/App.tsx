@@ -9,7 +9,7 @@ import { fetchHouse, fetchMyPets, fetchSharedPet, reopenPet, reportPet, revealPe
 import { getKstDate, grantUploadCredit, hasUploadBonus, isAllowanceForToday, MAX_REWARDED_PER_DAY, millisecondsUntilNextFreeRecharge, millisecondsUntilNextKstDay, readAllowance, refreshAllowance, regularRemainingCount, resetStoredAllowance, saveAllowance } from './lib/allowance';
 import { createInitialRouteStack, getCurrentRoute, homeRouteStack, popRoute, pushRoute } from './lib/appRoutes';
 import { getSharedPetId } from './lib/deepLink';
-import { HOUSE_PET_LIMIT } from './lib/housePets';
+import { HOUSE_PET_LIMIT, prioritizeRevealedPets } from './lib/housePets';
 import { closeMiniApp, getInitialSharedPetId, subscribeNativeNavigation } from './lib/nativeNavigation';
 import { resolvePetAccess, type PetAccessDecision } from './lib/petAccess';
 import { saveBrandedPetPhoto } from './lib/photoSave';
@@ -464,7 +464,9 @@ export default function App() {
     setUploadRewardGranted(result.rewardGranted);
     setPets((existing) => {
       const uploaded = { ...result.pet, isMine: true, ownerPinned: true };
-      const publicPets = existing.filter((pet) => !pet.isMine && pet.id !== uploaded.id);
+      const publicPets = prioritizeRevealedPets(
+        existing.filter((pet) => !pet.isMine && pet.id !== uploaded.id),
+      );
       return [uploaded, ...publicPets].slice(0, HOUSE_PET_LIMIT);
     });
     navigateTo({ screen: 'submitted' });

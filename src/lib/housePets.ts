@@ -4,6 +4,14 @@ import { hasPetPhoto } from './petPhoto';
 export const HOUSE_PET_LIMIT = 5;
 export const OWNER_HOUSE_LIMIT = 1;
 
+/** 오늘 이미 만난 친구는 집의 제한된 자리에서 새 친구보다 먼저 보존한다. */
+export function prioritizeRevealedPets<T extends Pick<PetSummary, 'revealedToday'>>(pets: T[]): T[] {
+  return [
+    ...pets.filter((pet) => pet.revealedToday),
+    ...pets.filter((pet) => !pet.revealedToday),
+  ];
+}
+
 function stablePoolScore(value: string): number {
   let hash = 0x811c9dc5;
   for (let index = 0; index < value.length; index += 1) {
@@ -54,8 +62,9 @@ export function composeHousePets(
   const result = primaryOwnedPet ? [{ ...primaryOwnedPet, ownerPinned: true }] : [];
   const occupiedIds = new Set(result.map((pet) => pet.id));
   const publicSlots = Math.max(0, limit - result.length);
-  const dailyPublicPets = eligiblePublicPets
-    .filter((pet) => !occupiedIds.has(pet.id))
+  const dailyPublicPets = prioritizeRevealedPets(
+    eligiblePublicPets.filter((pet) => !occupiedIds.has(pet.id)),
+  )
     .slice(0, publicSlots);
 
   return [...result, ...dailyPublicPets];

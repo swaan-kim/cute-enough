@@ -2,7 +2,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2.57.4';
 import { verifyAnonymousKey } from '../_shared/anonymous-key.ts';
 import { ApiError } from '../_shared/api-error.ts';
 import { corsGuard, json } from '../_shared/cors.ts';
-import { orderDailyPets } from '../_shared/daily-pool.ts';
+import { orderDailyPets, prioritizeRevealedPets } from '../_shared/daily-pool.ts';
 import { decodeDataUri, hashUser, kstDate } from '../_shared/security.ts';
 import {
   canRevealStoredPetPhoto,
@@ -110,6 +110,7 @@ const RATE_LIMITS: Record<PetApiAction, { seconds: number; limit: number }> = {
   mine: { seconds: 60, limit: 30 },
   reveal: { seconds: 60, limit: 10 },
   submit: { seconds: 60 * 60, limit: 3 },
+  submissionStatus: { seconds: 60, limit: 20 },
   report: { seconds: 60 * 60, limit: 10 },
 };
 
@@ -133,6 +134,38 @@ async function enforceRateLimit(ownerHash: string, action: PetApiAction) {
   if (!data) throw new ApiError('RATE_LIMITED', 429, '요청이 너무 많아요. 잠시 뒤 다시 시도해 주세요.');
 }
 
+async function findSubmissionResult(ownerHash: string, submissionId: string, date: string) {
+  const { data: existing, error: existingError } = await supabase.from('pets')
+    .select('id,name,traits,status')
+    .eq('owner_hash', ownerHash)
+    .eq('submission_id', submissionId)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (!existing) return undefined;
+
+  const { data: existingReward, error: existingRewardError } = await supabase.from('upload_rewards')
+    .select('pet_id')
+    .eq('pet_id', existing.id)
+    .eq('owner_hash', ownerHash)
+    .eq('reward_date', date)
+    .is('used_at', null)
+    .maybeSingle();
+  if (existingRewardError) throw existingRewardError;
+  const { status, ...pet } = existing;
+  return {
+    pet: {
+      ...pet,
+      photoAvailable: true,
+      isMine: true,
+      ownerPinned: true,
+      approvalStatus: status,
+      shareable: isShareablePetStatus(status),
+    },
+    rewardGranted: Boolean(existingReward),
+    uploadRewardPetId: existingReward ? existing.id : undefined,
+  };
+}
+
 Deno.serve(async (request) => {
   const reply = (data: unknown, status = 200) => json(request, data, status);
   const corsResponse = corsGuard(request);
@@ -146,6 +179,20 @@ Deno.serve(async (request) => {
     const anonymousKey = requireAnonymousKey(body.userHash);
     await verifyAnonymousKey(anonymousKey);
     const ownerHash = await hashUser(anonymousKey);
+
+    if (action === 'submissionStatus') {
+      await enforceRateLimit(ownerHash, action);
+      const submissionId = requireUuid(body.submissionId, '사진 등록 요청을 다시 시작해 주세요.');
+      const result = await findSubmissionResult(ownerHash, submissionId, kstDate());
+      return reply(result ? { found: true, result } : { found: false });
+    }
+
+    if (action === 'submit') {
+      const submissionId = requireUuid(body.submissionId, '사진 등록 요청을 다시 시작해 주세요.');
+      const existing = await findSubmissionResult(ownerHash, submissionId, kstDate());
+      if (existing) return reply(existing);
+    }
+
     await enforceRateLimit(ownerHash, action);
 
     if (action === 'house') {
@@ -196,7 +243,9 @@ Deno.serve(async (request) => {
           revealedToday: revealedPetIds.has(pet.id),
         }));
       const publicSlots = HOUSE_PET_LIMIT - (primaryOwnedPet ? 1 : 0);
-      const selectedPublicPets = orderDailyPets(candidateSummaries, ownerHash, date).slice(0, publicSlots);
+      const selectedPublicPets = prioritizeRevealedPets(
+        orderDailyPets(candidateSummaries, ownerHash, date),
+      ).slice(0, publicSlots);
       const pool = [...(primaryOwnedPet ? [primaryOwnedPet] : []), ...selectedPublicPets];
       const rewardedUsed = reveals.filter((item) => item.unlock_method === 'REWARDED').length;
       return reply({
@@ -363,28 +412,8 @@ Deno.serve(async (request) => {
       }
       const submissionId = requireUuid(body.submissionId, '사진 등록 요청을 다시 시작해 주세요.');
       const date = kstDate();
-      const { data: existing, error: existingError } = await supabase.from('pets')
-        .select('id,name,traits,status')
-        .eq('owner_hash', ownerHash)
-        .eq('submission_id', submissionId)
-        .maybeSingle();
-      if (existingError) throw existingError;
-      if (existing) {
-        const { data: existingReward, error: existingRewardError } = await supabase.from('upload_rewards')
-          .select('pet_id')
-          .eq('pet_id', existing.id)
-          .eq('owner_hash', ownerHash)
-          .eq('reward_date', date)
-          .is('used_at', null)
-          .maybeSingle();
-        if (existingRewardError) throw existingRewardError;
-        const { status, ...pet } = existing;
-        return reply({
-          pet: { ...pet, photoAvailable: true, isMine: true, ownerPinned: true, approvalStatus: status, shareable: isShareablePetStatus(status) },
-          rewardGranted: Boolean(existingReward),
-          uploadRewardPetId: existingReward ? existing.id : undefined,
-        });
-      }
+      const existing = await findSubmissionResult(ownerHash, submissionId, date);
+      if (existing) return reply(existing);
       const { bytes, mime } = decodeDataUri(body.dataUri);
       const traits = requirePetTraits(body.traits);
       const normalizedName = normalizePetName(body.name);
@@ -408,31 +437,24 @@ Deno.serve(async (request) => {
         p_global_pending_limit: boundedEnvInteger('AIT_PENDING_UPLOAD_LIMIT', 100, 1000),
       }).single();
       if (registerError || !registered) {
-        const { data: committed } = await supabase.from('pets')
-          .select('id,name,traits,status')
-          .eq('owner_hash', ownerHash)
-          .eq('submission_id', submissionId)
-          .maybeSingle();
+        const committed = await findSubmissionResult(ownerHash, submissionId, date);
         if (committed) {
-          const { data: committedReward } = await supabase.from('upload_rewards')
-            .select('pet_id')
-            .eq('pet_id', committed.id)
-            .eq('owner_hash', ownerHash)
-            .eq('reward_date', date)
-            .is('used_at', null)
-            .maybeSingle();
-          const { status, ...pet } = committed;
-          return reply({
-            pet: { ...pet, photoAvailable: true, isMine: true, ownerPinned: true, approvalStatus: status, shareable: isShareablePetStatus(status) },
-            rewardGranted: Boolean(committedReward),
-            uploadRewardPetId: committedReward ? committed.id : undefined,
-          });
+          return reply(committed);
         }
-        await supabase.storage.from('pet-photos').remove([path]);
         const message = registerError?.message ?? '';
-        if (message.includes('DAILY_UPLOAD_LIMIT_REACHED')) throw new ApiError('DAILY_UPLOAD_LIMIT_REACHED', 429, '사진은 하루에 한 장만 소개할 수 있어요.');
-        if (message.includes('PENDING_UPLOAD_LIMIT_REACHED')) throw new ApiError('PENDING_UPLOAD_LIMIT_REACHED', 409, '검수 중인 사진이 있어요. 검수가 끝난 뒤 다시 소개해 주세요.');
-        if (message.includes('UPLOAD_CAPACITY_REACHED')) throw new ApiError('UPLOAD_CAPACITY_REACHED', 503, '오늘 받을 수 있는 사진이 모두 모였어요. 내일 다시 소개해 주세요.');
+        const cleanupKnownRejection = () => supabase.storage.from('pet-photos').remove([path]);
+        if (message.includes('DAILY_UPLOAD_LIMIT_REACHED')) {
+          await cleanupKnownRejection();
+          throw new ApiError('DAILY_UPLOAD_LIMIT_REACHED', 429, '사진은 하루에 한 장만 소개할 수 있어요.');
+        }
+        if (message.includes('PENDING_UPLOAD_LIMIT_REACHED')) {
+          await cleanupKnownRejection();
+          throw new ApiError('PENDING_UPLOAD_LIMIT_REACHED', 409, '검수 중인 사진이 있어요. 검수가 끝난 뒤 다시 소개해 주세요.');
+        }
+        if (message.includes('UPLOAD_CAPACITY_REACHED')) {
+          await cleanupKnownRejection();
+          throw new ApiError('UPLOAD_CAPACITY_REACHED', 503, '오늘 받을 수 있는 사진이 모두 모였어요. 내일 다시 소개해 주세요.');
+        }
         throw registerError ?? new Error('Pet registration failed');
       }
       const rewardGranted = Boolean(registered.reward_granted);

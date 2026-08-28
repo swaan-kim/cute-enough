@@ -92,6 +92,10 @@ export interface SubmitPetResult {
   uploadRewardPetId?: string;
 }
 
+export type SubmissionStatusResult =
+  | { found: true; result: SubmitPetResult }
+  | { found: false };
+
 export type AppScreen = 'home' | 'mine' | 'shared' | 'play' | 'upload' | 'submitted';
 
 export type AppRoute =

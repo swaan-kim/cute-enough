@@ -1,19 +1,25 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { TDSMobileAITProvider } from '@toss/tds-mobile-ait';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoatColor, EarShape, MarkingPattern, PetTraitsV1, SubmitPetResult } from '../types';
 
 const uploadMocks = vi.hoisted(() => ({
   pickOnePhoto: vi.fn<() => Promise<string | null>>(),
   normalizeAndAnalyzePetImage: vi.fn(),
+  fetchSubmissionStatus: vi.fn(),
   submitPet: vi.fn(),
 }));
 
 vi.mock('../lib/toss', () => ({ pickOnePhoto: uploadMocks.pickOnePhoto }));
 vi.mock('../lib/petImage', () => ({ normalizeAndAnalyzePetImage: uploadMocks.normalizeAndAnalyzePetImage }));
-vi.mock('../lib/api', () => ({ submitPet: uploadMocks.submitPet }));
+vi.mock('../lib/api', async () => ({
+  ...await vi.importActual<typeof import('../lib/api')>('../lib/api'),
+  fetchSubmissionStatus: uploadMocks.fetchSubmissionStatus,
+  submitPet: uploadMocks.submitPet,
+}));
 
 import { CoatColorPickers, EarShapePicker, FaceMarkingPicker, UploadFlow } from './UploadFlow';
+import { PetApiError } from '../lib/api';
 
 const traits: PetTraitsV1 = {
   schemaVersion: 1,
@@ -25,6 +31,49 @@ const traits: PetTraitsV1 = {
   muzzle: 'short',
   confidence: 1,
 };
+
+const normalizedPhoto = 'data:image/jpeg;base64,NORMALIZED';
+const submittedResult: SubmitPetResult = {
+  pet: {
+    id: 'uploaded-pet',
+    name: '하늘',
+    traits,
+    approvalStatus: 'pending',
+    isMine: true,
+    ownerPinned: true,
+    shareable: true,
+    photoAvailable: true,
+  },
+  rewardGranted: true,
+  uploadRewardPetId: 'uploaded-pet',
+};
+
+beforeEach(() => {
+  uploadMocks.pickOnePhoto.mockReset();
+  uploadMocks.normalizeAndAnalyzePetImage.mockReset();
+  uploadMocks.fetchSubmissionStatus.mockReset();
+  uploadMocks.submitPet.mockReset();
+});
+
+async function prepareUploadFlow(onSubmitted = vi.fn()) {
+  uploadMocks.pickOnePhoto.mockResolvedValueOnce('data:image/png;base64,SOURCE');
+  uploadMocks.normalizeAndAnalyzePetImage.mockResolvedValueOnce({
+    dataUri: normalizedPhoto,
+    traits,
+    brightness: 180,
+  });
+  render(
+    <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
+      <UploadFlow onSubmitted={onSubmitted} />
+    </TDSMobileAITProvider>,
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: /사진 한 장 고르기/ }));
+  fireEvent.click(await screen.findByRole('button', { name: '캐릭터 만들어보기' }));
+  fireEvent.change(await screen.findByPlaceholderText('예: 보리'), { target: { value: '하늘' } });
+  fireEvent.click(screen.getByRole('checkbox'));
+  return onSubmitted;
+}
 
 describe('UploadFlow introduction', () => {
   it('explains the immediate owner view and approval boundary before photo selection', () => {
@@ -38,40 +87,9 @@ describe('UploadFlow introduction', () => {
   });
 
   it('carries the selected photo, name, confirmed traits, and consent through submission', async () => {
-    const normalizedPhoto = 'data:image/jpeg;base64,NORMALIZED';
-    const result: SubmitPetResult = {
-      pet: {
-        id: 'uploaded-pet',
-        name: '하늘',
-        traits,
-        approvalStatus: 'pending',
-        isMine: true,
-        ownerPinned: true,
-        shareable: true,
-        photoAvailable: true,
-      },
-      rewardGranted: true,
-      uploadRewardPetId: 'uploaded-pet',
-    };
-    uploadMocks.pickOnePhoto.mockResolvedValueOnce('data:image/png;base64,SOURCE');
-    uploadMocks.normalizeAndAnalyzePetImage.mockResolvedValueOnce({
-      dataUri: normalizedPhoto,
-      traits,
-      brightness: 180,
-    });
-    uploadMocks.submitPet.mockResolvedValueOnce(result);
+    uploadMocks.submitPet.mockResolvedValueOnce(submittedResult);
     const onSubmitted = vi.fn();
-    render(
-      <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
-        <UploadFlow onSubmitted={onSubmitted} />
-      </TDSMobileAITProvider>,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /사진 한 장 고르기/ }));
-    fireEvent.click(await screen.findByRole('button', { name: '캐릭터 만들어보기' }));
-
-    fireEvent.change(await screen.findByPlaceholderText('예: 보리'), { target: { value: '하늘' } });
-    fireEvent.click(screen.getByRole('checkbox'));
+    await prepareUploadFlow(onSubmitted);
     fireEvent.click(screen.getByRole('button', { name: '이 모습으로 소개하기' }));
 
     await waitFor(() => expect(uploadMocks.submitPet).toHaveBeenCalledOnce());
@@ -81,7 +99,63 @@ describe('UploadFlow introduction', () => {
       name: '하늘',
       traits,
     });
-    expect(onSubmitted).toHaveBeenCalledWith(result);
+    expect(onSubmitted).toHaveBeenCalledWith(submittedResult);
+  });
+
+  it('finishes from owner-scoped status when the upload response times out after commit', async () => {
+    uploadMocks.submitPet.mockRejectedValueOnce(new PetApiError('요청 결과를 아직 확인하지 못했어요.', 'REQUEST_TIMEOUT', 'unknown'));
+    uploadMocks.fetchSubmissionStatus.mockResolvedValueOnce({ found: true, result: submittedResult });
+    const onSubmitted = await prepareUploadFlow();
+
+    fireEvent.click(screen.getByRole('button', { name: '이 모습으로 소개하기' }));
+
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledWith(submittedResult));
+    expect(uploadMocks.submitPet).toHaveBeenCalledOnce();
+    const submitted = uploadMocks.submitPet.mock.calls[0][0];
+    expect(uploadMocks.fetchSubmissionStatus).toHaveBeenCalledWith(submitted.submissionId);
+  });
+
+  it('locks the selected photo and editor while submission is in flight', async () => {
+    let resolveSubmission: ((result: SubmitPetResult) => void) | undefined;
+    uploadMocks.submitPet.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveSubmission = resolve;
+    }));
+    const onSubmitted = await prepareUploadFlow();
+
+    fireEvent.click(screen.getByRole('button', { name: '이 모습으로 소개하기' }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /사진 바꾸기/ })).toBeDisabled());
+    expect(screen.getByPlaceholderText('예: 보리')).toBeDisabled();
+    expect(screen.getByRole('checkbox')).toBeDisabled();
+
+    resolveSubmission?.(submittedResult);
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledWith(submittedResult));
+  });
+
+  it('locks editing and retries the exact frozen payload while the outcome is uncertain', async () => {
+    uploadMocks.submitPet
+      .mockRejectedValueOnce(new PetApiError('요청 결과를 아직 확인하지 못했어요.', 'REQUEST_TIMEOUT', 'unknown'))
+      .mockResolvedValueOnce(submittedResult);
+    uploadMocks.fetchSubmissionStatus.mockResolvedValue({ found: false });
+    const onSubmitted = await prepareUploadFlow();
+
+    fireEvent.click(screen.getByRole('button', { name: '이 모습으로 소개하기' }));
+
+    const recovery = await screen.findByRole('button', { name: '등록 상태 확인하기' });
+    expect(screen.getByRole('button', { name: /사진 바꾸기/ })).toBeDisabled();
+    expect(screen.getByPlaceholderText('예: 보리')).toBeDisabled();
+    expect(screen.getByRole('checkbox')).toBeDisabled();
+    expect(screen.getAllByRole('radio').every((radio) => (radio as HTMLInputElement).disabled)).toBe(true);
+    expect(screen.getByRole('alert')).toHaveTextContent('같은 강아지가 두 번 등록되지는 않아요.');
+
+    const frozenInput = uploadMocks.submitPet.mock.calls[0][0];
+    fireEvent.click(recovery);
+
+    await waitFor(() => expect(uploadMocks.submitPet).toHaveBeenCalledTimes(2));
+    expect(uploadMocks.submitPet.mock.calls[1][0]).toEqual(frozenInput);
+    expect(uploadMocks.fetchSubmissionStatus).toHaveBeenNthCalledWith(1, frozenInput.submissionId);
+    expect(uploadMocks.fetchSubmissionStatus).toHaveBeenNthCalledWith(2, frozenInput.submissionId);
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledWith(submittedResult));
   });
 });
 

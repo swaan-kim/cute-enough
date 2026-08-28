@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OwnedPetSummary, PetSummary } from '../types';
-import { composeHousePets, HOUSE_PET_LIMIT, orderDailyPets } from './housePets';
+import { composeHousePets, HOUSE_PET_LIMIT, orderDailyPets, prioritizeRevealedPets } from './housePets';
 
 const traits = { schemaVersion: 1, earShape: 'floppy', headShape: 'round', baseColor: 'white', secondaryColor: 'cream', markingPattern: 'none', muzzle: 'short', confidence: 1 } as const;
 const owned = (id: string, approvalStatus: OwnedPetSummary['approvalStatus'] = 'pending'): OwnedPetSummary => ({ id, traits, approvalStatus, photoUrl: `/${id}.jpg` });
@@ -21,10 +21,38 @@ describe('composeHousePets', () => {
     expect(new Set(result.map(({ id }) => id)).size).toBe(HOUSE_PET_LIMIT);
   });
 
-  it('does not reorder the daily list when a dog becomes revealed', () => {
+  it('moves revealed dogs ahead while preserving their relative daily order', () => {
     const result = composeHousePets([], [approved('seen-a', true), approved('new'), approved('seen-b', true)]);
-    expect(result.map(({ id }) => id)).toEqual(['seen-a', 'new', 'seen-b']);
+    expect(result.map(({ id }) => id)).toEqual(['seen-a', 'seen-b', 'new']);
     expect(result.filter(({ revealedToday }) => revealedToday)).toHaveLength(2);
+  });
+
+  it('keeps a revealed dog that would otherwise fall out when an owner upload takes one slot', () => {
+    const publicPets = [
+      approved('new-a'),
+      approved('new-b'),
+      approved('new-c'),
+      approved('new-d'),
+      approved('seen-last', true),
+    ];
+
+    const result = composeHousePets([owned('mine-new')], publicPets);
+
+    expect(result).toHaveLength(HOUSE_PET_LIMIT);
+    expect(result[0]).toMatchObject({ id: 'mine-new', ownerPinned: true });
+    expect(result.map(({ id }) => id)).toContain('seen-last');
+    expect(result.map(({ id }) => id)).not.toContain('new-d');
+  });
+
+  it('keeps stable relative order within revealed and unrevealed groups', () => {
+    const result = prioritizeRevealedPets([
+      approved('new-a'),
+      approved('seen-a', true),
+      approved('new-b'),
+      approved('seen-b', true),
+    ]);
+
+    expect(result.map(({ id }) => id)).toEqual(['seen-a', 'seen-b', 'new-a', 'new-b']);
   });
 
   it('keeps only the newest owned pet so a pending upload occupies one of five slots', () => {
