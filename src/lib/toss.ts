@@ -1,9 +1,6 @@
 import {
   Device,
-  getPermission,
   getSchemeUri,
-  openPermissionDialog,
-  requestPermission,
   User,
   Share,
 } from '@apps-in-toss/web-framework';
@@ -36,23 +33,12 @@ export async function getUserHash(): Promise<string> {
   return preview;
 }
 
-const photoPermission = { name: 'photos', access: 'read' } as const;
-
-async function ensurePhotoPermission(): Promise<void> {
-  const current = await getPermission(photoPermission);
-  if (current === 'allowed') return;
-
-  const result = current === 'notDetermined'
-    ? await requestPermission(photoPermission)
-    : await openPermissionDialog(photoPermission);
-  if (result !== 'allowed') throw new Error('NOT_ALLOWED');
-}
-
 export async function pickOnePhoto(): Promise<string | null> {
   try {
-    if (!Device.getAlbumItems.isSupported()) throw new Error('UNSUPPORTED_APP_VERSION');
-    await ensurePhotoPermission();
-    const items = await Device.getAlbumItems({ types: ['PHOTO'], maxCount: 1, maxWidth: 2048, base64: true });
+    // The photo-only API performs its own permission request and is available on
+    // older Toss versions too. A separate permission bridge call can fail before
+    // the native picker is presented on some hosts.
+    const items = await Device.getPhotos({ maxCount: 1, maxWidth: 2048, base64: true });
     return items[0]?.dataUri ?? null;
   } catch (error) {
     const code = bridgeErrorCode(error);
