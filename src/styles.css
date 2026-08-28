@@ -264,7 +264,8 @@ h1, h2, p, figure { margin: 0; }
 .photo-card-actions { display:flex; flex-direction:column; gap:8px; }
 .report-button { display:block!important; margin:14px auto 0; }
 
-.upload-screen { padding-bottom:max(26px,var(--ait-safe-bottom)); background:#fff; }
+.upload-screen { padding:0 var(--ait-safe-right) max(26px,var(--ait-safe-bottom)) var(--ait-safe-left); background:#fff; }
+.upload-top { padding-top:max(4px,var(--ait-safe-top)); }
 .upload-card { margin:0 20px; }
 .upload-step-heading { display:flex; align-items:center; gap:12px; margin:3px 0 14px; text-align:left; }
 .upload-step-heading > span { width:28px; height:28px; flex:0 0 28px; border-radius:50%; display:grid; place-items:center; background:#fff0f3; color:#e84c70; font-size:13px; font-weight:800; }

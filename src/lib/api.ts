@@ -1,9 +1,17 @@
 import { createClient } from '@supabase/supabase-js';
 import { SAMPLE_PETS } from '../data/samplePets';
 import type { HouseResult, OwnedPetSummary, PetSummary, PetTraitsV1, RevealResult, SharedPetResult, SubmissionStatusResult, SubmitPetResult, UnlockMethod } from '../types';
-import { consumeAllowance, readAllowance, saveAllowance } from './allowance';
+import { consumeAllowance, FREE_RECHARGE_INTERVAL_MS, readAllowance, saveAllowance } from './allowance';
 import { composeHousePets, orderDailyPets } from './housePets';
-import { findPreviewSubmission, markPreviewPetRevealed, readPreviewMyPets, readPreviewRevealedPetIds, savePreviewSubmission } from './previewPetStore';
+import {
+  findActivePreviewReveal,
+  findPreviewSubmission,
+  markPreviewPetRevealed,
+  readActivePreviewReveals,
+  readPreviewMyPets,
+  savePreviewSubmission,
+  type PreviewRevealRecord,
+} from './previewPetStore';
 import { isPreviewRuntime } from './runtime';
 import { hasPetPhoto, selectPetPhotoUrl } from './petPhoto';
 import { normalizePetTraitColors } from './petTraits';
@@ -99,17 +107,29 @@ function normalizeSubmitResultColors(result: SubmitPetResult): SubmitPetResult {
   return pet === result.pet ? result : { ...result, pet };
 }
 
+function withPreviewRevisit<T extends PetSummary>(pet: T, record?: PreviewRevealRecord): T {
+  return {
+    ...pet,
+    revisitUntil: record?.revisitUntil,
+    // 기존 화면의 문구/표시도 새 시간 기반 기록과 같이 유지한다.
+    revealedToday: Boolean(record),
+  };
+}
+
 export async function fetchHouse(): Promise<HouseResult> {
   if (isPreviewRuntime) {
-    const allowance = readAllowance();
+    const now = new Date();
+    const allowance = readAllowance(undefined, now);
     const viewerKey = await getUserHash();
-    const revealedIds = readPreviewRevealedPetIds(allowance.date);
-    const mine = readPreviewMyPets().map((pet) => normalizePetSummaryColors({ ...pet, revealedToday: revealedIds.has(pet.id) }));
+    const revisitRecords = readActivePreviewReveals(allowance.date, now);
+    const revisitByPetId = new Map(revisitRecords.map((record) => [record.petId, record]));
+    const mine = readPreviewMyPets().map((pet) => normalizePetSummaryColors(
+      withPreviewRevisit(pet, revisitByPetId.get(pet.id)),
+    ));
     const publicPets = orderDailyPets(SAMPLE_PETS, viewerKey, allowance.date).map((pet) => ({
-      ...normalizePetSummaryColors(pet),
+      ...normalizePetSummaryColors(withPreviewRevisit(pet, revisitByPetId.get(pet.id))),
       approvalStatus: 'approved' as const,
       shareable: true,
-      revealedToday: revealedIds.has(pet.id),
     }));
     return { pets: composeHousePets(mine, publicPets), allowance };
   }
@@ -122,16 +142,17 @@ export async function fetchSharedPet(petId: string): Promise<SharedPetResult> {
     const owned = readPreviewMyPets().find((item) => item.id === petId);
     const pet = SAMPLE_PETS.find((item) => item.id === petId) ?? owned;
     if (!pet) throw new Error('이 친구는 지금 만날 수 없어요.');
-    const allowance = readAllowance();
+    const now = new Date();
+    const allowance = readAllowance(undefined, now);
+    const revisit = findActivePreviewReveal(pet.id, allowance.date, now);
     return {
-      pet: normalizePetSummaryColors({
+      pet: normalizePetSummaryColors(withPreviewRevisit({
         ...pet,
         isMine: Boolean(owned),
         ownerPinned: Boolean(owned),
         approvalStatus: pet.approvalStatus ?? 'approved',
         shareable: true,
-        revealedToday: readPreviewRevealedPetIds(allowance.date).has(pet.id),
-      }),
+      }, revisit)),
       allowance,
     };
   }
@@ -140,38 +161,57 @@ export async function fetchSharedPet(petId: string): Promise<SharedPetResult> {
 }
 
 export async function fetchMyPets(): Promise<OwnedPetSummary[]> {
-  if (isPreviewRuntime) return readPreviewMyPets().map(normalizePetSummaryColors);
+  if (isPreviewRuntime) {
+    const now = new Date();
+    const allowance = readAllowance(undefined, now);
+    const revisitRecords = readActivePreviewReveals(allowance.date, now);
+    const revisitByPetId = new Map(revisitRecords.map((record) => [record.petId, record]));
+    return readPreviewMyPets().map((pet) => normalizePetSummaryColors(
+      withPreviewRevisit(pet, revisitByPetId.get(pet.id)),
+    ));
+  }
   const data = await invokePetApi<{ pets: OwnedPetSummary[] }>({ action: 'mine' });
   return data.pets.map(normalizePetSummaryColors);
 }
 
 export async function revealPet(pet: PetSummary, method: UnlockMethod, adSessionId?: string): Promise<RevealResult> {
   if (isPreviewRuntime) {
-    const current = readAllowance();
+    const now = new Date();
+    const current = readAllowance(undefined, now);
     const viewerKey = await getUserHash();
     const photoUrl = selectPetPhotoUrl(pet, current.date, viewerKey);
     if (!photoUrl) throw new Error('이 친구의 사진을 불러오지 못했어요.');
-    const allowance = consumeAllowance(current, method);
+    const allowance = consumeAllowance(current, method, now);
+    const revisitUntil = method === 'FREE'
+      ? allowance.nextChargeAt
+      : new Date(now.getTime() + FREE_RECHARGE_INTERVAL_MS).toISOString();
+    if (!revisitUntil) throw new Error('재열람 시간을 확인하지 못했어요. 다시 시도해 주세요.');
     saveAllowance(allowance);
-    markPreviewPetRevealed(pet.id, allowance.date);
-    return { photoUrl, signedUrlExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), allowance };
+    markPreviewPetRevealed(pet.id, revisitUntil, current.date);
+    return {
+      photoUrl,
+      signedUrlExpiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+      revisitUntil,
+      allowance,
+    };
   }
   return invokePetApi<RevealResult>({ action: 'reveal', petId: pet.id, unlockMethod: method, adSessionId });
 }
 
-/** 오늘 이미 공개한 같은 사진을 이용권 차감 없이 다시 연다. */
+/** 충전 경계 전에 공개한 같은 사진을 이용권 차감 없이 다시 연다. */
 export async function reopenPet(pet: PetSummary): Promise<RevealResult> {
   if (isPreviewRuntime) {
-    const allowance = readAllowance();
-    if (!readPreviewRevealedPetIds(allowance.date).has(pet.id)) {
-      throw new Error('오늘 만난 사진만 다시 볼 수 있어요.');
-    }
+    const now = new Date();
+    const allowance = readAllowance(undefined, now);
+    const revisit = findActivePreviewReveal(pet.id, allowance.date, now);
+    if (!revisit) throw new Error('이용권이 충전되기 전에 만난 사진만 다시 볼 수 있어요.');
     const viewerKey = await getUserHash();
-    const photoUrl = selectPetPhotoUrl(pet, allowance.date, viewerKey);
+    const photoUrl = selectPetPhotoUrl(pet, revisit.photoDate, viewerKey);
     if (!photoUrl) throw new Error('이 친구의 사진을 불러오지 못했어요.');
     return {
       photoUrl,
-      signedUrlExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      signedUrlExpiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+      revisitUntil: revisit.revisitUntil,
       allowance,
     };
   }

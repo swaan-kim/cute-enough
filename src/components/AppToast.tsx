@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Toast } from '@toss/tds-mobile';
 
 export const DAILY_LIMIT_TOAST_DURATION = 2_800;
@@ -16,6 +17,16 @@ type AppToastProps = {
 
 export function AppToast({ text, onDismissDailyLimit, ariaLive = 'polite' }: AppToastProps) {
   const isDailyLimit = isDailyLimitToast(text);
+  const duration = isDailyLimit ? DAILY_LIMIT_TOAST_DURATION : APP_TOAST_DURATION;
+
+  // TDS also owns a dismissal timer, but keeping the controlled `open` state on
+  // an app timer prevents a stale native/WebView animation from leaving the
+  // gray notice mounted over the bottom interaction area.
+  useEffect(() => {
+    if (!text) return undefined;
+    const timer = window.setTimeout(onDismissDailyLimit, duration);
+    return () => window.clearTimeout(timer);
+  }, [duration, onDismissDailyLimit, text]);
 
   return (
     <Toast
@@ -24,7 +35,7 @@ export function AppToast({ text, onDismissDailyLimit, ariaLive = 'polite' }: App
       open={Boolean(text)}
       text={text}
       aria-live={ariaLive}
-      duration={isDailyLimit ? DAILY_LIMIT_TOAST_DURATION : APP_TOAST_DURATION}
+      duration={duration}
       onClose={onDismissDailyLimit}
     />
   );

@@ -25,9 +25,17 @@ describe('SharedPetLanding', () => {
     expect(onMeet).toHaveBeenCalledOnce();
   });
 
-  it('does not offer a second paid reveal after the pet was met today', () => {
+  it('does not offer a second paid reveal while the revisit window is active', () => {
     renderLanding(pet('approved', true));
     expect(screen.getByText(/사진을 바로 다시 볼 수 있어요/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '사진 다시 보기' })).toBeInTheDocument();
+  });
+
+  it('does not treat an expired server window as a free revisit', () => {
+    renderLanding({
+      ...pet('approved', true),
+      revisitUntil: '2020-01-01T00:00:00.000Z',
+    });
+    expect(screen.getByRole('button', { name: '이 친구 만나기' })).toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canRevealStoredPetPhoto,
+  isRevisitActive,
   isShareablePetStatus,
   isSharedCharacterStatus,
   wasPetRevealedToday,
@@ -32,5 +33,13 @@ describe('pending pet visibility boundaries', () => {
     const revealed = new Set(['seen-pet']);
     expect(wasPetRevealedToday('seen-pet', revealed)).toBe(true);
     expect(wasPetRevealedToday('new-pet', revealed)).toBe(false);
+  });
+
+  it('uses the server expiry timestamp instead of KST midnight for revisits', () => {
+    const now = new Date('2026-08-28T14:59:00.000Z').getTime();
+    expect(isRevisitActive('2026-08-28T15:30:00.000Z', now)).toBe(true);
+    expect(isRevisitActive('2026-08-28T14:30:00.000Z', now)).toBe(false);
+    expect(isRevisitActive(undefined, now)).toBe(false);
+    expect(isRevisitActive('not-a-date', now)).toBe(false);
   });
 });

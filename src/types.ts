@@ -39,7 +39,9 @@ export interface PetSummary {
   ownerPinned?: boolean;
   approvalStatus?: PetStatus;
   shareable?: boolean;
-  /** 오늘 이미 실제 사진을 본 강아지인지 여부. */
+  /** 서버가 결정한 무료 재열람 만료 시각. 이 시각 전에만 사진을 바로 다시 열 수 있다. */
+  revisitUntil?: string;
+  /** `revisitUntil`을 보내지 않는 구버전 서버/미리보기 데이터만을 위한 하위 호환 표시. */
   revealedToday?: boolean;
 }
 
@@ -73,6 +75,8 @@ export type UnlockMethod = 'FREE' | 'REWARDED' | 'UPLOAD';
 export interface RevealResult {
   photoUrl: string;
   signedUrlExpiresAt: string;
+  /** 서버가 결정한 이 사진의 무료 재열람 만료 시각. */
+  revisitUntil?: string;
   allowance: DailyAllowance;
 }
 

@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { SubmitPetResult } from '../types';
-import { findPreviewSubmission, markPreviewPetRevealed, readPreviewMyPets, readPreviewRevealedPetIds, resetPreviewReveals, savePreviewSubmission } from './previewPetStore';
+import {
+  findActivePreviewReveal,
+  findPreviewSubmission,
+  markPreviewPetRevealed,
+  readActivePreviewReveals,
+  readPreviewMyPets,
+  readPreviewRevealedPetIds,
+  resetPreviewReveals,
+  savePreviewSubmission,
+} from './previewPetStore';
 
 function memoryStorage() {
   const values = new Map<string, string>();
@@ -23,14 +32,34 @@ describe('preview pet persistence', () => {
     expect(findPreviewSubmission('submission-one', storage)?.pet.id).toBe('one');
   });
 
-  it('tracks revealed pets by date without deleting the upload', () => {
+  it('tracks revisit expiry and the original photo date without deleting the upload', () => {
     const storage = memoryStorage();
     savePreviewSubmission('submission-one', result('one'), storage);
-    markPreviewPetRevealed('one', '2026-08-25', storage);
-    expect(readPreviewRevealedPetIds('2026-08-25', storage)).toEqual(new Set(['one']));
+    markPreviewPetRevealed('one', '2026-08-25T18:00:00.000Z', '2026-08-25', storage);
+
+    const beforeBoundary = new Date('2026-08-25T17:59:59.999Z');
+    expect(findActivePreviewReveal('one', '2026-08-26', beforeBoundary, storage)).toEqual({
+      petId: 'one',
+      revisitUntil: '2026-08-25T18:00:00.000Z',
+      photoDate: '2026-08-25',
+    });
+    expect(readPreviewRevealedPetIds('2026-08-26', storage, beforeBoundary)).toEqual(new Set(['one']));
     expect(readPreviewMyPets(storage)).toHaveLength(1);
-    expect(readPreviewRevealedPetIds('2026-08-26', storage)).toEqual(new Set());
+
+    const atBoundary = new Date('2026-08-25T18:00:00.000Z');
+    expect(readActivePreviewReveals('2026-08-26', atBoundary, storage)).toEqual([]);
     resetPreviewReveals(storage);
-    expect(readPreviewRevealedPetIds('2026-08-25', storage)).toEqual(new Set());
+    expect(readPreviewRevealedPetIds('2026-08-25', storage, beforeBoundary)).toEqual(new Set());
+  });
+
+  it('reads legacy date records only when no timestamp is available', () => {
+    const storage = memoryStorage();
+    storage.setItem('cute-enough:preview-reveals', JSON.stringify({
+      date: '2026-08-25',
+      petIds: ['legacy'],
+    }));
+
+    expect(readPreviewRevealedPetIds('2026-08-25', storage)).toEqual(new Set(['legacy']));
+    expect(readPreviewRevealedPetIds('2026-08-26', storage)).toEqual(new Set());
   });
 });

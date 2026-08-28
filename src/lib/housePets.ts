@@ -1,14 +1,17 @@
 import type { OwnedPetSummary, PetSummary } from '../types';
+import { isPetRevisitActive } from './petAccess';
 import { hasPetPhoto } from './petPhoto';
 
 export const HOUSE_PET_LIMIT = 5;
 export const OWNER_HOUSE_LIMIT = 1;
 
-/** 오늘 이미 만난 친구는 집의 제한된 자리에서 새 친구보다 먼저 보존한다. */
-export function prioritizeRevealedPets<T extends Pick<PetSummary, 'revealedToday'>>(pets: T[]): T[] {
+/** 재열람 기한이 남은 친구는 집의 제한된 자리에서 새 친구보다 먼저 보존한다. */
+export function prioritizeRevealedPets<
+  T extends Pick<PetSummary, 'revisitUntil' | 'revealedToday'>,
+>(pets: T[], now = new Date()): T[] {
   return [
-    ...pets.filter((pet) => pet.revealedToday),
-    ...pets.filter((pet) => !pet.revealedToday),
+    ...pets.filter((pet) => isPetRevisitActive(pet, now)),
+    ...pets.filter((pet) => !isPetRevisitActive(pet, now)),
   ];
 }
 

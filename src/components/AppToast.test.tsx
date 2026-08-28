@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach } from 'vitest';
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -38,7 +39,10 @@ function setup(props: Partial<Props> = {}) {
 }
 
 describe('AppToast', () => {
+  afterEach(() => vi.useRealTimers());
+
   it('centers and auto-dismisses the daily-limit notice', () => {
+    vi.useFakeTimers();
     const { onDismissDailyLimit } = setup();
     const toast = screen.getByRole('button');
 
@@ -46,7 +50,7 @@ describe('AppToast', () => {
     expect(toast).toHaveClass('app-toast--daily-limit');
     expect(toast).toHaveAttribute('data-duration', String(DAILY_LIMIT_TOAST_DURATION));
 
-    fireEvent.click(toast);
+    act(() => vi.advanceTimersByTime(DAILY_LIMIT_TOAST_DURATION));
     expect(onDismissDailyLimit).toHaveBeenCalledOnce();
   });
 

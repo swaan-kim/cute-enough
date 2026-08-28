@@ -55,6 +55,18 @@ describe('composeHousePets', () => {
     expect(result.map(({ id }) => id)).toEqual(['seen-a', 'seen-b', 'new-a', 'new-b']);
   });
 
+  it('prioritizes only unexpired revisit windows and ignores a stale legacy flag', () => {
+    const now = new Date('2026-08-28T03:00:00.000Z');
+    const result = prioritizeRevealedPets([
+      approved('new'),
+      { ...approved('expired', true), revisitUntil: '2026-08-28T03:00:00.000Z' },
+      { ...approved('active'), revisitUntil: '2026-08-28T03:00:01.000Z' },
+      approved('legacy', true),
+    ], now);
+
+    expect(result.map(({ id }) => id)).toEqual(['active', 'legacy', 'new', 'expired']);
+  });
+
   it('keeps only the newest owned pet so a pending upload occupies one of five slots', () => {
     const result = composeHousePets([
       owned('newest'),

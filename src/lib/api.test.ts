@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { PetApiError, toPetApiError } from './api';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SAMPLE_PETS } from '../data/samplePets';
+import { selectPetPhotoUrl } from './petPhoto';
+import { PetApiError, reopenPet, revealPet, toPetApiError } from './api';
+
+afterEach(() => {
+  vi.useRealTimers();
+  localStorage.clear();
+});
 
 describe('pet api error normalization', () => {
   it('preserves a structured server code and definite outcome', async () => {
@@ -44,5 +51,35 @@ describe('pet api error normalization', () => {
   it('does not erase an already normalized error', async () => {
     const original = new PetApiError('다시 시도해 주세요.', 'NETWORK_ERROR', 'unknown');
     await expect(toPetApiError(original)).resolves.toBe(original);
+  });
+});
+
+describe('preview revisit windows', () => {
+  it('uses the free allowance boundary and reopens the same photo across KST midnight', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-28T14:30:00.000Z'));
+    localStorage.setItem('cute-enough:preview-user', 'viewer-a');
+    const pet = SAMPLE_PETS.find(({ id }) => id === 'sample-haneul')!;
+
+    expect(selectPetPhotoUrl(pet, '2026-08-29', 'viewer-a'))
+      .not.toBe(selectPetPhotoUrl(pet, '2026-08-28', 'viewer-a'));
+
+    const revealed = await revealPet(pet, 'FREE');
+    expect(revealed.revisitUntil).toBe('2026-08-28T17:30:00.000Z');
+
+    vi.setSystemTime(new Date('2026-08-28T15:30:00.000Z'));
+    const reopened = await reopenPet(pet);
+    expect(reopened.photoUrl).toBe(revealed.photoUrl);
+    expect(reopened.revisitUntil).toBe(revealed.revisitUntil);
+  });
+
+  it('gives non-free preview reveals a three-hour revisit window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-28T01:00:00.000Z'));
+    localStorage.setItem('cute-enough:preview-user', 'viewer-a');
+
+    const result = await revealPet(SAMPLE_PETS[0], 'REWARDED', crypto.randomUUID());
+
+    expect(result.revisitUntil).toBe('2026-08-28T04:00:00.000Z');
   });
 });

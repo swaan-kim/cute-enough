@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DailyAllowance, PetSummary } from '../types';
-import { resolvePetAccess } from './petAccess';
+import { isPetRevisitActive, resolvePetAccess } from './petAccess';
 
 const allowance: DailyAllowance = {
   date: '2026-08-25', freeUsed: 0, rewardedUsed: 0,
@@ -34,9 +34,31 @@ describe('resolvePetAccess', () => {
       .toEqual({ kind: 'reveal', method: 'REWARDED' });
   });
 
-  it('does not charge again for an already revealed pet', () => {
-    expect(resolvePetAccess(pet({ approvalStatus: 'approved', revealedToday: true }), allowance))
+  it('does not charge again before the server-authored revisit boundary', () => {
+    const now = new Date('2026-08-25T01:00:00.000Z');
+    expect(resolvePetAccess(pet({
+      approvalStatus: 'approved',
+      revisitUntil: '2026-08-25T02:00:00.000Z',
+    }), allowance, true, now))
       .toEqual({ kind: 'revisit' });
+  });
+
+  it('stops revisiting at the boundary even if the legacy flag is still true', () => {
+    const now = new Date('2026-08-25T02:00:00.000Z');
+    const expired = pet({
+      approvalStatus: 'approved',
+      revisitUntil: '2026-08-25T02:00:00.000Z',
+      revealedToday: true,
+    });
+
+    expect(isPetRevisitActive(expired, now)).toBe(false);
+    expect(resolvePetAccess(expired, allowance, true, now))
+      .toEqual({ kind: 'reveal', method: 'FREE' });
+  });
+
+  it('uses revealedToday only when a timestamp is absent for legacy responses', () => {
+    expect(isPetRevisitActive(pet({ revealedToday: true }), new Date('2026-08-25T02:00:00.000Z'))).toBe(true);
+    expect(isPetRevisitActive(pet({ revisitUntil: 'not-a-date', revealedToday: true }))).toBe(false);
   });
 
   it('rejects non-public statuses', () => {

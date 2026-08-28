@@ -13,9 +13,17 @@ interface PreviewSubmissionRecord {
   result: SubmitPetResult;
 }
 
-interface PreviewRevealRecord {
+interface LegacyPreviewRevealRecord {
   date: string;
   petIds: string[];
+}
+
+export interface PreviewRevealRecord {
+  petId: string;
+  /** 새 레코드에는 항상 있고, 날짜 기반 구버전 저장값을 읽을 때만 없을 수 있다. */
+  revisitUntil?: string;
+  /** 자정을 넘겨 다시 열어도 처음 골랐던 실사가 바뀌지 않도록 쓴다. */
+  photoDate: string;
 }
 
 function parseArray<T>(value: string | null): T[] {
@@ -56,17 +64,75 @@ export function savePreviewSubmission(
   ]));
 }
 
-export function readPreviewRevealedPetIds(date: string, storage: StorageReader = localStorage): Set<string> {
+function readStoredPreviewReveals(storage: StorageReader): PreviewRevealRecord[] {
   try {
-    const value = JSON.parse(storage.getItem(PREVIEW_REVEALS_KEY) ?? 'null') as PreviewRevealRecord | null;
-    return value?.date === date && Array.isArray(value.petIds) ? new Set(value.petIds) : new Set();
-  } catch { return new Set(); }
+    const value = JSON.parse(storage.getItem(PREVIEW_REVEALS_KEY) ?? 'null') as unknown;
+    if (Array.isArray(value)) {
+      return value.flatMap((candidate) => {
+        if (!candidate || typeof candidate !== 'object') return [];
+        const record = candidate as Record<string, unknown>;
+        if (typeof record.petId !== 'string' || typeof record.photoDate !== 'string') return [];
+        if (record.revisitUntil !== undefined && typeof record.revisitUntil !== 'string') return [];
+        return [{
+          petId: record.petId,
+          photoDate: record.photoDate,
+          revisitUntil: record.revisitUntil,
+        } as PreviewRevealRecord];
+      });
+    }
+
+    const legacy = value as LegacyPreviewRevealRecord | null;
+    if (!legacy || typeof legacy.date !== 'string' || !Array.isArray(legacy.petIds)) return [];
+    return legacy.petIds
+      .filter((petId): petId is string => typeof petId === 'string')
+      .map((petId) => ({ petId, photoDate: legacy.date }));
+  } catch { return []; }
 }
 
-export function markPreviewPetRevealed(petId: string, date: string, storage: StorageWriter = localStorage): void {
-  const petIds = readPreviewRevealedPetIds(date, storage);
-  petIds.add(petId);
-  storage.setItem(PREVIEW_REVEALS_KEY, JSON.stringify({ date, petIds: [...petIds] } satisfies PreviewRevealRecord));
+/** 충전 경계가 지나지 않은 미리보기 재열람 기록만 반환한다. */
+export function readActivePreviewReveals(
+  currentDate: string,
+  now = new Date(),
+  storage: StorageReader = localStorage,
+): PreviewRevealRecord[] {
+  return readStoredPreviewReveals(storage).filter((record) => {
+    if (record.revisitUntil !== undefined) {
+      const revisitUntil = new Date(record.revisitUntil).getTime();
+      return Number.isFinite(revisitUntil) && revisitUntil > now.getTime();
+    }
+    return record.photoDate === currentDate;
+  });
+}
+
+export function findActivePreviewReveal(
+  petId: string,
+  currentDate: string,
+  now = new Date(),
+  storage: StorageReader = localStorage,
+): PreviewRevealRecord | undefined {
+  return readActivePreviewReveals(currentDate, now, storage).find((record) => record.petId === petId);
+}
+
+/** @deprecated 시간 기반 레코드를 쓰는 코드는 `readActivePreviewReveals`를 사용한다. */
+export function readPreviewRevealedPetIds(
+  date: string,
+  storage: StorageReader = localStorage,
+  now = new Date(),
+): Set<string> {
+  return new Set(readActivePreviewReveals(date, now, storage).map((record) => record.petId));
+}
+
+export function markPreviewPetRevealed(
+  petId: string,
+  revisitUntil: string,
+  photoDate: string,
+  storage: StorageWriter = localStorage,
+): void {
+  const records = readStoredPreviewReveals(storage);
+  storage.setItem(PREVIEW_REVEALS_KEY, JSON.stringify([
+    { petId, revisitUntil, photoDate } satisfies PreviewRevealRecord,
+    ...records.filter((record) => record.petId !== petId),
+  ]));
 }
 
 export function resetPreviewReveals(storage: StorageRemover = localStorage): void {

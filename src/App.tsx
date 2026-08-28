@@ -11,7 +11,7 @@ import { createInitialRouteStack, getCurrentRoute, homeRouteStack, popRoute, pus
 import { getSharedPetId } from './lib/deepLink';
 import { HOUSE_PET_LIMIT, prioritizeRevealedPets } from './lib/housePets';
 import { closeMiniApp, getInitialSharedPetId, subscribeNativeNavigation } from './lib/nativeNavigation';
-import { resolvePetAccess, type PetAccessDecision } from './lib/petAccess';
+import { isPetRevisitActive, resolvePetAccess, type PetAccessDecision } from './lib/petAccess';
 import { saveBrandedPetPhoto } from './lib/photoSave';
 import { getRewardedAdStatus, preloadRewardedAd, showRewardedAd, subscribeRewardedAdStatus, type RewardedAdStatus } from './lib/rewardedAd';
 import { isPreviewRuntime, rewardedAdsEnabled } from './lib/runtime';
@@ -67,10 +67,19 @@ export default function App() {
   const houseLoadingRef = useRef(false);
   const houseReloadQueuedRef = useRef(false);
   const houseNeedsRefreshRef = useRef(false);
+  const houseGenerationRef = useRef(0);
+  const lastHouseLoadedAtRef = useRef(0);
 
   const dismissDailyLimitToast = useCallback(() => {
     setToast('');
   }, []);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [screen, route.screen === 'shared' || route.screen === 'play' ? route.petId : '']);
 
   function playSound(effect: SoundEffect, variant = 0) {
     playSoundEffect(effect, soundEnabled, variant);
@@ -90,11 +99,13 @@ export default function App() {
       if (queueIfBusy) houseReloadQueuedRef.current = true;
       return;
     }
+    const requestGeneration = houseGenerationRef.current;
     houseLoadingRef.current = true;
     setHouseError(false);
     setStatus('강아지들이 놀러 오는 중…');
     try {
       const value = await fetchHouse();
+      if (requestGeneration !== houseGenerationRef.current) return;
       setPets(value.pets);
       if (value.allowance) {
         allowanceRef.current = value.allowance;
@@ -105,8 +116,10 @@ export default function App() {
         houseLoadedDateRef.current = getKstDate();
       }
       houseNeedsRefreshRef.current = false;
+      lastHouseLoadedAtRef.current = Date.now();
       setStatus('강아지를 끌어 옮기거나, 톡 눌러 만나보세요');
     } catch {
+      if (requestGeneration !== houseGenerationRef.current) return;
       setHouseError(true);
       setStatus('친구들을 불러오지 못했어요.');
     } finally {
@@ -121,6 +134,20 @@ export default function App() {
   useEffect(() => {
     if (!initialSharedPetId) void loadHouse();
   }, [initialSharedPetId]);
+  useEffect(() => {
+    const refreshVisibleHome = () => {
+      if (document.hidden || screen !== 'home' || Date.now() - lastHouseLoadedAtRef.current < 60_000) return;
+      void loadHouse(true);
+    };
+    window.addEventListener('focus', refreshVisibleHome);
+    window.addEventListener('pageshow', refreshVisibleHome);
+    document.addEventListener('visibilitychange', refreshVisibleHome);
+    return () => {
+      window.removeEventListener('focus', refreshVisibleHome);
+      window.removeEventListener('pageshow', refreshVisibleHome);
+      document.removeEventListener('visibilitychange', refreshVisibleHome);
+    };
+  }, [screen]);
   useEffect(() => { photoUrlRef.current = photoUrl; }, [photoUrl]);
   useEffect(() => { allowanceRef.current = allowance; }, [allowance]);
   useEffect(() => { adPromptPetRef.current = adPromptPet; }, [adPromptPet]);
@@ -157,13 +184,7 @@ export default function App() {
       const changed = refreshed.remaining !== current.remaining
         || refreshed.nextChargeAt !== current.nextChargeAt;
       if (!changed) return;
-      if (isPreviewRuntime) {
-        allowanceRef.current = refreshed;
-        setAllowance(refreshed);
-        saveAllowance(refreshed);
-      } else {
-        await loadHouse(true);
-      }
+      await loadHouse(true);
     };
     const delay = millisecondsUntilNextFreeRecharge(allowance);
     if (delay !== null) {
@@ -197,7 +218,6 @@ export default function App() {
       adCreditsRef.current.clear();
       setPreparedVisit(undefined);
       setAdPromptPet(undefined);
-      setSelected((current) => current ? { ...current, revealedToday: false } : current);
       await loadHouse(true);
     };
     const scheduleMidnightRefresh = () => {
@@ -219,6 +239,26 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
+  useEffect(() => {
+    const expiryTimes = [...pets, ...(selected ? [selected] : [])]
+      .map((pet) => pet.revisitUntil ? new Date(pet.revisitUntil).getTime() : Number.NaN)
+      .filter((expiresAt) => Number.isFinite(expiresAt) && expiresAt > Date.now());
+    if (!expiryTimes.length) return undefined;
+    const nextExpiry = Math.min(...expiryTimes);
+    const timer = window.setTimeout(() => {
+      const now = new Date();
+      setPets((current) => current.map((pet) => (
+        pet.revisitUntil && !isPetRevisitActive(pet, now)
+          ? { ...pet, revisitUntil: undefined, revealedToday: false }
+          : pet
+      )));
+      setSelected((current) => current?.revisitUntil && !isPetRevisitActive(current, now)
+        ? { ...current, revisitUntil: undefined, revealedToday: false }
+        : current);
+      void loadHouse(true);
+    }, Math.min(nextExpiry - Date.now() + 250, 2_147_000_000));
+    return () => window.clearTimeout(timer);
+  }, [pets, selected]);
 
   const remaining = useMemo(
     () => regularRemainingCount(allowance),
@@ -248,13 +288,19 @@ export default function App() {
   async function openRevealedPet(pet: PetSummary) {
     if (busy) return;
     setBusy(true);
-    setToast('오늘 만난 사진을 다시 꺼내는 중…');
+    setToast('방금 만난 사진을 다시 꺼내는 중…');
     try {
       const result = await reopenPet(pet);
       allowanceRef.current = result.allowance;
       setAllowance(result.allowance);
       saveAllowance(result.allowance);
-      setSelected({ ...pet, revealedToday: true });
+      const revisitedPet = {
+        ...pet,
+        revisitUntil: result.revisitUntil ?? pet.revisitUntil,
+        revealedToday: true,
+      };
+      setSelected(revisitedPet);
+      setPets((current) => current.map((item) => item.id === pet.id ? revisitedPet : item));
       setPreparedVisit({ petId: pet.id, revisit: true });
       navigateTo({ screen: 'play', petId: pet.id });
       photoUrlRef.current = result.photoUrl;
@@ -417,8 +463,11 @@ export default function App() {
       setAllowance(result.allowance);
       allowanceRef.current = result.allowance;
       saveAllowance(result.allowance);
-      setSelected((current) => current ? { ...current, revealedToday: true } : current);
-      setPets((current) => current.map((pet) => pet.id === selected.id ? { ...pet, revealedToday: true } : pet));
+      const revisitUntil = result.revisitUntil;
+      setSelected((current) => current ? { ...current, revisitUntil, revealedToday: true } : current);
+      setPets((current) => current.map((pet) => pet.id === selected.id
+        ? { ...pet, revisitUntil, revealedToday: true }
+        : pet));
       if (preparedVisit.method === 'REWARDED') adCreditsRef.current.delete(selected.id);
       photoUrlRef.current = result.photoUrl;
       setPhotoUrl(result.photoUrl); setToast(''); playSound('reveal');
@@ -454,6 +503,8 @@ export default function App() {
   );
 
   if (screen === 'upload') return <Suspense fallback={screenFallback}><UploadFlow onSubmitted={(result) => {
+    houseGenerationRef.current += 1;
+    houseNeedsRefreshRef.current = true;
     const current = readAllowance();
     const credited = result.rewardGranted && result.uploadRewardPetId
       ? grantUploadCredit(current, result.uploadRewardPetId)
@@ -469,6 +520,7 @@ export default function App() {
       );
       return [uploaded, ...publicPets].slice(0, HOUSE_PET_LIMIT);
     });
+    void loadHouse(true);
     navigateTo({ screen: 'submitted' });
   }} /></Suspense>;
   if (screen === 'submitted') return (
@@ -576,7 +628,7 @@ export default function App() {
           <Button size="medium" color="dark" variant="weak" onClick={() => void loadHouse(true)}>다시 불러오기</Button>
         </section>
       ) : <House pets={pets} onSelect={choosePet} onSound={playSound} />}
-      <p className="home-hint" aria-live="polite">{status}</p>
+      {!toast && <p className="home-hint" aria-live="polite">{status}</p>}
       {adDialog}
       <AppToast text={toast} onDismissDailyLimit={dismissDailyLimitToast} />
     </main>

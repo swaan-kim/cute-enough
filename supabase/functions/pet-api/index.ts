@@ -2,14 +2,14 @@ import { createClient } from 'npm:@supabase/supabase-js@2.57.4';
 import { verifyAnonymousKey } from '../_shared/anonymous-key.ts';
 import { ApiError } from '../_shared/api-error.ts';
 import { corsGuard, json } from '../_shared/cors.ts';
-import { orderDailyPets, prioritizeRevealedPets } from '../_shared/daily-pool.ts';
+import { orderDailyPets } from '../_shared/daily-pool.ts';
 import { decodeDataUri, hashUser, kstDate } from '../_shared/security.ts';
 import {
   canRevealStoredPetPhoto,
+  isRevisitActive,
   isShareablePetStatus,
   OWNER_VISIBLE_PET_STATUSES,
   SHARED_CHARACTER_PET_STATUSES,
-  wasPetRevealedToday,
 } from '../_shared/pet-visibility.ts';
 import {
   normalizePetName,
@@ -31,6 +31,33 @@ const MAX_REWARDED_PER_DAY = 2;
 const HOUSE_PET_LIMIT = 5;
 
 type FreeAllowance = { remaining: number; nextChargeAt?: string };
+type RevealRow = {
+  pet_id: string;
+  unlock_method: string;
+  reveal_date: string;
+  revisit_until: string;
+  created_at: string;
+};
+
+function activeRevisitMap(rows: RevealRow[], now = Date.now()): Map<string, RevealRow> {
+  const active = new Map<string, RevealRow>();
+  for (const row of rows) {
+    if (!active.has(row.pet_id) && isRevisitActive(row.revisit_until, now)) active.set(row.pet_id, row);
+  }
+  return active;
+}
+
+async function getActiveReveals(ownerHash: string, petId?: string): Promise<RevealRow[]> {
+  let query = supabase.from('daily_reveals')
+    .select('pet_id,unlock_method,reveal_date,revisit_until,created_at')
+    .eq('owner_hash', ownerHash)
+    .gt('revisit_until', new Date().toISOString())
+    .order('created_at', { ascending: false });
+  if (petId) query = query.eq('pet_id', petId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data ?? []) as RevealRow[];
+}
 
 async function getFreeAllowance(ownerHash: string): Promise<FreeAllowance> {
   const { data, error } = await supabase.rpc('get_pet_free_allowance', {
@@ -197,14 +224,17 @@ Deno.serve(async (request) => {
 
     if (action === 'house') {
       const date = kstDate();
-      const { data: reveals, error: revealError } = await supabase.from('daily_reveals').select('unlock_method,pet_id').eq('owner_hash', ownerHash).eq('reveal_date', date);
+      const [{ data: reveals, error: revealError }, activeRevealRows] = await Promise.all([
+        supabase.from('daily_reveals').select('unlock_method,pet_id').eq('owner_hash', ownerHash).eq('reveal_date', date),
+        getActiveReveals(ownerHash),
+      ]);
       if (revealError) throw revealError;
       const [{ data: uploadReward, error: rewardError }, freeAllowance] = await Promise.all([
         supabase.from('upload_rewards').select('pet_id,used_at').eq('owner_hash', ownerHash).eq('reward_date', date).maybeSingle(),
         getFreeAllowance(ownerHash),
       ]);
       if (rewardError) throw rewardError;
-      const revealedPetIds = new Set(reveals.map((item) => item.pet_id));
+      const activeReveals = activeRevisitMap(activeRevealRows);
       const [{ data: ownedPets, error: ownedError }, { data: approvedPets, error: approvedError }] = await Promise.all([
         supabase.from('pets')
           .select('id,name,traits,status,pet_photos!inner(id)')
@@ -223,6 +253,17 @@ Deno.serve(async (request) => {
           .limit(200),
       ]);
       if (ownedError || approvedError) throw ownedError ?? approvedError;
+      const activePetIds = [...activeReveals.keys()];
+      let activePets: Array<Record<string, unknown>> = [];
+      if (activePetIds.length) {
+        const { data, error } = await supabase.from('pets')
+          .select('id,name,traits,status,owner_hash,pet_photos!inner(id)')
+          .in('id', activePetIds)
+          .in('status', [...SHARED_CHARACTER_PET_STATUSES])
+          .eq('pet_photos.is_active', true);
+        if (error) throw error;
+        activePets = (data ?? []) as Array<Record<string, unknown>>;
+      }
       const owned = (ownedPets ?? []).map(({ status, pet_photos: _photoRows, ...pet }) => ({
         ...pet,
         photoAvailable: true,
@@ -230,7 +271,8 @@ Deno.serve(async (request) => {
         ownerPinned: true,
         approvalStatus: status,
         shareable: true,
-        revealedToday: revealedPetIds.has(pet.id),
+        revealedToday: activeReveals.has(pet.id),
+        revisitUntil: activeReveals.get(pet.id)?.revisit_until,
       }));
       const primaryOwnedPet = owned[0];
       const candidateSummaries = (approvedPets ?? []).map(({ pet_photos: _photoRows, ...pet }) => ({
@@ -240,14 +282,42 @@ Deno.serve(async (request) => {
           ownerPinned: false,
           approvalStatus: 'approved',
           shareable: true,
-          revealedToday: revealedPetIds.has(pet.id),
+          revealedToday: activeReveals.has(pet.id),
+          revisitUntil: activeReveals.get(pet.id)?.revisit_until,
         }));
-      const publicSlots = HOUSE_PET_LIMIT - (primaryOwnedPet ? 1 : 0);
-      const selectedPublicPets = prioritizeRevealedPets(
-        orderDailyPets(candidateSummaries, ownerHash, date),
-      ).slice(0, publicSlots);
-      const pool = [...(primaryOwnedPet ? [primaryOwnedPet] : []), ...selectedPublicPets];
-      const rewardedUsed = reveals.filter((item) => item.unlock_method === 'REWARDED').length;
+      const activeSummaries = activePets
+        .filter((pet) => pet.status === 'approved' || pet.owner_hash === ownerHash)
+        .map((pet) => {
+          const petId = String(pet.id);
+          return {
+            id: petId,
+            name: typeof pet.name === 'string' ? pet.name : undefined,
+            traits: pet.traits,
+            photoAvailable: true,
+            isMine: pet.owner_hash === ownerHash,
+            ownerPinned: pet.owner_hash === ownerHash,
+            approvalStatus: pet.status,
+            shareable: isShareablePetStatus(pet.status),
+            revealedToday: true,
+            revisitUntil: activeReveals.get(petId)?.revisit_until,
+          };
+        });
+
+      const pool: Array<Record<string, unknown>> = [];
+      const occupiedIds = new Set<string>();
+      const append = (pet: Record<string, unknown> | undefined) => {
+        if (!pet || pool.length >= HOUSE_PET_LIMIT) return;
+        const petId = String(pet.id);
+        if (occupiedIds.has(petId)) return;
+        occupiedIds.add(petId);
+        pool.push(pet);
+      };
+      append(primaryOwnedPet);
+      for (const reveal of activeRevealRows) {
+        append(activeSummaries.find((pet) => pet.id === reveal.pet_id));
+      }
+      for (const pet of orderDailyPets(candidateSummaries, ownerHash, date)) append(pet);
+      const rewardedUsed = (reveals ?? []).filter((item) => item.unlock_method === 'REWARDED').length;
       return reply({
         pets: pool,
         allowance: allowancePayload(date, freeAllowance, rewardedUsed, uploadReward),
@@ -266,12 +336,15 @@ Deno.serve(async (request) => {
       if (!pet) return reply({ error: '이 친구는 지금 만날 수 없어요.', code: 'PET_NOT_AVAILABLE' }, 404);
       const { status, owner_hash: petOwnerHash, pet_photos: _photoRows, ...summary } = pet;
       const date = kstDate();
-      const [{ data: reveals, error: revealError }, { data: uploadReward, error: rewardError }, freeAllowance] = await Promise.all([
+      const [{ data: reveals, error: revealError }, activeRows, { data: uploadReward, error: rewardError }, freeAllowance] = await Promise.all([
         supabase.from('daily_reveals').select('unlock_method,pet_id').eq('owner_hash', ownerHash).eq('reveal_date', date),
+        getActiveReveals(ownerHash, petId),
         supabase.from('upload_rewards').select('pet_id,used_at').eq('owner_hash', ownerHash).eq('reward_date', date).maybeSingle(),
         getFreeAllowance(ownerHash),
       ]);
       if (revealError || rewardError) throw revealError ?? rewardError;
+      const activeReveal = activeRows[0];
+      const todayReveals = reveals ?? [];
       return reply({
         pet: {
           ...summary,
@@ -280,34 +353,31 @@ Deno.serve(async (request) => {
           ownerPinned: petOwnerHash === ownerHash,
           approvalStatus: status,
           shareable: true,
-          revealedToday: reveals.some((item) => item.pet_id === petId),
+          revealedToday: Boolean(activeReveal),
+          revisitUntil: activeReveal?.revisit_until,
         },
         allowance: allowancePayload(
           date,
           freeAllowance,
-          reveals.filter((item) => item.unlock_method === 'REWARDED').length,
+          todayReveals.filter((item) => item.unlock_method === 'REWARDED').length,
           uploadReward,
         ),
       });
     }
 
     if (action === 'mine') {
-      const date = kstDate();
-      const [{ data: pets, error }, { data: reveals, error: revealError }] = await Promise.all([
+      const [{ data: pets, error }, activeRows] = await Promise.all([
         supabase.from('pets')
           .select('id,name,traits,status,created_at,rejection_reason')
           .eq('owner_hash', ownerHash)
           .neq('status', 'deleted')
           .order('created_at', { ascending: false })
           .limit(50),
-        supabase.from('daily_reveals')
-          .select('pet_id')
-          .eq('owner_hash', ownerHash)
-          .eq('reveal_date', date),
+        getActiveReveals(ownerHash),
       ]);
-      if (error || revealError) throw error ?? revealError;
-      const revealedPetIds = new Set((reveals ?? []).map((item) => item.pet_id));
-      return reply({ pets: pets.map(({ status, created_at, rejection_reason, ...pet }) => ({
+      if (error) throw error;
+      const activeReveals = activeRevisitMap(activeRows);
+      return reply({ pets: (pets ?? []).map(({ status, created_at, rejection_reason, ...pet }) => ({
         ...pet,
         isMine: true,
         ownerPinned: true,
@@ -315,19 +385,24 @@ Deno.serve(async (request) => {
         createdAt: created_at,
         rejectionReason: rejection_reason ?? undefined,
         shareable: isShareablePetStatus(status),
-        revealedToday: wasPetRevealedToday(pet.id, revealedPetIds),
+        revealedToday: activeReveals.has(pet.id),
+        revisitUntil: activeReveals.get(pet.id)?.revisit_until,
       })) });
     }
 
     if (action === 'reveal') {
       const petId = requireUuid(body.petId);
       const date = kstDate();
-      const { data: reveals, error: revealError } = await supabase.from('daily_reveals')
-        .select('unlock_method,pet_id')
-        .eq('owner_hash', ownerHash)
-        .eq('reveal_date', date);
+      const [{ data: reveals, error: revealError }, activeRows] = await Promise.all([
+        supabase.from('daily_reveals')
+          .select('unlock_method,pet_id')
+          .eq('owner_hash', ownerHash)
+          .eq('reveal_date', date),
+        getActiveReveals(ownerHash, petId),
+      ]);
       if (revealError) throw revealError;
       const revealRows = reveals ?? [];
+      const activeReveal = activeRows[0];
       const rewardedUsed = revealRows.filter((item) => item.unlock_method === 'REWARDED').length;
       const { data: uploadReward, error: uploadCheckError } = await supabase.from('upload_rewards')
         .select('pet_id,used_at')
@@ -339,16 +414,18 @@ Deno.serve(async (request) => {
       const freeAllowance = await getFreeAllowance(ownerHash);
       const currentAllowance = allowancePayload(date, freeAllowance, rewardedUsed, uploadReward);
 
-      if (body.revisit === true) {
-        if (!revealRows.some((item) => item.pet_id === petId)) {
-          throw new ApiError('PET_NOT_REVEALED_TODAY', 403, '오늘 만난 사진만 다시 볼 수 있어요.');
-        }
-        const photoUrl = await createPetPhotoSignedUrl(petId, ownerHash, date, true);
+      if (activeReveal) {
+        const photoUrl = await createPetPhotoSignedUrl(petId, ownerHash, activeReveal.reveal_date, true);
         return reply({
           photoUrl,
           signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+          revisitUntil: activeReveal.revisit_until,
           allowance: currentAllowance,
         });
+      }
+
+      if (body.revisit === true) {
+        throw new ApiError('PET_REVISIT_EXPIRED', 403, '다시 만날 수 있는 시간이 지났어요. 이용권으로 다시 만나주세요.');
       }
 
       if (typeof body.unlockMethod !== 'string' || !['FREE', 'REWARDED', 'UPLOAD'].includes(body.unlockMethod)) {
@@ -373,11 +450,34 @@ Deno.serve(async (request) => {
       }
 
       const photoUrl = await createPetPhotoSignedUrl(petId, ownerHash, date, unlockMethod === 'UPLOAD');
-      const { error: recordError } = await supabase.rpc('record_pet_reveal', {
+      const { data: recordedRevisitUntil, error: recordError } = await supabase.rpc('record_pet_reveal_v2', {
         p_owner_hash: ownerHash, p_reveal_date: date, p_pet_id: petId,
         p_unlock_method: unlockMethod, p_ad_session_id: adSessionId ?? null,
       });
       if (recordError) {
+        if (recordError.message.includes('PET_REVISIT_ACTIVE')) {
+          const concurrentReveal = (await getActiveReveals(ownerHash, petId))[0];
+          if (concurrentReveal) {
+            const [latestFreeAllowance, { data: latestRows, error: latestRowsError }, { data: latestReward, error: latestRewardError }] = await Promise.all([
+              getFreeAllowance(ownerHash),
+              supabase.from('daily_reveals').select('unlock_method').eq('owner_hash', ownerHash).eq('reveal_date', date),
+              supabase.from('upload_rewards').select('pet_id,used_at').eq('owner_hash', ownerHash).eq('reward_date', date).maybeSingle(),
+            ]);
+            if (latestRowsError || latestRewardError) throw latestRowsError ?? latestRewardError;
+            const concurrentPhotoUrl = await createPetPhotoSignedUrl(petId, ownerHash, concurrentReveal.reveal_date, true);
+            return reply({
+              photoUrl: concurrentPhotoUrl,
+              signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+              revisitUntil: concurrentReveal.revisit_until,
+              allowance: allowancePayload(
+                date,
+                latestFreeAllowance,
+                (latestRows ?? []).filter((item) => item.unlock_method === 'REWARDED').length,
+                latestReward,
+              ),
+            });
+          }
+        }
         if (recordError.message.includes('FREE_ALLOWANCE_EMPTY')) {
           const latestFreeAllowance = await getFreeAllowance(ownerHash);
           return reply({
@@ -388,12 +488,16 @@ Deno.serve(async (request) => {
         }
         return reply({ error: '이미 사용했거나 만료된 해금이에요.', code: 'UNLOCK_ALREADY_USED' }, 409);
       }
+      let revisitUntil = typeof recordedRevisitUntil === 'string' ? recordedRevisitUntil : undefined;
+      if (!revisitUntil) revisitUntil = (await getActiveReveals(ownerHash, petId))[0]?.revisit_until;
+      if (!revisitUntil) throw new Error('REVISIT_WINDOW_NOT_RECORDED');
       const latestFreeAllowance = unlockMethod === 'FREE'
         ? await getFreeAllowance(ownerHash)
         : freeAllowance;
       return reply({
         photoUrl,
         signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+        revisitUntil,
         allowance: {
           ...allowancePayload(
             date,
