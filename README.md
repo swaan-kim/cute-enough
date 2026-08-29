@@ -31,6 +31,7 @@
 - 다시 보기: 공개 강아지는 다음 이용권 충전 시각까지 무차감으로 바로 열고, 내 `pending`·`approved` 강아지는 언제든 무료로 열기
 - 승인 반영: 공유 링크에는 즉시 반영하고 다른 사용자의 집에는 다음 KST 날짜부터 후보로 편입
 - 반려견 등록: 사진 선택, 특징 확인, 동의 및 검수 요청 후 가장 최근에 올린 강아지가 본인 집에 즉시 등장
+- 내부 검수: 로컬 전용 페이지에서 실사 사진·앱 캐릭터·이름을 함께 확인하고 승인 또는 반려
 - 친구 공유: 승인된 강아지는 실제 사진까지, 검수 중 강아지는 캐릭터만 보여주는 전용 딥링크
 - 사진 저장: 실제 사진에 작은 분홍 로고와 해당 강아지 이름표를 합성한 JPG 복사본만 사용자 기기에 저장
 - Apps in Toss 대응: TDS Mobile, 사진 권한, 익명 사용자 키, 전면형 리워드 광고
@@ -88,8 +89,10 @@ VITE_SHARE_OG_URL=
 | 명령어 | 용도 |
 | --- | --- |
 | `npm run dev` | 로컬 개발 서버 실행 |
+| `npm run review` | 로컬 전용 강아지 검수 페이지 실행 |
 | `npm run typecheck` | TypeScript 검사 |
 | `npm test` | 단위 테스트 실행 |
+| `npm run test:review` | 내부 검수 서버 보안·API 테스트 실행 |
 | `npm run build:web` | 일반 웹/Vercel용 `dist` 빌드 |
 | `npm run build` | preview용 Apps in Toss `.ait` 생성 |
 | `npm run build:private` | 비공개 QR용 `.ait` 생성(운영 설정 필수) |
@@ -158,7 +161,14 @@ AIT_PENDING_UPLOAD_LIMIT=100
 4. 두 마리와 실사 다섯 장을 한 번에 등록하려면 `npm run seed:initial-pets`를 실행합니다. 같은 명령을 다시 실행해도 고정 ID로 갱신됩니다.
 5. 공개 순간에는 `강아지 + 사용자 + KST 날짜` 기준으로 한 장을 안정적으로 선택합니다. 같은 날 재시도할 때 사진이 갑자기 바뀌지 않습니다.
 
-사용자 사진 승인은 Dashboard에서 상태만 직접 바꾸지 말고 `review_pet_submission(pet_id, 'approved' 또는 'rejected', 검수자, 사유)` RPC를 사용합니다. 이 함수가 Storage 원본 존재를 확인한 뒤 상태·검수 시각·감사 로그를 한 트랜잭션으로 기록합니다.
+사용자 사진은 로컬 전용 검수 페이지에서 실사 사진·실제 앱 캐릭터·이름을 함께 보고 승인하거나 반려할 수 있습니다. 서버용 비밀키는 브라우저와 GitHub에 포함되지 않으며, 모든 처리는 `review_pet_submission` RPC를 거쳐 상태·검수 시각·감사 로그를 한 트랜잭션으로 기록합니다.
+
+```bash
+# .env.review.example을 .env.review.local로 복사하고 서버 전용 키를 입력한 뒤
+npm run review
+```
+
+브라우저에서 `http://127.0.0.1:4178/review`를 엽니다. 자세한 설정과 보안 원칙은 [내부 검수 페이지 안내](docs/REVIEW_CONSOLE.md)를 참고하세요. Supabase SQL Editor는 검수 페이지를 실행할 수 없을 때의 예비 수단으로만 사용합니다.
 
 ```sql
 -- Storage 실존 여부를 포함한 검수 대기 목록
@@ -199,7 +209,10 @@ src/
 ├─ components/    화면과 상호작용 컴포넌트
 ├─ data/          샘플 강아지와 캐릭터 이미지 연결
 ├─ lib/           이용 횟수, 토스 브릿지, Supabase API
+├─ review/        로컬 전용 검수 페이지 UI
 └─ types.ts       공용 데이터 타입
+tools/
+└─ review-console/ 서버용 키를 보호하는 로컬 검수 서버
 supabase/
 ├─ functions/     익명키 검증·업로드·공유 앱 API Edge Function
 └─ migrations/    테이블, 정책, Storage 설정
@@ -211,7 +224,7 @@ public/
 ## 현재 확인할 점
 
 - 고양이는 후속 범위이며 현재는 강아지만 제공합니다.
-- 검수 관리자 UI는 이번 제출 범위 밖이며 운영자가 DB·Storage에서 검수합니다. 삭제는 앱인토스 `⋯ > 문의하기` 요청을 받아 즉시 비공개·원본 삭제합니다.
+- 검수는 공개 미니앱과 분리된 로컬 전용 페이지에서 진행합니다. 삭제는 앱인토스 `⋯ > 문의하기` 요청을 받아 즉시 비공개·원본 삭제합니다.
 - 운영 배포 전 접근성, 저사양 기기, iOS/Android 토스 앱 QR 테스트를 각각 진행해야 합니다.
 - 초기 실사 5장은 제공자가 공개 권리를 확인한 뒤에만 운영 seed를 실행해야 합니다.
 - GPT 대화에서 직접 선별해 넣는 초기 강아지는 `src/data/petSignature.ts`에서 작은 소품 하나를 수동 배정합니다. 일반 사용자 업로드에는 임의 소품을 붙이지 않습니다.

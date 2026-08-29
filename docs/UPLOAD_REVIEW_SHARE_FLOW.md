@@ -24,12 +24,14 @@
 
 ## 제작자·운영자 검수 방법
 
-현재 v1에는 공개 미니앱 안의 관리자 화면을 두지 않는다. 숨겨진 주소에 서비스 역할 키를 넣는 방식은 권한 보호가 되지 않으므로, 초기 운영은 로그인된 Supabase Dashboard에서 진행한다.
+현재 v1에는 공개 미니앱 안의 관리자 화면을 두지 않는다. 숨겨진 공개 주소에 서비스 역할 키를 넣는 방식은 권한 보호가 되지 않으므로, 초기 운영은 `127.0.0.1`에만 열리는 내부 검수 페이지에서 진행한다. 설정 방법은 [내부 강아지 검수 페이지](REVIEW_CONSOLE.md)를 따른다.
 
-1. SQL Editor에서 `select * from public.pending_pet_review_queue order by created_at;`로 Storage 실존 여부를 포함한 대기 항목을 확인한다.
-2. 해당 행의 `storage_path`와 private `pet-photos` 버킷에서 실제 사진을 확인한다.
-3. 이름·사진 제공 권리·강아지 여부·캐릭터 특징을 확인한다.
-4. SQL Editor에서 아래 RPC로 승인한다. `actor`에는 검수한 운영자 식별값을 남긴다.
+1. `.env.review.example`을 `.env.review.local`로 복사하고 Supabase 서버 전용 비밀키를 입력한다.
+2. `npm run review`를 실행하고 `http://127.0.0.1:4178/review`를 연다.
+3. 실사 사진·앱 캐릭터·이름·등록 시각을 함께 확인한다.
+4. 승인 또는 반려를 선택한다. 반려에는 사유를 반드시 입력한다.
+
+검수 페이지를 실행할 수 없는 경우에만 SQL Editor에서 아래 RPC를 예비 수단으로 사용한다. `actor`에는 검수한 운영자 식별값을 남긴다.
 
 ```sql
 select public.review_pet_submission(
@@ -55,7 +57,7 @@ select public.review_pet_submission(
 
 localhost와 Vercel의 `preview` 업로드는 업로더 브라우저의 Local Storage에만 저장된다. 따라서 다른 사용자가 preview에서 올린 사진은 제작자에게 전달되지 않고 승인할 수도 없다. 실제 검수 대기열은 Supabase migrations·private Storage·`pet-api` Edge Function·mTLS secrets가 연결된 private/production Toss 빌드에서만 생성된다.
 
-업로드가 늘어나면 Supabase Auth와 별도 reviewer 허용 목록을 사용하는 독립 운영자 페이지를 추가한다. 서비스 역할 키, `storage_path`, `owner_hash`는 브라우저에 노출하지 않고 서버가 3~5분짜리 검수용 서명 URL과 승인/반려 API만 제공해야 한다.
+업로드가 늘어나 여러 운영자가 원격 검수를 해야 하면 Supabase Auth와 별도 reviewer 허용 목록을 사용하는 독립 운영자 페이지를 추가한다. 서비스 역할 키, `storage_path`, `owner_hash`는 브라우저에 노출하지 않고 서버가 짧게 만료되는 검수용 서명 URL과 승인/반려 API만 제공해야 한다.
 
 ## 중요한 경계
 

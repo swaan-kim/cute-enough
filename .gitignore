@@ -6,6 +6,7 @@ dist/
 .env.*
 !.env.example
 !.env.production.example
+!.env.review.example
 .DS_Store
 coverage/
 *.tsbuildinfo

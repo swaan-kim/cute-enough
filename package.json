@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "review": "node --env-file-if-exists=.env.review.local tools/review-console/server.mjs",
     "build:web": "node scripts/validate-release.mjs preview && tsc -b && vite build --mode preview && node scripts/prune-build-assets.mjs preview && node scripts/assert-no-ait-devtools.mjs",
     "build": "npm run build:preview",
     "build:preview": "node scripts/validate-release.mjs preview && vite build --mode preview && node scripts/prune-build-assets.mjs preview && node scripts/assert-no-ait-devtools.mjs && ait build",
@@ -15,6 +16,7 @@
     "build:production": "node scripts/validate-release.mjs production && vite build --mode production && node scripts/prune-build-assets.mjs production && node scripts/assert-no-ait-devtools.mjs && ait build",
     "deploy": "npm run build:production && ait deploy",
     "test": "vitest run --configLoader runner",
+    "test:review": "node --test tools/review-console/server.node-test.mjs",
     "test:watch": "vitest --configLoader runner",
     "typecheck": "tsc -b --pretty false",
     "seed:initial-pets": "node scripts/seed-initial-pets.mjs"
