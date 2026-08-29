@@ -11,6 +11,7 @@ import { getKstDate, grantUploadCredit, hasUploadBonus, isAllowanceForToday, MAX
 import { createInitialRouteStack, getCurrentRoute, homeRouteStack, popRoute, pushRoute } from './lib/appRoutes';
 import { getSharedPetId } from './lib/deepLink';
 import { HOUSE_PET_LIMIT, prioritizeRevealedPets } from './lib/housePets';
+import { playHaptic } from './lib/haptics';
 import { closeMiniApp, getInitialSharedPetId, subscribeNativeNavigation } from './lib/nativeNavigation';
 import { isPetRevisitActive, resolvePetAccess, type PetAccessDecision } from './lib/petAccess';
 import { saveBrandedPetPhoto } from './lib/photoSave';
@@ -83,6 +84,7 @@ export default function App() {
   const mineNeedsRefreshRef = useRef(false);
   const mineGenerationRef = useRef(0);
   const sharedGenerationRef = useRef(0);
+  const lastUploadHapticPetIdRef = useRef<string>();
 
   const dismissDailyLimitToast = useCallback(() => {
     setToastText('');
@@ -705,6 +707,10 @@ export default function App() {
       approvalStatus: result.pet.approvalStatus ?? 'pending',
     };
     setSubmittedPet(uploaded);
+    if (lastUploadHapticPetIdRef.current !== uploaded.id) {
+      lastUploadHapticPetIdRef.current = uploaded.id;
+      void playHaptic('uploadSuccess');
+    }
     setMyPets((existing) => [uploaded, ...existing.filter((pet) => pet.id !== uploaded.id)]);
     setPets((existing) => {
       const publicPets = prioritizeRevealedPets(

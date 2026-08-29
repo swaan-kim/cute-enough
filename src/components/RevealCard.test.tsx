@@ -1,7 +1,14 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { TDSMobileAITProvider } from '@toss/tds-mobile-ait';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PetSummary } from '../types';
+
+const hapticMocks = vi.hoisted(() => ({
+  playHaptic: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock('../lib/haptics', () => hapticMocks);
+
 import { RevealCard } from './RevealCard';
 
 const pet: PetSummary = {
@@ -20,6 +27,7 @@ const pet: PetSummary = {
 };
 
 afterEach(() => vi.useRealTimers());
+beforeEach(() => hapticMocks.playHaptic.mockClear());
 
 describe('RevealCard', () => {
   it('shows one subtle heart where the user touches the photo', () => {
@@ -43,6 +51,13 @@ describe('RevealCard', () => {
 
     fireEvent.pointerDown(photo, { clientX: 80, clientY: 60 });
     expect(container.querySelector('.photo-tap-heart')).toBeInTheDocument();
+    fireEvent.pointerDown(photo, { clientX: 90, clientY: 70 });
+    expect(hapticMocks.playHaptic).toHaveBeenCalledTimes(1);
+    expect(hapticMocks.playHaptic).toHaveBeenCalledWith('photoHeart');
+
+    act(() => vi.advanceTimersByTime(301));
+    fireEvent.pointerDown(photo, { clientX: 100, clientY: 80 });
+    expect(hapticMocks.playHaptic).toHaveBeenCalledTimes(2);
 
     act(() => vi.advanceTimersByTime(901));
     expect(container.querySelector('.photo-tap-heart')).not.toBeInTheDocument();
@@ -62,6 +77,25 @@ describe('RevealCard', () => {
     );
     fireEvent.keyDown(screen.getByRole('button', { name: '하늘 사진에 하트 보내기' }), { key: 'Enter' });
     expect(container.querySelector('.photo-tap-heart')).toBeInTheDocument();
+  });
+
+  it('plays success only after the real photo pixels finish loading', () => {
+    render(
+      <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
+        <RevealCard
+          pet={pet}
+          photoUrl="/haneul.jpg"
+          onClose={() => undefined}
+          onUpload={() => undefined}
+          onReport={() => undefined}
+        />
+      </TDSMobileAITProvider>,
+    );
+
+    expect(hapticMocks.playHaptic).not.toHaveBeenCalled();
+    fireEvent.load(screen.getByRole('img', { name: '하늘의 실제 모습' }));
+    expect(hapticMocks.playHaptic).toHaveBeenCalledOnce();
+    expect(hapticMocks.playHaptic).toHaveBeenCalledWith('photoReveal');
   });
 
   it('offers a branded photo save without triggering the heart surface', async () => {

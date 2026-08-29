@@ -209,14 +209,15 @@ describe('UploadFlow introduction', () => {
 });
 
 describe('EarShapePicker', () => {
-  it('starts with only the Gureumi and Haneul reference ears and uses real avatar previews', () => {
+  it('shows only neutral ear-shape names for the two primary choices', () => {
     const { container } = render(<EarShapePicker traits={traits} value="floppy" onChange={() => undefined} />);
 
     const group = screen.getByRole('group', { name: '귀 모양' });
     const radios = within(group).getAllByRole('radio');
     expect(radios).toHaveLength(2);
-    expect(within(group).getByRole('radio', { name: /포근한 귀 구르미처럼/ })).toBeChecked();
-    expect(within(group).getByRole('radio', { name: /쫑긋 귀 하늘처럼/ })).toBeInTheDocument();
+    expect(within(group).getByRole('radio', { name: '포근한 귀' })).toBeChecked();
+    expect(within(group).getByRole('radio', { name: '쫑긋 귀' })).toBeInTheDocument();
+    expect(within(group).queryByText(/구르미처럼|하늘처럼|구르미형|하늘형/)).not.toBeInTheDocument();
     expect(container.querySelectorAll('.ear-choice-preview [data-ear-shape]')).toHaveLength(2);
     expect(container.querySelector('[data-ear-shape="floppy"][data-ear-family="gureumi"]')).toBeInTheDocument();
     expect(container.querySelector('[data-ear-shape="upright"][data-ear-family="haneul"]')).toBeInTheDocument();

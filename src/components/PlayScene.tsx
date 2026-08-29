@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Asset, Top } from '@toss/tds-mobile';
 import type { SoundEffect } from '../lib/sound';
+import { playHaptic } from '../lib/haptics';
 import type { PetSummary } from '../types';
 import { withSubjectParticle } from '../lib/koreanCopy';
 import { PetArtwork } from './PetArtwork';
@@ -62,6 +63,7 @@ export function PlayScene({ pet, onFed, onSound }: { pet: PetSummary; onFed: () 
   function giveTreat(treatId: TreatId) {
     if (phase !== 'treat') return;
     onSound('eat');
+    void playHaptic('treatSuccess');
     setSelectedTreat(treatId);
     setEating(true);
     setPhase('happy');
@@ -77,6 +79,7 @@ export function PlayScene({ pet, onFed, onSound }: { pet: PetSummary; onFed: () 
     petCountRef.current = next;
     setPetCount(next);
     onSound('pet', next - 1);
+    void playHaptic('pet');
     if (next === 3) {
       completedRef.current = true;
       setPhase('done');

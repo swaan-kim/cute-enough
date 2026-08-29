@@ -23,15 +23,15 @@ const fallbackPreviewTraits: PetTraitsV1 = {
 const primaryEarShapeOptions: Array<{
   value: EarShape;
   label: string;
-  description: string;
+  description?: string;
 }> = [
-  { value: 'floppy', label: '포근한 귀', description: '구르미처럼' },
-  { value: 'upright', label: '쫑긋 귀', description: '하늘처럼' },
+  { value: 'floppy', label: '포근한 귀' },
+  { value: 'upright', label: '쫑긋 귀' },
 ];
 
 const detailEarShapeOptions: typeof primaryEarShapeOptions = [
-  { value: 'semi', label: '살짝 접힌 귀', description: '하늘형 · 끝만 살포시' },
-  { value: 'rounded', label: '작고 동그란 귀', description: '구르미형 · 짧고 둥글게' },
+  { value: 'semi', label: '살짝 접힌 귀', description: '끝만 살포시 접혔어요' },
+  { value: 'rounded', label: '작고 동그란 귀', description: '짧고 둥근 모양이에요' },
 ];
 
 const markingOptions: Array<{ value: MarkingPattern; label: string }> = [
@@ -80,7 +80,7 @@ export function EarShapePicker({ value, traits = fallbackPreviewTraits, disabled
           value={option.value}
           checked={selected}
           disabled={disabled}
-          aria-describedby={`${helpId} ${descriptionId}`}
+          aria-describedby={option.description ? `${helpId} ${descriptionId}` : helpId}
           onChange={() => onChange(option.value)}
         />
         <span className="trait-artwork-preview ear-choice-preview" aria-hidden="true">
@@ -88,7 +88,7 @@ export function EarShapePicker({ value, traits = fallbackPreviewTraits, disabled
         </span>
         <span className="trait-choice-copy">
           <strong>{option.label}</strong>
-          <small id={descriptionId}>{option.description}</small>
+          {option.description && <small id={descriptionId}>{option.description}</small>}
         </span>
       </label>
     );

@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Asset, Button, TextButton } from '@toss/tds-mobile';
+import { playHaptic } from '../lib/haptics';
 import type { PetSummary } from '../types';
+
+const PHOTO_HEART_HAPTIC_COOLDOWN_MS = 300;
 
 type RevealCardProps = {
   pet: PetSummary;
@@ -17,6 +20,7 @@ export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare
   const cardRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   const heartIdRef = useRef(0);
+  const lastHeartHapticAtRef = useRef(Number.NEGATIVE_INFINITY);
   const [tapHeart, setTapHeart] = useState<{ id: number; x: number; y: number }>();
   const [saving, setSaving] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -61,6 +65,11 @@ export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare
   function showHeart(x: number, y: number) {
     heartIdRef.current += 1;
     setTapHeart({ id: heartIdRef.current, x, y });
+    const now = Date.now();
+    if (now - lastHeartHapticAtRef.current >= PHOTO_HEART_HAPTIC_COOLDOWN_MS) {
+      lastHeartHapticAtRef.current = now;
+      void playHaptic('photoHeart');
+    }
   }
 
   function handlePhotoPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -119,7 +128,13 @@ export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare
               onPointerDown={handlePhotoPointerDown}
               onKeyDown={handlePhotoKeyDown}
             >
-              <img key={`${photoUrl}-${photoAttempt}`} src={photoUrl} alt={`${pet.name ?? '강아지'}의 실제 모습`} onError={() => setImageError(true)} />
+              <img
+                key={`${photoUrl}-${photoAttempt}`}
+                src={photoUrl}
+                alt={`${pet.name ?? '강아지'}의 실제 모습`}
+                onLoad={() => void playHaptic('photoReveal')}
+                onError={() => setImageError(true)}
+              />
               <span className="photo-watermark-preview" aria-hidden="true"><i />{pet.name || '강아지'}</span>
               {tapHeart && (
                 <span

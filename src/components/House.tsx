@@ -1,5 +1,6 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { PetSummary } from '../types';
+import { playHaptic } from '../lib/haptics';
 import type { SoundEffect } from '../lib/sound';
 import { PetArtwork } from './PetArtwork';
 
@@ -59,7 +60,10 @@ export function House({ pets, onSelect, onSound }: { pets: PetSummary[]; onSelec
 
     const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
     if (!drag.moved && distance < 7) return;
-    drag.moved = true;
+    if (!drag.moved) {
+      drag.moved = true;
+      void playHaptic('dragStart');
+    }
     if (!drag.pantPlayed) {
       drag.pantPlayed = true;
       onSound('pant');

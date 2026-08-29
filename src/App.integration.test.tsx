@@ -45,9 +45,14 @@ const apiMocks = vi.hoisted(() => ({
   revealPet: vi.fn(),
 }));
 
+const hapticMocks = vi.hoisted(() => ({
+  playHaptic: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('@toss/tds-mobile', async () => import('./web-preview/tds-mobile'));
 
 vi.mock('./lib/api', () => apiMocks);
+vi.mock('./lib/haptics', () => hapticMocks);
 
 vi.mock('./lib/nativeNavigation', () => ({
   closeMiniApp: vi.fn(() => Promise.resolve()),
@@ -178,6 +183,7 @@ describe('App upload submission integration', () => {
     appHarness.initialSharedPetId = undefined;
     appHarness.navigationHandlers = undefined;
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
+    hapticMocks.playHaptic.mockClear();
     apiMocks.fetchMyPets.mockResolvedValue([]);
     apiMocks.openOwnerPhoto.mockRejectedValue(new Error('owner photo mock not configured'));
     apiMocks.reopenPet.mockRejectedValue(new Error('reopen mock not configured'));
@@ -210,6 +216,8 @@ describe('App upload submission integration', () => {
       .toHaveAttribute('data-status', 'pending');
     expect(screen.getByTestId('pet-artwork-submitted-pet'))
       .toHaveTextContent('보리 캐릭터');
+    expect(hapticMocks.playHaptic).toHaveBeenCalledOnce();
+    expect(hapticMocks.playHaptic).toHaveBeenCalledWith('uploadSuccess');
 
     fireEvent.click(screen.getByRole('button', { name: '지금 만나보기' }));
 
