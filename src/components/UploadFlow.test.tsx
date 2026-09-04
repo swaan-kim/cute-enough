@@ -26,7 +26,7 @@ vi.mock('../lib/api', async () => ({
   submitPet: uploadMocks.submitPet,
 }));
 
-import { CoatColorPickers, EarShapePicker, FaceMarkingPicker, UploadFlow } from './UploadFlow';
+import { CoatColorPickers, CoatModePicker, EarShapePicker, FaceMarkingPicker, FurStylePicker, UploadFlow } from './UploadFlow';
 import { PetApiError } from '../lib/api';
 
 const traits: PetTraitsV1 = {
@@ -78,7 +78,6 @@ async function prepareUploadFlow(onSubmitted = vi.fn()) {
   );
 
   fireEvent.click(screen.getByRole('button', { name: /사진 한 장 고르기/ }));
-  fireEvent.click(await screen.findByRole('button', { name: '캐릭터 만들어보기' }));
   fireEvent.change(await screen.findByPlaceholderText('예: 보리'), { target: { value: '하늘' } });
   fireEvent.click(screen.getByRole('checkbox'));
   return onSubmitted;
@@ -108,6 +107,11 @@ describe('UploadFlow introduction', () => {
       { useBrowserFallback: true },
     ));
     uploadMocks.pickOnePhotoFromBrowser.mockResolvedValueOnce('data:image/png;base64,FALLBACK');
+    uploadMocks.normalizeAndAnalyzePetImage.mockResolvedValueOnce({
+      dataUri: normalizedPhoto,
+      traits,
+      brightness: 180,
+    });
     render(
       <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
         <UploadFlow onSubmitted={() => undefined} />
@@ -119,7 +123,32 @@ describe('UploadFlow introduction', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /기기에서 사진 고르기/ }));
     expect(uploadMocks.pickOnePhotoFromBrowser).toHaveBeenCalledOnce();
-    expect(await screen.findByRole('button', { name: '캐릭터 만들어보기' })).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText('예: 보리')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '캐릭터 만들어보기' })).not.toBeInTheDocument();
+  });
+
+  it('starts local compression and color analysis immediately, then offers retry only after failure', async () => {
+    let rejectAnalysis!: (error: Error) => void;
+    uploadMocks.pickOnePhoto.mockResolvedValueOnce('data:image/png;base64,SOURCE');
+    uploadMocks.normalizeAndAnalyzePetImage
+      .mockReturnValueOnce(new Promise((_resolve, reject) => { rejectAnalysis = reject; }))
+      .mockResolvedValueOnce({ dataUri: normalizedPhoto, traits, brightness: 180 });
+    render(
+      <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
+        <UploadFlow onSubmitted={() => undefined} />
+      </TDSMobileAITProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /사진 한 장 고르기/ }));
+    expect(await screen.findByRole('status')).toHaveTextContent('사진을 살펴보고 있어요');
+    expect(uploadMocks.normalizeAndAnalyzePetImage).toHaveBeenCalledWith('data:image/png;base64,SOURCE');
+    expect(screen.queryByRole('button', { name: '캐릭터 만들어보기' })).not.toBeInTheDocument();
+
+    await act(async () => rejectAnalysis(new Error('분석을 마치지 못했어요.')));
+    expect(await screen.findByRole('button', { name: '다시 시도하기' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '다시 시도하기' }));
+    expect(await screen.findByPlaceholderText('예: 보리')).toBeInTheDocument();
+    expect(uploadMocks.normalizeAndAnalyzePetImage).toHaveBeenCalledTimes(2);
   });
 
   it('carries the selected photo, name, confirmed traits, and consent through submission', async () => {
@@ -134,6 +163,9 @@ describe('UploadFlow introduction', () => {
       dataUri: normalizedPhoto,
       name: '하늘',
       traits,
+      style: { schemaVersion: 1, coatMode: 'point', furStyle: 'neat' },
+      accessorySelectionMode: 'reviewer',
+      requestedAccessory: undefined,
     });
     expect(onSubmitted).toHaveBeenCalledWith(submittedResult);
   });
@@ -149,6 +181,20 @@ describe('UploadFlow introduction', () => {
     expect(uploadMocks.submitPet).toHaveBeenCalledOnce();
     const submitted = uploadMocks.submitPet.mock.calls[0][0];
     expect(uploadMocks.fetchSubmissionStatus).toHaveBeenCalledWith(submitted.submissionId);
+  });
+
+  it('submits an owner-selected accessory and color as an immutable request', async () => {
+    uploadMocks.submitPet.mockResolvedValueOnce(submittedResult);
+    await prepareUploadFlow();
+    fireEvent.click(screen.getByRole('button', { name: /더 닮게 꾸미기/ }));
+    fireEvent.click(screen.getByRole('radio', { name: '리본핀' }));
+    fireEvent.click(screen.getByRole('radio', { name: '하늘' }));
+    fireEvent.click(screen.getByRole('button', { name: '이 모습으로 소개하기' }));
+
+    await waitFor(() => expect(uploadMocks.submitPet).toHaveBeenCalledWith(expect.objectContaining({
+      accessorySelectionMode: 'owner',
+      requestedAccessory: { kind: 'ribbon', color: 'sky', assetKey: 'builtin:ribbon' },
+    })));
   });
 
   it('locks the selected photo and editor while submission is in flight', async () => {
@@ -284,7 +330,7 @@ describe('CoatColorPickers', () => {
     expect(onBaseColorChange).toHaveBeenCalledWith('chocolate');
   });
 
-  it('allows a single-color dog to use the same base and point color', () => {
+  it('does not allow a point coat to reuse the base color', () => {
     render(
       <CoatColorPickers
         traits={{ ...traits, secondaryColor: 'white', markingPattern: 'none' }}
@@ -294,7 +340,55 @@ describe('CoatColorPickers', () => {
     );
 
     const pointGroup = screen.getByRole('group', { name: '포인트 털색' });
-    expect(within(pointGroup).getByRole('radio', { name: '흰색' })).toBeEnabled();
+    expect(within(pointGroup).getByRole('radio', { name: '흰색' })).toBeDisabled();
     expect(within(pointGroup).getByRole('radio', { name: '흰색' })).toBeChecked();
+  });
+});
+
+describe('coat mode and fur outline', () => {
+  it('offers three actual avatar outlines', () => {
+    const { container } = render(<FurStylePicker traits={traits} style={{ schemaVersion: 1, coatMode: 'point', furStyle: 'neat' }} onChange={() => undefined} />);
+    expect(screen.getAllByRole('radio')).toHaveLength(3);
+    expect(container.querySelector('[data-fur-style="neat"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-fur-style="fluffy"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-fur-style="cloud"]')).toBeInTheDocument();
+  });
+
+  it('offers point and single-color modes with point selected by default', () => {
+    render(<CoatModePicker value="point" onChange={() => undefined} />);
+    expect(screen.getByRole('radio', { name: /포인트가 있어요/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /한 가지 색이에요/ })).not.toBeChecked();
+  });
+
+  it('hides point controls for a solid coat and restores the previous point choices', async () => {
+    await prepareUploadFlow();
+    expect(screen.queryByRole('group', { name: '포인트 털색' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /더 닮게 꾸미기/ }));
+    expect(screen.getByRole('group', { name: '포인트 털색' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: '이마 포인트' })).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole('radio', { name: /한 가지 색이에요/ }));
+    expect(screen.queryByRole('group', { name: '포인트 털색' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: '얼굴 무늬' })).not.toBeInTheDocument();
+
+    const solidBase = screen.getByRole('group', { name: '기본 털색' });
+    fireEvent.click(within(solidBase).getByRole('radio', { name: '검정' }));
+    fireEvent.click(screen.getByRole('radio', { name: /포인트가 있어요/ }));
+    expect(within(screen.getByRole('group', { name: '포인트 털색' })).getByRole('radio', { name: '크림' })).toBeChecked();
+  });
+
+  it('keeps optional details collapsed and delegates accessories by default', async () => {
+    uploadMocks.submitPet.mockResolvedValueOnce(submittedResult);
+    await prepareUploadFlow();
+
+    const toggle = screen.getByRole('button', { name: /더 닮게 꾸미기/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('group', { name: '털 윤곽' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '이 모습으로 소개하기' }));
+    await waitFor(() => expect(uploadMocks.submitPet).toHaveBeenCalledWith(expect.objectContaining({
+      accessorySelectionMode: 'reviewer',
+      requestedAccessory: undefined,
+    })));
   });
 });

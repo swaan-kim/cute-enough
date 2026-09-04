@@ -74,11 +74,11 @@ describe('MyPetsScreen', () => {
       />,
     );
 
-    expect(screen.getByText(/다른 사람도 만날 수 있어요/)).toBeInTheDocument();
+    expect(screen.getByText(/모두가 만날 수 있어요/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '이 귀여움 같이 보기' })).toBeInTheDocument();
   });
 
-  it('첫 등록 보너스는 실제 간식 흐름에 맞는 문구로 안내한다', () => {
+  it('소유자 사진 권한이 있으면 기존 등록 보너스보다 바로 보기를 우선한다', () => {
     render(
       <MyPetsScreen
         pets={[pendingPet]}
@@ -92,10 +92,10 @@ describe('MyPetsScreen', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: '간식 주고 사진 보기' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '사진 바로 보기' })).toBeInTheDocument();
   });
 
-  it('서버가 원본 사진을 확인하지 못한 경우 사진과 공유 버튼을 막는다', () => {
+  it('서버가 원본 사진을 확인하지 못해도 pending 캐릭터 공유는 열어둔다', () => {
     render(
       <MyPetsScreen
         pets={[{ ...pendingPet, ownerPhotoAvailable: false }]}
@@ -109,6 +109,26 @@ describe('MyPetsScreen', () => {
     );
 
     expect(screen.getByRole('button', { name: '사진 확인 중' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '캐릭터 같이 보기' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '캐릭터 같이 보기' })).toBeEnabled();
+  });
+
+  it('반려 사유와 다시 소개하기 행동을 함께 보여준다', () => {
+    const onUpload = vi.fn();
+    render(
+      <MyPetsScreen
+        pets={[{ ...pendingPet, approvalStatus: 'rejected', rejectionReason: '얼굴이 잘 보이는 사진이 필요해요.' }]}
+        loading={false}
+        error=""
+        onRetry={() => undefined}
+        onUpload={onUpload}
+        onMeet={() => undefined}
+        onShare={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText('등록하지 못했어요')).toBeInTheDocument();
+    expect(screen.getByText(/반려 사유 · 얼굴이 잘 보이는/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '다른 사진으로 다시 소개하기' }));
+    expect(onUpload).toHaveBeenCalledOnce();
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError } from './api-error.ts';
-import { requireAction, requirePetTraits } from './validation.ts';
+import { requireAccessorySubmission, requireAction, requirePetAccessory, requirePetStyle, requirePetTraits } from './validation.ts';
 
 function traits(overrides: Record<string, unknown> = {}) {
   return {
@@ -43,6 +43,29 @@ describe('pet-api trait color validation', () => {
   });
 });
 
+describe('pet style validation', () => {
+  it('accepts all three fur outlines with a valid point coat', () => {
+    for (const furStyle of ['neat', 'fluffy', 'cloud'] as const) {
+      expect(requirePetStyle({ schemaVersion: 1, coatMode: 'point', furStyle }, traits())).toMatchObject({ furStyle });
+    }
+  });
+
+  it('accepts a real single-color coat only when colors match and markings are absent', () => {
+    const solidTraits = traits({ baseColor: 'white', secondaryColor: 'white', markingPattern: 'none' });
+    expect(requirePetStyle({ schemaVersion: 1, coatMode: 'solid', furStyle: 'cloud' }, solidTraits)).toMatchObject({ coatMode: 'solid' });
+    expect(() => requirePetStyle({ schemaVersion: 1, coatMode: 'solid', furStyle: 'cloud' }, traits()))
+      .toThrowError(expect.objectContaining({ code: 'INVALID_SOLID_COAT' }));
+  });
+
+  it('rejects matching colors in point mode and unknown expressions', () => {
+    const sameColor = traits({ baseColor: 'white', secondaryColor: 'white', markingPattern: 'none' });
+    expect(() => requirePetStyle({ schemaVersion: 1, coatMode: 'point', furStyle: 'neat' }, sameColor))
+      .toThrowError(expect.objectContaining({ code: 'INVALID_POINT_COAT' }));
+    expect(() => requirePetStyle({ schemaVersion: 1, coatMode: 'point', furStyle: 'neat', expression: { browStyle: 'laser', tongueShape: 'round' } }, traits()))
+      .toThrowError(expect.objectContaining({ code: 'INVALID_PET_EXPRESSION' }));
+  });
+});
+
 describe('pet-api action validation', () => {
   it('accepts the owner-scoped submission status action', () => {
     expect(requireAction('submissionStatus')).toBe('submissionStatus');
@@ -50,5 +73,32 @@ describe('pet-api action validation', () => {
 
   it('accepts the owner-only photo action', () => {
     expect(requireAction('ownerPhoto')).toBe('ownerPhoto');
+  });
+});
+
+describe('pet accessory validation', () => {
+  it('accepts only reviewed built-in kind, color, and matching asset key', () => {
+    const accessory = { kind: 'scarf', color: 'mint', assetKey: 'builtin:scarf' } as const;
+    expect(requirePetAccessory(accessory)).toEqual(accessory);
+
+    expect(() => requirePetAccessory({ ...accessory, assetKey: 'custom:svg' }))
+      .toThrowError(expect.objectContaining({ code: 'INVALID_ACCESSORY_ASSET' }));
+    expect(() => requirePetAccessory({ kind: 'scarf', color: 'mint' }))
+      .toThrowError(expect.objectContaining({ code: 'INVALID_ACCESSORY_ASSET' }));
+    expect(() => requirePetAccessory({ ...accessory, html: '<svg />' }))
+      .toThrowError(expect.objectContaining({ code: 'INVALID_PET_ACCESSORY' }));
+  });
+
+  it('requires an owner choice and forbids a hidden reviewer choice', () => {
+    expect(requireAccessorySubmission('owner', { kind: 'ball', color: 'yellow', assetKey: 'builtin:ball' })).toEqual({
+      mode: 'owner',
+      requestedAccessory: { kind: 'ball', color: 'yellow', assetKey: 'builtin:ball' },
+    });
+    expect(requireAccessorySubmission('reviewer', undefined)).toEqual({
+      mode: 'reviewer',
+      requestedAccessory: null,
+    });
+    expect(() => requireAccessorySubmission('reviewer', { kind: 'ball', color: 'yellow', assetKey: 'builtin:ball' }))
+      .toThrowError(expect.objectContaining({ code: 'REVIEWER_ACCESSORY_MUST_BE_EMPTY' }));
   });
 });

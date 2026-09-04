@@ -17,6 +17,28 @@ const TRAIT_ENUMS = {
   markingPattern: ['none', 'brow', 'mask', 'blaze', 'spots'],
   muzzle: ['short', 'medium', 'long'],
 } as const;
+const ACCESSORY_KINDS = ['ribbon', 'scarf', 'vest', 'ball'] as const;
+const ACCESSORY_COLORS = ['pink', 'sky', 'yellow', 'mint'] as const;
+const COAT_MODES = ['solid', 'point'] as const;
+const FUR_STYLES = ['neat', 'fluffy', 'cloud'] as const;
+const BROW_STYLES = ['none', 'soft', 'caterpillar', 'angled'] as const;
+const TONGUE_SHAPES = ['drop', 'round', 'wide', 'side'] as const;
+
+export type ValidPetAccessory = {
+  kind: typeof ACCESSORY_KINDS[number];
+  color: typeof ACCESSORY_COLORS[number];
+  assetKey?: string;
+};
+
+export type ValidPetStyle = {
+  schemaVersion: 1;
+  coatMode: typeof COAT_MODES[number];
+  furStyle: typeof FUR_STYLES[number];
+  expression?: {
+    browStyle: typeof BROW_STYLES[number];
+    tongueShape: typeof TONGUE_SHAPES[number];
+  };
+};
 
 export const PET_API_ACTIONS = ['house', 'shared', 'mine', 'reveal', 'ownerPhoto', 'submit', 'submissionStatus', 'report'] as const;
 export type PetApiAction = typeof PET_API_ACTIONS[number];
@@ -75,4 +97,88 @@ export function requirePetTraits(value: unknown): Record<string, unknown> {
     throw new ApiError('INVALID_TRAIT_COLOR_CONTRAST', 400, '얼굴 무늬와 다른 포인트 털색을 골라 주세요.');
   }
   return traits;
+}
+
+export function requirePetStyle(value: unknown, traitsValue: Record<string, unknown>): ValidPetStyle {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApiError('INVALID_PET_STYLE', 400, '털 윤곽과 털색 방식을 다시 확인해 주세요.');
+  }
+  const style = value as Record<string, unknown>;
+  if (Object.keys(style).some((key) => !['schemaVersion', 'coatMode', 'furStyle', 'expression'].includes(key))
+    || style.schemaVersion !== 1
+    || !COAT_MODES.includes(style.coatMode as never)
+    || !FUR_STYLES.includes(style.furStyle as never)) {
+    throw new ApiError('INVALID_PET_STYLE', 400, '털 윤곽과 털색 방식을 다시 확인해 주세요.');
+  }
+
+  let expression: ValidPetStyle['expression'];
+  if (style.expression !== undefined) {
+    if (!style.expression || typeof style.expression !== 'object' || Array.isArray(style.expression)) {
+      throw new ApiError('INVALID_PET_EXPRESSION', 400, '강아지 표정을 다시 확인해 주세요.');
+    }
+    const candidate = style.expression as Record<string, unknown>;
+    if (Object.keys(candidate).some((key) => !['browStyle', 'tongueShape'].includes(key))
+      || !BROW_STYLES.includes(candidate.browStyle as never)
+      || !TONGUE_SHAPES.includes(candidate.tongueShape as never)) {
+      throw new ApiError('INVALID_PET_EXPRESSION', 400, '강아지 표정을 다시 확인해 주세요.');
+    }
+    expression = {
+      browStyle: candidate.browStyle as ValidPetStyle['expression']['browStyle'],
+      tongueShape: candidate.tongueShape as ValidPetStyle['expression']['tongueShape'],
+    };
+  }
+
+  const sameColor = traitsValue.baseColor === traitsValue.secondaryColor;
+  const noMarking = traitsValue.markingPattern === 'none';
+  if (style.coatMode === 'solid' && (!sameColor || !noMarking)) {
+    throw new ApiError('INVALID_SOLID_COAT', 400, '한 가지 털색은 무늬 없이 같은 색으로 등록해 주세요.');
+  }
+  if (style.coatMode === 'point' && sameColor) {
+    throw new ApiError('INVALID_POINT_COAT', 400, '포인트 털색은 기본 털색과 다르게 골라 주세요.');
+  }
+
+  return {
+    schemaVersion: 1,
+    coatMode: style.coatMode as ValidPetStyle['coatMode'],
+    furStyle: style.furStyle as ValidPetStyle['furStyle'],
+    ...(expression ? { expression } : {}),
+  };
+}
+
+export function requirePetAccessory(value: unknown): ValidPetAccessory {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApiError('INVALID_PET_ACCESSORY', 400, '강아지 소품을 다시 골라 주세요.');
+  }
+  const accessory = value as Record<string, unknown>;
+  const keys = Object.keys(accessory);
+  if (keys.some((key) => !['kind', 'color', 'assetKey'].includes(key))
+    || !ACCESSORY_KINDS.includes(accessory.kind as never)
+    || !ACCESSORY_COLORS.includes(accessory.color as never)) {
+    throw new ApiError('INVALID_PET_ACCESSORY', 400, '강아지 소품을 다시 골라 주세요.');
+  }
+  const expectedAssetKey = `builtin:${String(accessory.kind)}`;
+  if (accessory.assetKey !== expectedAssetKey) {
+    throw new ApiError('INVALID_ACCESSORY_ASSET', 400, '사용할 수 없는 강아지 소품이에요.');
+  }
+  return {
+    kind: accessory.kind as ValidPetAccessory['kind'],
+    color: accessory.color as ValidPetAccessory['color'],
+    assetKey: expectedAssetKey,
+  };
+}
+
+export function requireAccessorySubmission(modeValue: unknown, accessoryValue: unknown): {
+  mode: 'owner' | 'reviewer';
+  requestedAccessory: ValidPetAccessory | null;
+} {
+  if (modeValue !== 'owner' && modeValue !== 'reviewer') {
+    throw new ApiError('INVALID_ACCESSORY_SELECTION_MODE', 400, '소품 선택 방식을 다시 확인해 주세요.');
+  }
+  if (modeValue === 'reviewer') {
+    if (accessoryValue !== undefined && accessoryValue !== null) {
+      throw new ApiError('REVIEWER_ACCESSORY_MUST_BE_EMPTY', 400, '검수자에게 맡길 때는 소품을 미리 지정하지 않아요.');
+    }
+    return { mode: 'reviewer', requestedAccessory: null };
+  }
+  return { mode: 'owner', requestedAccessory: requirePetAccessory(accessoryValue) };
 }

@@ -22,7 +22,7 @@ vi.mock('@toss/tds-mobile', () => ({
   ) : null,
 }));
 
-import { APP_TOAST_DURATION, AppToast, DAILY_LIMIT_TOAST, DAILY_LIMIT_TOAST_DURATION } from './AppToast';
+import { APP_TOAST_DURATION, AppToast, DAILY_COMPLETE_TOAST, DAILY_LIMIT_TOAST, DAILY_LIMIT_TOAST_DURATION } from './AppToast';
 
 type Props = ComponentProps<typeof AppToast>;
 
@@ -47,6 +47,19 @@ describe('AppToast', () => {
   it('centers and auto-dismisses the daily-limit notice', () => {
     vi.useFakeTimers();
     const { onDismissDailyLimit } = setup();
+    const toast = screen.getByRole('button');
+
+    expect(toast).toHaveClass('app-toast--centered');
+    expect(toast).toHaveClass('app-toast--daily-limit');
+    expect(toast).toHaveAttribute('data-duration', String(DAILY_LIMIT_TOAST_DURATION));
+
+    act(() => vi.advanceTimersByTime(DAILY_LIMIT_TOAST_DURATION));
+    expect(onDismissDailyLimit).toHaveBeenCalledOnce();
+  });
+
+  it('uses the short centered notice for daily completion too', () => {
+    vi.useFakeTimers();
+    const { onDismissDailyLimit } = setup({ text: DAILY_COMPLETE_TOAST });
     const toast = screen.getByRole('button');
 
     expect(toast).toHaveClass('app-toast--centered');

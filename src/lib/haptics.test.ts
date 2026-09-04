@@ -17,6 +17,7 @@ describe('playHaptic', () => {
   });
 
   it.each<[HapticCue, string]>([
+    ['friendsArrived', 'tickWeak'],
     ['dragStart', 'tickWeak'],
     ['treatSuccess', 'softMedium'],
     ['pet', 'tickWeak'],

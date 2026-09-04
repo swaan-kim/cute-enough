@@ -10,6 +10,17 @@ const STATUS_COPY: Record<PetStatus, { label: string; description: string }> = {
   deleted: { label: '삭제됨', description: '더 이상 볼 수 없는 사진이에요' },
 };
 
+const STATUS_UX_COPY: Record<PetStatus, { label: string; description: string }> = {
+  ...STATUS_COPY,
+  approved: { label: '승인됨', description: '모두가 만날 수 있어요' },
+  rejected: { label: '등록하지 못했어요', description: '반려 사유를 확인해 주세요' },
+  paused: { label: '공개 일시정지', description: '공개가 잠시 멈췄어요' },
+};
+
+function getStatusCopy(status: PetStatus) {
+  return STATUS_UX_COPY[status];
+}
+
 export function MyPetsScreen({ pets, loading, error, uploadRewardPetId, onRetry, onUpload, onMeet, onShare }: {
   pets: OwnedPetSummary[];
   loading: boolean;
@@ -34,23 +45,27 @@ export function MyPetsScreen({ pets, loading, error, uploadRewardPetId, onRetry,
           : pets.length === 0 ? <div className="my-pets-message"><strong>아직 소개한 강아지가 없어요</strong><p>사진 한 장으로 귀여운 캐릭터를 만들어보세요.</p><Button size="medium" onClick={onUpload}>강아지 소개하기</Button></div>
             : <section className="my-pets-list" aria-label="내가 소개한 강아지 목록">
               {pets.map((pet) => {
-                const copy = STATUS_COPY[pet.approvalStatus];
+                const copy = getStatusCopy(pet.approvalStatus);
                 const publishable = pet.approvalStatus === 'pending' || pet.approvalStatus === 'approved';
                 const canOpenPhoto = publishable && Boolean(pet.ownerPhotoAvailable);
-                const meetLabel = pet.id === uploadRewardPetId
-                  ? '간식 주고 사진 보기'
-                  : canOpenPhoto ? '사진 바로 보기' : '사진 확인 중';
-                return <article className="my-pet-card" key={pet.id}>
+                const hasUploadReward = pet.id === uploadRewardPetId;
+                const canMeet = canOpenPhoto || hasUploadReward;
+                const meetLabel = canOpenPhoto
+                  ? '사진 바로 보기'
+                  : hasUploadReward ? '간식 주고 사진 보기' : '사진 확인 중';
+                return <article className="my-pet-card" key={`${pet.id}-${pet.designVersion ?? 1}`}>
                   <span className="my-pet-artwork" aria-hidden="true"><PetArtwork pet={pet} size={78} /></span>
                   <div className="my-pet-info">
                     <strong>{pet.name ?? '이름 없는 귀요미'}</strong>
                     <p><span className={`pet-status status-${pet.approvalStatus}`}>{copy.label}</span><span aria-hidden="true"> · </span>{copy.description}</p>
-                    {pet.rejectionReason && <small>{pet.rejectionReason}</small>}
+                    {pet.rejectionReason && <small>반려 사유 · {pet.rejectionReason}</small>}
+                    {pet.approvalStatus === 'paused' && <small className="my-pet-guidance">오른쪽 위 ⋯ &gt; 문의하기에서 확인해 주세요.</small>}
                   </div>
                   {publishable && <div className="my-pet-actions">
-                    <Button size="small" disabled={!canOpenPhoto} onClick={() => onMeet(pet)}>{meetLabel}</Button>
-                    <Button size="small" color="dark" variant="weak" disabled={!canOpenPhoto} onClick={() => onShare(pet)}>{pet.approvalStatus === 'pending' ? '캐릭터 같이 보기' : '이 귀여움 같이 보기'}</Button>
+                    <Button size="small" disabled={!canMeet} onClick={() => onMeet(pet)}>{meetLabel}</Button>
+                    <Button size="small" color="dark" variant="weak" onClick={() => onShare(pet)}>{pet.approvalStatus === 'pending' ? '캐릭터 같이 보기' : '이 귀여움 같이 보기'}</Button>
                   </div>}
+                  {pet.approvalStatus === 'rejected' && <div className="my-pet-actions"><Button size="small" onClick={onUpload}>다른 사진으로 다시 소개하기</Button></div>}
                 </article>;
               })}
             </section>}

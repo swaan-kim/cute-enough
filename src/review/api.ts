@@ -4,6 +4,8 @@ import type {
   ReviewQueueResponse,
   ReviewRequest,
   ReviewResponse,
+  PublicationRequest,
+  ReviewCatalogItem,
 } from './types';
 
 type Fetcher = typeof fetch;
@@ -17,6 +19,20 @@ export class ReviewApiError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isAccessory(value: unknown) {
+  if (!isRecord(value)) return false;
+  return ['ribbon', 'scarf', 'vest', 'ball'].includes(String(value.kind))
+    && ['pink', 'sky', 'yellow', 'mint'].includes(String(value.color))
+    && (value.assetKey === undefined || value.assetKey === `builtin:${String(value.kind)}`);
+}
+
+function isStyle(value: unknown) {
+  if (!isRecord(value)) return false;
+  return value.schemaVersion === 1
+    && (value.coatMode === 'solid' || value.coatMode === 'point')
+    && ['neat', 'fluffy', 'cloud'].includes(String(value.furStyle));
 }
 
 function apiErrorMessage(payload: unknown, fallback: string) {
@@ -45,7 +61,27 @@ function isQueueItem(value: unknown): value is ReviewQueueItem {
     && typeof value.photoPresent === 'boolean'
     && Array.isArray(value.photoUrls)
     && value.photoUrls.every((url) => typeof url === 'string')
-    && isRecord(value.traits);
+    && isRecord(value.traits)
+    && isRecord(value.submittedTraits)
+    && isStyle(value.submittedStyle)
+    && isStyle(value.publishedStyle)
+    && (value.accessorySelectionMode === 'owner' || value.accessorySelectionMode === 'reviewer')
+    && typeof value.accessoryRequired === 'boolean'
+    && (value.requestedAccessory === null || isAccessory(value.requestedAccessory))
+    && (value.publishedAccessory === null || isAccessory(value.publishedAccessory))
+    && typeof value.designVersion === 'number'
+    && Array.isArray(value.similarPets);
+}
+
+function isCatalogItem(value: unknown): value is ReviewCatalogItem {
+  return isRecord(value)
+    && typeof value.petId === 'string'
+    && (typeof value.name === 'string' || value.name === null)
+    && (value.status === 'approved' || value.status === 'paused')
+    && isRecord(value.traits)
+    && isStyle(value.publishedStyle)
+    && (value.publishedAccessory === null || isAccessory(value.publishedAccessory))
+    && typeof value.designVersion === 'number';
 }
 
 export function createReviewApi(fetcher: Fetcher = fetch): ReviewApi {
@@ -92,6 +128,31 @@ export function createReviewApi(fetcher: Fetcher = fetch): ReviewApi {
       }
 
       return payload as unknown as ReviewResponse;
+    },
+
+    async getCatalog(query, signal) {
+      const response = await fetcher(`/api/review-catalog?q=${encodeURIComponent(query.trim())}`, {
+        credentials: 'same-origin', headers: { Accept: 'application/json' }, signal,
+      });
+      const payload = await readJson(response);
+      if (!response.ok) throw new ReviewApiError(apiErrorMessage(payload, '승인 강아지를 찾지 못했어요.'));
+      if (!isRecord(payload) || !Array.isArray(payload.items) || !payload.items.every(isCatalogItem)) {
+        throw new ReviewApiError('승인 강아지 응답 형식이 올바르지 않아요.');
+      }
+      return payload.items as ReviewCatalogItem[];
+    },
+
+    async manage(request: PublicationRequest) {
+      const response = await fetcher('/api/review-publication', {
+        method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+      const payload = await readJson(response);
+      if (!response.ok) throw new ReviewApiError(apiErrorMessage(payload, '공개 상태를 저장하지 못했어요.'));
+      if (!isRecord(payload) || typeof payload.petId !== 'string' || (payload.status !== 'approved' && payload.status !== 'paused')) {
+        throw new ReviewApiError('공개 상태 응답 형식이 올바르지 않아요.');
+      }
+      return payload as { petId: string; status: 'approved' | 'paused' };
     },
   };
 }

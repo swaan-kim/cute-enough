@@ -25,7 +25,7 @@ describe('resolvePetAccess', () => {
       .toEqual({ kind: 'characterOnly', reason: 'pending' });
   });
 
-  it('opens an owner photo without a ticket after the one-time upload visit is used', () => {
+  it('opens an owner photo immediately without spending the legacy upload bonus', () => {
     const ownedPending = pet({
       id: 'mine-pending',
       approvalStatus: 'pending',
@@ -34,7 +34,7 @@ describe('resolvePetAccess', () => {
     });
 
     expect(resolvePetAccess(ownedPending, allowance))
-      .toEqual({ kind: 'reveal', method: 'UPLOAD' });
+      .toEqual({ kind: 'ownerPhoto' });
     expect(resolvePetAccess(ownedPending, { ...allowance, uploadUsed: true }))
       .toEqual({ kind: 'ownerPhoto' });
   });

@@ -16,15 +16,17 @@
     "build:production": "node scripts/validate-release.mjs production && vite build --mode production && node scripts/prune-build-assets.mjs production && node scripts/assert-no-ait-devtools.mjs && ait build",
     "deploy": "npm run build:production && ait deploy",
     "test": "vitest run --configLoader runner",
+    "test:preflight": "node --test scripts/check-approved-pet-pool.node-test.mjs",
     "test:review": "node --test tools/review-console/server.node-test.mjs",
     "test:watch": "vitest --configLoader runner",
     "typecheck": "tsc -b --pretty false",
-    "seed:initial-pets": "node scripts/seed-initial-pets.mjs"
+    "seed:initial-pets": "node scripts/seed-initial-pets.mjs",
+    "preflight:pet-pool": "node --env-file-if-exists=.env.review.local scripts/check-approved-pet-pool.mjs"
   },
   "dependencies": {
     "@apps-in-toss/web-framework": "3.1.1",
     "@emotion/react": "^11.14.0",
-    "@supabase/supabase-js": "^2.57.4",
+    "@supabase/functions-js": "2.112.3",
     "@toss/tds-mobile": "^2.5.1",
     "@toss/tds-mobile-ait": "^2.5.1",
     "react": "^18.3.1",
@@ -33,6 +35,7 @@
   },
   "devDependencies": {
     "@apps-in-toss/devtools": "3.1.1",
+    "@supabase/supabase-js": "2.57.4",
     "@testing-library/jest-dom": "^6.8.0",
     "@testing-library/react": "^16.3.0",
     "@types/react": "^18.3.24",

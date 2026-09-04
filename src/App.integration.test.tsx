@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+import { getKstDate } from './lib/allowance';
 
 const appHarness = vi.hoisted(() => {
   const submittedPet = {
@@ -49,10 +50,19 @@ const hapticMocks = vi.hoisted(() => ({
   playHaptic: vi.fn(() => Promise.resolve()),
 }));
 
+const analyticsMocks = vi.hoisted(() => ({
+  trackProductEvent: vi.fn(),
+}));
+
+const tossMocks = vi.hoisted(() => ({
+  sharePet: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('@toss/tds-mobile', async () => import('./web-preview/tds-mobile'));
 
 vi.mock('./lib/api', () => apiMocks);
 vi.mock('./lib/haptics', () => hapticMocks);
+vi.mock('./lib/analytics', () => analyticsMocks);
 
 vi.mock('./lib/nativeNavigation', () => ({
   closeMiniApp: vi.fn(() => Promise.resolve()),
@@ -90,18 +100,20 @@ vi.mock('./lib/sound', () => ({
   suspendSound: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock('./lib/toss', () => ({
-  sharePet: vi.fn(() => Promise.resolve()),
-}));
+vi.mock('./lib/toss', () => tossMocks);
 
 vi.mock('./components/MyPetsScreen', () => ({
-  MyPetsScreen: ({ pets, onUpload, onMeet }: {
+  MyPetsScreen: ({ pets, onUpload, onMeet, onShare }: {
     pets: typeof appHarness.submittedPet[];
     onUpload: () => void;
     onMeet: (pet: typeof appHarness.submittedPet) => void;
+    onShare: (pet: typeof appHarness.submittedPet) => void;
   }) => (
     <main>
-      {pets.map((pet) => <button key={pet.id} type="button" onClick={() => onMeet(pet)}>{pet.name} 만나기</button>)}
+      {pets.map((pet) => <div key={pet.id}>
+        <button type="button" onClick={() => onMeet(pet)}>{pet.name} 만나기</button>
+        <button type="button" onClick={() => onShare(pet)}>{pet.name} 공유하기</button>
+      </div>)}
       <button type="button" onClick={onUpload}>새 강아지 소개하기</button>
     </main>
   ),
@@ -110,6 +122,7 @@ vi.mock('./components/MyPetsScreen', () => ({
 vi.mock('./components/UploadFlow', () => ({
   UploadFlow: ({ onSubmitted }: { onSubmitted: (result: typeof appHarness.submission) => void }) => (
     <main>
+      <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('cute-enough:upload-dirty-change', { detail: { dirty: true } }))}>초안 변경</button>
       <button type="button" onClick={() => onSubmitted(appHarness.submission)}>pending 등록 완료</button>
     </main>
   ),
@@ -168,7 +181,7 @@ function deferred<T>() {
 }
 
 async function openUploadAndSubmit() {
-  await screen.findByText('강아지를 끌어 옮기거나, 톡 눌러 만나보세요');
+  await screen.findByRole('region', { name: '강아지들이 있는 집' });
   fireEvent.click(screen.getByRole('button', { name: '내가 소개한 강아지' }));
   fireEvent.click(await screen.findByRole('button', { name: '새 강아지 소개하기' }));
   fireEvent.click(await screen.findByRole('button', { name: 'pending 등록 완료' }));
@@ -184,6 +197,9 @@ describe('App upload submission integration', () => {
     appHarness.navigationHandlers = undefined;
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
     hapticMocks.playHaptic.mockClear();
+    analyticsMocks.trackProductEvent.mockClear();
+    tossMocks.sharePet.mockClear();
+    tossMocks.sharePet.mockResolvedValue(undefined);
     apiMocks.fetchMyPets.mockResolvedValue([]);
     apiMocks.openOwnerPhoto.mockRejectedValue(new Error('owner photo mock not configured'));
     apiMocks.reopenPet.mockRejectedValue(new Error('reopen mock not configured'));
@@ -225,6 +241,25 @@ describe('App upload submission integration', () => {
     expect(playScene).toHaveAttribute('data-pet-id', 'submitted-pet');
     expect(playScene).toHaveAttribute('data-status', 'pending');
     expect(playScene).toHaveTextContent('보리와 노는 중');
+    expect(screen.queryByText('화면을 준비하고 있어요…')).not.toBeInTheDocument();
+  });
+
+  it('asks once before discarding a changed upload draft on native back', async () => {
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [] });
+    render(<App />);
+
+    await screen.findByRole('region', { name: '강아지들이 있는 집' });
+    fireEvent.click(screen.getByRole('button', { name: '내가 소개한 강아지' }));
+    fireEvent.click(await screen.findByRole('button', { name: '새 강아지 소개하기' }));
+    fireEvent.click(await screen.findByRole('button', { name: '초안 변경' }));
+
+    act(() => appHarness.navigationHandlers?.onBack());
+    expect(await screen.findByText('작성 중인 내용을 나갈까요?')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '초안 변경' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '나가기' }));
+    expect(await screen.findByRole('button', { name: '새 강아지 소개하기' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '초안 변경' })).not.toBeInTheDocument();
   });
 
   it('keeps the optimistic pending character visible at home when post-submit house reloads fail', async () => {
@@ -257,7 +292,7 @@ describe('App upload submission integration', () => {
     expect(screen.getByText('내 강아지')).toBeInTheDocument();
   });
 
-  it('reopens an owner pending photo after feed, native back twice, and selecting the same mine card', async () => {
+  it('opens an owner pending photo directly and reopens it without feed or allowance use', async () => {
     const pendingOwner = {
       ...appHarness.submittedPet,
       ownerPhotoAvailable: true,
@@ -274,32 +309,32 @@ describe('App upload submission integration', () => {
       .mockResolvedValueOnce({ pets: [], allowance: beforeUpload })
       .mockResolvedValue({ pets: [], allowance: afterUpload });
     apiMocks.fetchMyPets.mockResolvedValue([pendingOwner]);
-    apiMocks.revealPet.mockResolvedValue({
-      photoUrl: 'https://example.test/first-owner-photo.jpg',
-      signedUrlExpiresAt: '2026-08-28T02:10:00.000Z',
-      revisitUntil: '2026-08-28T04:00:00.000Z',
-      allowance: afterUpload,
-    });
-    apiMocks.openOwnerPhoto.mockResolvedValue({
-      photoUrl: 'https://example.test/reopened-owner-photo.jpg',
-      signedUrlExpiresAt: '2026-08-28T02:10:00.000Z',
-      ownerPhotoAvailable: true,
-    });
+    apiMocks.openOwnerPhoto
+      .mockResolvedValueOnce({
+        photoUrl: 'https://example.test/first-owner-photo.jpg',
+        signedUrlExpiresAt: '2026-08-28T02:10:00.000Z',
+        ownerPhotoAvailable: true,
+      })
+      .mockResolvedValueOnce({
+        photoUrl: 'https://example.test/reopened-owner-photo.jpg',
+        signedUrlExpiresAt: '2026-08-28T02:20:00.000Z',
+        ownerPhotoAvailable: true,
+      });
 
     render(<App />);
-    await screen.findByText('강아지를 끌어 옮기거나, 톡 눌러 만나보세요');
+    await screen.findByRole('region', { name: '강아지들이 있는 집' });
     fireEvent.click(screen.getByRole('button', { name: '내가 소개한 강아지' }));
     fireEvent.click(await screen.findByRole('button', { name: '보리 만나기' }));
-    fireEvent.click(await screen.findByRole('button', { name: '간식 주기' }));
 
     expect(await screen.findByTestId('revealed-photo-url'))
       .toHaveTextContent('first-owner-photo.jpg');
-    expect(apiMocks.revealPet).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('사진 화면을 준비하고 있어요')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+    expect(apiMocks.openOwnerPhoto).toHaveBeenCalledTimes(1);
+    expect(apiMocks.revealPet).not.toHaveBeenCalled();
 
-    act(() => appHarness.navigationHandlers?.onBack());
+    fireEvent.click(screen.getByRole('button', { name: '사진 닫기' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '강아지 실사 사진' })).not.toBeInTheDocument());
-    act(() => appHarness.navigationHandlers?.onBack());
-    await waitFor(() => expect(apiMocks.fetchMyPets).toHaveBeenCalledTimes(2));
 
     fireEvent.click(await screen.findByRole('button', { name: '보리 만나기' }));
     expect(await screen.findByTestId('revealed-photo-url'))
@@ -309,7 +344,8 @@ describe('App upload submission integration', () => {
       id: pendingOwner.id,
       ownerPhotoAvailable: true,
     }));
-    expect(apiMocks.revealPet).toHaveBeenCalledTimes(1);
+    expect(apiMocks.openOwnerPhoto).toHaveBeenCalledTimes(2);
+    expect(apiMocks.revealPet).not.toHaveBeenCalled();
   });
 
   it('does not let a pre-reveal house response erase the direct revisit state', async () => {
@@ -323,22 +359,25 @@ describe('App upload submission integration', () => {
       photoAvailable: true,
     };
     const initialAllowance = {
-      date: '2026-08-28', freeUsed: 0, remaining: 2, rewardedUsed: 0,
+      date: getKstDate(), freeUsed: 0, remaining: 2, rewardedUsed: 0,
       uploadCredit: false, uploadUsed: false,
     };
     const afterReveal = {
       ...initialAllowance,
       freeUsed: 1,
       remaining: 1,
-      nextChargeAt: '2026-08-28T04:00:00.000Z',
+      nextChargeAt: new Date(Date.now() + 3 * 60 * 60_000).toISOString(),
     };
     const staleHouse = deferred<{ pets: typeof publicPet[]; allowance: typeof initialAllowance }>();
-    const authoritativeHouse = deferred<{ pets: typeof publicPet[]; allowance: typeof afterReveal }>();
+    const authoritativePet = {
+      ...publicPet,
+      revisitUntil: '2099-08-28T04:00:00.000Z',
+      revealedToday: true,
+    };
     apiMocks.fetchHouse
       .mockResolvedValueOnce({ pets: [publicPet], allowance: initialAllowance })
       .mockReturnValueOnce(staleHouse.promise)
-      .mockReturnValueOnce(authoritativeHouse.promise)
-      .mockResolvedValue({ pets: [publicPet], allowance: afterReveal });
+      .mockResolvedValue({ pets: [authoritativePet], allowance: afterReveal });
     apiMocks.revealPet.mockResolvedValue({
       photoUrl: 'https://example.test/first-public-photo.jpg',
       signedUrlExpiresAt: '2026-08-28T02:10:00.000Z',
@@ -354,8 +393,8 @@ describe('App upload submission integration', () => {
 
     render(<App />);
     const dogButton = await screen.findByRole('button', { name: '초코 옮기기 또는 선택' });
-    const afterMinute = Date.now() + 61_000;
-    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(afterMinute);
+    const afterSWRWindow = Date.now() + 5 * 60_000 + 1_000;
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(afterSWRWindow);
     act(() => window.dispatchEvent(new Event('focus')));
     await waitFor(() => expect(apiMocks.fetchHouse).toHaveBeenCalledTimes(2));
     dateNow.mockRestore();
@@ -368,10 +407,9 @@ describe('App upload submission integration', () => {
       staleHouse.resolve({ pets: [publicPet], allowance: initialAllowance });
       await staleHouse.promise;
     });
-    await waitFor(() => expect(apiMocks.fetchHouse).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(apiMocks.fetchHouse).toHaveBeenCalledTimes(2));
 
-    act(() => appHarness.navigationHandlers?.onBack());
-    act(() => appHarness.navigationHandlers?.onBack());
+    fireEvent.click(screen.getByRole('button', { name: '사진 닫기' }));
     fireEvent.click(await screen.findByRole('button', { name: '초코 옮기기 또는 선택' }));
 
     expect(await screen.findByTestId('revealed-photo-url'))
@@ -399,7 +437,7 @@ describe('App upload submission integration', () => {
       });
 
     render(<App />);
-    await screen.findByText('강아지를 끌어 옮기거나, 톡 눌러 만나보세요');
+    await screen.findByRole('region', { name: '강아지들이 있는 집' });
     fireEvent.click(screen.getByRole('button', { name: '내가 소개한 강아지' }));
     fireEvent.click(await screen.findByRole('button', { name: '보리 만나기' }));
     expect(await screen.findByTestId('revealed-photo-url')).toHaveTextContent('owner-first.jpg');
@@ -467,6 +505,60 @@ describe('App upload submission integration', () => {
     fireEvent.click(screen.getByRole('button', { name: '다시 확인하기' }));
     expect(await screen.findByText('공유 화면')).toBeInTheDocument();
     expect(apiMocks.fetchSharedPet).toHaveBeenCalledTimes(2);
+    expect(apiMocks.fetchSharedPet).toHaveBeenNthCalledWith(1, 'shared-pet', expect.any(AbortSignal));
+    expect(apiMocks.fetchSharedPet).toHaveBeenNthCalledWith(2, 'shared-pet', expect.any(AbortSignal));
     expect(apiMocks.fetchHouse).not.toHaveBeenCalled();
+  });
+
+  it('cancels an older shared refresh before applying the newest response', async () => {
+    const firstRequest = deferred<{ pet: typeof appHarness.submittedPet }>();
+    appHarness.initialSharedPetId = 'shared-pet';
+    apiMocks.fetchSharedPet
+      .mockReturnValueOnce(firstRequest.promise)
+      .mockResolvedValueOnce({ pet: { ...appHarness.submittedPet, id: 'shared-pet', name: '최신친구' } });
+
+    render(<App />);
+    await waitFor(() => expect(apiMocks.fetchSharedPet).toHaveBeenCalledTimes(1));
+    const firstSignal = apiMocks.fetchSharedPet.mock.calls[0][1] as AbortSignal;
+    act(() => window.dispatchEvent(new Event('focus')));
+
+    expect(await screen.findByText('공유 화면')).toBeInTheDocument();
+    expect(apiMocks.fetchSharedPet).toHaveBeenCalledTimes(2);
+    expect(firstSignal.aborted).toBe(true);
+    firstRequest.resolve({ pet: appHarness.submittedPet });
+  });
+
+  it('logs a successful share started from 내가 소개한 강아지', async () => {
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [] });
+    apiMocks.fetchMyPets.mockResolvedValue([appHarness.submittedPet]);
+
+    render(<App />);
+    await screen.findByRole('region', { name: '강아지들이 있는 집' });
+    fireEvent.click(screen.getByRole('button', { name: '내가 소개한 강아지' }));
+    fireEvent.click(await screen.findByRole('button', { name: '보리 공유하기' }));
+
+    await waitFor(() => expect(tossMocks.sharePet).toHaveBeenCalledWith('submitted-pet', '보리'));
+    expect(analyticsMocks.trackProductEvent).toHaveBeenCalledWith('share_complete', { entry_point: 'mine' });
+    expect(await screen.findByText('공유할 곳을 골라주세요.')).toBeInTheDocument();
+  });
+
+  it('cancels an older 내가 소개한 강아지 refresh before applying the newest list', async () => {
+    const firstRequest = deferred<(typeof appHarness.submittedPet)[]>();
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [] });
+    apiMocks.fetchMyPets
+      .mockReturnValueOnce(firstRequest.promise)
+      .mockResolvedValueOnce([{ ...appHarness.submittedPet, name: '최신보리' }]);
+
+    render(<App />);
+    await screen.findByRole('region', { name: '강아지들이 있는 집' });
+    fireEvent.click(screen.getByRole('button', { name: '내가 소개한 강아지' }));
+    await waitFor(() => expect(apiMocks.fetchMyPets).toHaveBeenCalledTimes(1));
+    const firstSignal = apiMocks.fetchMyPets.mock.calls[0][0] as AbortSignal;
+    act(() => window.dispatchEvent(new Event('focus')));
+
+    expect(await screen.findByRole('button', { name: '최신보리 만나기' })).toBeInTheDocument();
+    expect(apiMocks.fetchMyPets).toHaveBeenCalledTimes(2);
+    expect(firstSignal.aborted).toBe(true);
+    firstRequest.resolve([]);
   });
 });

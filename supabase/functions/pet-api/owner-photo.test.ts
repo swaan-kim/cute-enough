@@ -30,6 +30,15 @@ describe('owner photo API boundary', () => {
     expect(ownerPhotoBlock).not.toContain("from('daily_reveals')");
     expect(ownerPhotoBlock).not.toContain("from('upload_rewards')");
     expect(ownerPhotoBlock).not.toContain('getFreeAllowance');
+    expect(ownerPhotoBlock).toContain("from('daily_pet_views').upsert");
+  });
+
+  it('fills empty house slots with same-day approvals after stable candidates', () => {
+    const stableCandidates = houseBlock.indexOf('orderDailyPets(candidateSummaries');
+    const sameDayBackfill = houseBlock.indexOf('orderDailyPets(sameDayCandidateSummaries');
+    expect(stableCandidates).toBeGreaterThan(-1);
+    expect(sameDayBackfill).toBeGreaterThan(stableCandidates);
+    expect(houseBlock).toContain('totalCount: pool.length');
   });
 
   it('uses the transactionally locked snapshot for the complete house state', () => {

@@ -1,0 +1,258 @@
+.home-screen .room.house-room {
+  --house-pet-size: clamp(88px, 27vw, 114px);
+  height: clamp(380px, calc(100dvh - 252px), 540px);
+  min-height: 380px;
+  margin-right: max(12px, calc(var(--ait-safe-right) + 12px));
+  margin-left: max(12px, calc(var(--ait-safe-left) + 12px));
+  overflow: hidden;
+}
+
+.house-room .sofa {
+  top: 29%;
+  right: 2%;
+  width: min(43%, 174px);
+  height: 102px;
+}
+
+.house-room .rug {
+  right: 7%;
+  bottom: 5px;
+  left: 7%;
+  height: 31%;
+}
+
+.house-room .pet-button.house-pet {
+  width: var(--house-pet-size);
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  color: #333d4b;
+  animation: none;
+  transition: left 220ms cubic-bezier(.2,.75,.25,1), top 220ms cubic-bezier(.2,.75,.25,1), right 220ms cubic-bezier(.2,.75,.25,1), bottom 220ms cubic-bezier(.2,.75,.25,1);
+}
+
+.house-room .house-pet-artwork,
+.house-room .house-pet-artwork > .dog-avatar,
+.house-room .house-pet-artwork > .pet-artwork-image {
+  width: var(--house-pet-size) !important;
+}
+
+.house-room .house-pet-artwork .dog-name,
+.house-room .house-pet-artwork .pet-artwork-image figcaption {
+  display: none;
+}
+
+.house-room .house-pet-name {
+  position: relative;
+  z-index: 5;
+  max-width: calc(var(--house-pet-size) + 12px);
+  min-height: 24px;
+  margin-top: -8px;
+  padding: 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(25,31,40,.14);
+  border-radius: 999px;
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 3px 9px rgba(0,0,0,.10);
+  color: #333d4b;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.house-room .house-pet-name > span {
+  max-width: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.house-room .house-pet-name small {
+  min-height: 16px;
+  padding: 2px 5px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: #fff0f3;
+  color: #d9344b;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.house-room .house-pet-name--revisit small {
+  background: #e8f3ff;
+  color: #1b64da;
+}
+
+.house-room .house-pet-name--owner small {
+  background: #ff506f;
+  color: #fff;
+}
+
+.house-room .house-pet-name--met small {
+  min-width: 16px;
+  justify-content: center;
+  padding-right: 3px;
+  padding-left: 3px;
+}
+
+.house-room .house-slot--daily-a { left: 3%; top: 44%; }
+.house-room .house-slot--daily-b { left: 35%; top: 43%; z-index: 4; }
+.house-room .house-slot--daily-c { left: 2%; bottom: 0; }
+.house-room .house-slot--daily-d { left: 35%; bottom: 0; }
+.house-room .house-slot--daily-e { right: 1%; bottom: 0; }
+.house-room .house-slot--owner { right: 1%; top: 19%; z-index: 5; }
+
+.house-room .house-pet.is-positioned {
+  right: auto !important;
+  bottom: auto !important;
+  transition: none;
+}
+
+.house-room .house-pet.is-idle-active:not(.is-grabbed):not(.is-arriving) {
+  animation: house-pet-wander 4.8s ease-in-out infinite alternate;
+  animation-delay: calc(var(--idle-index, 0) * -2.4s);
+}
+
+.house-room .house-pet.is-idle-calm:not(.is-grabbed):not(.is-arriving) {
+  animation: house-pet-calm 9s ease-in-out infinite;
+  animation-delay: calc(var(--calm-index, 0) * -2.7s);
+}
+
+.house-room .house-pet.is-idle-calm:not(.is-grabbed) .dog-tail {
+  animation: house-tail-calm 9s ease-in-out infinite;
+  animation-delay: calc(var(--calm-index, 0) * -2.7s);
+}
+
+.house-room .house-pet.is-idle-calm:not(.is-grabbed) .dog-tongue,
+.house-room .house-pet.is-idle-calm:not(.is-grabbed) .panting-tongue-point {
+  opacity: .88;
+  animation: none;
+}
+
+.house-room .pet-button.house-pet.is-arriving {
+  animation: dog-arrive .32s cubic-bezier(.2,.78,.3,1) both;
+  animation-delay: calc(var(--arrival-index, 0) * 80ms);
+}
+
+.house-room.is-motion-paused .house-pet,
+.house-room.is-motion-paused .dog-tail,
+.house-room.is-motion-paused .dog-tongue,
+.house-room.is-motion-paused .panting-tongue-point {
+  animation-play-state: paused !important;
+}
+
+.house-room .house-empty-slot {
+  position: absolute;
+  z-index: 2;
+  width: var(--house-pet-size);
+  aspect-ratio: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  border: 1px dashed rgba(78,89,104,.28);
+  border-radius: 44%;
+  background: rgba(255,255,255,.28);
+  color: #6b7684;
+  text-align: center;
+  pointer-events: none;
+}
+
+.house-room .house-empty-slot > span { color: #ff7d98; font-size: 20px; }
+.house-room .house-empty-slot small { margin-top: 2px; font-size: 9px; font-weight: 700; line-height: 1.25; }
+
+.house-room .house-first-hint {
+  position: absolute;
+  z-index: 18;
+  left: 50%;
+  bottom: max(12px, calc(var(--ait-safe-bottom) + 8px));
+  transform: translateX(-50%);
+  width: min(calc(100% - 28px), 310px);
+  min-height: 44px;
+  padding: 9px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(25,31,40,.08);
+  border-radius: 16px;
+  background: rgba(255,255,255,.95);
+  box-shadow: 0 8px 22px rgba(51,61,75,.12);
+  color: #333d4b;
+  text-align: center;
+  pointer-events: none;
+  backdrop-filter: blur(9px);
+  animation: house-hint-in 180ms ease-out both;
+}
+
+.house-room .house-first-hint strong { font-size: 13px; line-height: 1.35; }
+.house-room .house-first-hint small { margin-top: 2px; color: #6b7684; font-size: 11px; font-weight: 650; }
+
+@keyframes house-pet-wander {
+  from { transform: translate(-3px,2px); }
+  to { transform: translate(5px,-4px); }
+}
+
+@keyframes house-pet-calm {
+  0%, 70%, 100% { transform: translate(0,0); }
+  78% { transform: translate(0,-3px) rotate(-.5deg); }
+  88% { transform: translate(2px,0) rotate(.5deg); }
+}
+
+@keyframes house-tail-calm {
+  0%, 73%, 100% { transform: rotate(0); }
+  79% { transform: rotate(-8deg); }
+  86% { transform: rotate(10deg); }
+  92% { transform: rotate(-3deg); }
+}
+
+@keyframes house-hint-in {
+  from { opacity: 0; transform: translate(-50%,8px); }
+}
+
+@media (max-width: 480px) {
+  .home-screen .room.house-room {
+    --house-pet-size: clamp(88px, 27vw, 104px);
+    height: clamp(380px, calc(100dvh - 250px), 500px);
+  }
+
+  .house-room .window {
+    left: 17px;
+    transform: scale(.84);
+    transform-origin: left top;
+  }
+
+  .house-room .shelf {
+    right: 17px;
+    transform: scale(.84);
+    transform-origin: right top;
+  }
+
+  .house-room .sofa {
+    top: 28%;
+    right: 0;
+    transform: scale(.82);
+    transform-origin: right top;
+  }
+}
+
+@media (max-height: 680px) {
+  .home-screen .room.house-room {
+    height: 380px;
+    min-height: 380px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .house-room .house-pet,
+  .house-room .house-first-hint {
+    animation: none !important;
+    transition: none !important;
+  }
+}

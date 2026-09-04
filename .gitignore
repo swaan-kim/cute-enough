@@ -14,6 +14,10 @@ coverage/
 .idea/
 .vercel/
 supabase/.temp/
+.tmp/
+TO_UPLOAD/
+tools/console-preview/
+홍보용/
 
 # Local deployment credentials and certificates
 pw.txt

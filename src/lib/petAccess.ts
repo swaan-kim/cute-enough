@@ -23,7 +23,7 @@ export function isPetRevisitActive(
 
 /**
  * 캐릭터와 노는 권한과 실제 사진을 여는 권한을 분리한다.
- * pending 사진은 정확히 해당 소유자의 미사용 업로드 보너스로만 공개한다.
+ * pending 사진은 서버가 소유권을 확인해 ownerPhotoAvailable을 준 업로더에게만 공개한다.
  */
 export function resolvePetAccess(
   pet: PetSummary,
@@ -34,6 +34,13 @@ export function resolvePetAccess(
   if (pet.approvalStatus && ['rejected', 'paused', 'deleted'].includes(pet.approvalStatus)) {
     return { kind: 'unavailable' };
   }
+  if (
+    pet.isMine
+    && pet.ownerPhotoAvailable
+    && (!pet.approvalStatus || ['pending', 'approved'].includes(pet.approvalStatus))
+  ) return { kind: 'ownerPhoto' };
+  // 구버전 서버에서 ownerPhotoAvailable을 아직 내려주지 않는 등록 직후만
+  // 기존 1회 업로드 공개권으로 안전하게 호환한다.
   const canUseUploadBonus = Boolean(
     pet.isMine
     && allowance.uploadCredit
@@ -41,11 +48,6 @@ export function resolvePetAccess(
     && allowance.uploadRewardPetId === pet.id,
   );
   if (canUseUploadBonus) return { kind: 'reveal', method: 'UPLOAD' };
-  if (
-    pet.isMine
-    && pet.ownerPhotoAvailable
-    && (!pet.approvalStatus || ['pending', 'approved'].includes(pet.approvalStatus))
-  ) return { kind: 'ownerPhoto' };
   if (isPetRevisitActive(pet, now)) return { kind: 'revisit' };
   if (pet.approvalStatus === 'pending') return { kind: 'characterOnly', reason: 'pending' };
 

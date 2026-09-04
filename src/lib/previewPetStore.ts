@@ -122,6 +122,18 @@ export function readPreviewRevealedPetIds(
   return new Set(readActivePreviewReveals(date, now, storage).map((record) => record.petId));
 }
 
+/** 오늘 한 번이라도 실제 사진 공개에 성공한 공개견 ID. 재열람 만료와 진행도는 별개다. */
+export function readPreviewMetPetIds(
+  date: string,
+  storage: StorageReader = localStorage,
+): Set<string> {
+  return new Set(
+    readStoredPreviewReveals(storage)
+      .filter((record) => record.photoDate === date)
+      .map((record) => record.petId),
+  );
+}
+
 export function markPreviewPetRevealed(
   petId: string,
   revisitUntil: string,

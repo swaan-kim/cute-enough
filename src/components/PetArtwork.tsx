@@ -1,7 +1,8 @@
-import type { PetSummary, PetTraitsV1 } from '../types';
+import type { PetAccessory, PetStyleV1, PetSummary, PetTraitsV1 } from '../types';
 import { getPetArtwork } from '../data/petArtwork';
 import { getPetEarVariant, getPetSignature } from '../data/petSignature';
 import { getPetExpression } from '../lib/petExpression';
+import { normalizePetStyle } from '../lib/petStyle';
 import { DogAvatar } from './DogAvatar';
 
 type PetArtworkProps = {
@@ -13,10 +14,13 @@ type PetArtworkProps = {
   eating?: boolean;
   panting?: boolean;
   happy?: boolean;
+  accessory?: PetAccessory;
+  style?: PetStyleV1;
 };
 
-export function PetArtwork({ pet, traits, name, size, active, eating, panting, happy }: PetArtworkProps) {
+export function PetArtwork({ pet, traits, name, size, active, eating, panting, happy, accessory, style }: PetArtworkProps) {
   const artwork = getPetArtwork(pet?.id, pet?.illustrationUrl);
+  const resolvedAccessory = pet?.publishedAccessory ?? accessory;
 
   if (artwork) {
     return (
@@ -30,10 +34,12 @@ export function PetArtwork({ pet, traits, name, size, active, eating, panting, h
 
   const resolvedTraits = pet?.traits ?? traits;
   if (!resolvedTraits) return null;
+  const resolvedStyle = normalizePetStyle(resolvedTraits, pet?.publishedStyle ?? style);
   return (
     <DogAvatar
       traits={resolvedTraits}
-      expression={getPetExpression(pet?.id)}
+      style={resolvedStyle}
+      expression={resolvedStyle.expression ?? getPetExpression(pet?.id)}
       signature={getPetSignature(pet?.id)}
       earVariant={getPetEarVariant(pet?.id)}
       name={pet?.name ?? name}
@@ -42,6 +48,7 @@ export function PetArtwork({ pet, traits, name, size, active, eating, panting, h
       eating={eating}
       panting={panting}
       happy={happy}
+      accessory={resolvedAccessory}
     />
   );
 }

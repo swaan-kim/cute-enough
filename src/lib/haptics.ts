@@ -1,6 +1,7 @@
 import { Device, type HapticFeedbackType } from '@apps-in-toss/web-framework';
 
 export type HapticCue =
+  | 'friendsArrived'
   | 'dragStart'
   | 'treatSuccess'
   | 'pet'
@@ -9,6 +10,7 @@ export type HapticCue =
   | 'uploadSuccess';
 
 const HAPTIC_TYPES: Readonly<Record<HapticCue, HapticFeedbackType>> = {
+  friendsArrived: 'tickWeak',
   dragStart: 'tickWeak',
   treatSuccess: 'softMedium',
   pet: 'tickWeak',

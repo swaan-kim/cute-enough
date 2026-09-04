@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import ReviewApp from './ReviewApp';
+import ReviewApp, { reviewSimilarityScore } from './ReviewApp';
 import type { ReviewApi, ReviewQueueItem } from './types';
 
 const item: ReviewQueueItem = {
@@ -9,6 +9,12 @@ const item: ReviewQueueItem = {
   createdAt: '2026-08-29T02:15:00.000Z',
   photoPresent: true,
   photoUrls: ['/api/review-photo/opaque-test-token'],
+  accessorySelectionMode: 'reviewer',
+  accessoryRequired: true,
+  requestedAccessory: null,
+  publishedAccessory: null,
+  designVersion: 1,
+  similarPets: [],
   traits: {
     schemaVersion: 1,
     earShape: 'floppy',
@@ -19,17 +25,35 @@ const item: ReviewQueueItem = {
     muzzle: 'short',
     confidence: 0.95,
   },
+  submittedTraits: {
+    schemaVersion: 1,
+    earShape: 'floppy',
+    headShape: 'round',
+    baseColor: 'cream',
+    secondaryColor: 'caramel',
+    markingPattern: 'blaze',
+    muzzle: 'short',
+    confidence: 0.95,
+  },
+  submittedStyle: { schemaVersion: 1, coatMode: 'point', furStyle: 'neat' },
+  publishedStyle: { schemaVersion: 1, coatMode: 'point', furStyle: 'neat' },
 };
 
 function makeApi(overrides: Partial<ReviewApi> = {}): ReviewApi {
   return {
     getQueue: vi.fn().mockResolvedValue([item]),
     review: vi.fn().mockImplementation(async ({ petId, decision }) => ({ petId, status: decision })),
+    getCatalog: vi.fn().mockResolvedValue([]),
+    manage: vi.fn().mockImplementation(async ({ petId, action }) => ({ petId, status: action === 'pause' ? 'paused' : 'approved' })),
     ...overrides,
   };
 }
 
 describe('ReviewApp', () => {
+  it('scores an identical reviewed design at 100', () => {
+    expect(reviewSimilarityScore(item.traits, item.publishedStyle, item.traits, item.publishedStyle)).toBe(100);
+  });
+
   it('shows loading, then renders the photo, character, name, time, and photo status', async () => {
     let resolveQueue: ((items: ReviewQueueItem[]) => void) | undefined;
     const api = makeApi({
@@ -50,7 +74,7 @@ describe('ReviewApp', () => {
     fireEvent.load(photo);
     expect(screen.getByRole('button', { name: '테스트견 승인' })).toBeEnabled();
     expect(screen.getByText('사진 있음')).toBeInTheDocument();
-    expect(screen.getByLabelText('테스트견 강아지')).toBeInTheDocument();
+    expect(screen.getAllByLabelText('테스트견 강아지')).toHaveLength(3);
     expect(screen.getByText(/2026/)).toBeInTheDocument();
   });
 
@@ -69,10 +93,34 @@ describe('ReviewApp', () => {
       expect(api.review).toHaveBeenCalledWith({
         petId: item.petId,
         decision: 'approved',
+        finalName: '테스트견',
+        finalTraits: item.submittedTraits,
+        finalStyle: item.submittedStyle,
+        publishedAccessory: null,
       });
     });
     expect(await screen.findByText('검수할 강아지가 없어요')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('테스트견 등록을 승인했어요.');
+  });
+
+  it('shows Titi curated draft and prepares the corrected name and gray solid design', async () => {
+    const titi = {
+      ...item,
+      petId: '36d0b0eb-32b6-48d7-b505-31a58d4bf4f7',
+      name: null,
+      submittedTraits: { ...item.submittedTraits, baseColor: 'gray' as const, secondaryColor: 'white' as const, markingPattern: 'brow' as const },
+    };
+    const api = makeApi({ getQueue: vi.fn().mockResolvedValue([titi]) });
+    const { container } = render(<ReviewApp api={api} />);
+    await screen.findByRole('heading', { name: '이름 없는 강아지' });
+    expect(screen.getByText('검수 제안 있음')).toBeInTheDocument();
+    expect(screen.getByText(/전용 산책 가방/)).toBeInTheDocument();
+    expect(container.querySelector('[data-pet-signature="gray-backpack"]')).toBeInTheDocument();
+
+    fireEvent.load(screen.getByRole('img', { name: '이름 없는 강아지 실사 사진 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '이름 없는 강아지 승인' }));
+    expect(screen.getByRole('textbox', { name: /최종 이름/ })).toHaveValue('티티');
+    expect(screen.getByLabelText('최종 캐릭터 보정').querySelector('[data-coat-mode="solid"]')).toBeInTheDocument();
   });
 
   it('requires a reason before rejecting and sends the trimmed reason', async () => {
@@ -98,6 +146,74 @@ describe('ReviewApp', () => {
       });
     });
     expect(screen.getByRole('status')).toHaveTextContent('테스트견 등록을 반려했어요.');
+  });
+
+  it('lets the reviewer choose a delegated accessory and stores only the final choice and note', async () => {
+    const api = makeApi();
+    render(<ReviewApp api={api} />);
+    await screen.findByRole('heading', { name: '테스트견' });
+    fireEvent.load(screen.getByRole('img', { name: '테스트견 실사 사진 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '테스트견 승인' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '스카프' }));
+    fireEvent.click(screen.getByRole('button', { name: '민트' }));
+    fireEvent.change(screen.getByRole('textbox', { name: /검수 메모/ }), { target: { value: '  흰 털에서 대비 확인  ' } });
+    fireEvent.click(screen.getByRole('button', { name: '승인 확정' }));
+
+    await waitFor(() => expect(api.review).toHaveBeenCalledWith({
+      petId: item.petId,
+      decision: 'approved',
+      finalName: '테스트견',
+      finalTraits: item.submittedTraits,
+      finalStyle: item.submittedStyle,
+      publishedAccessory: { kind: 'scarf', color: 'mint', assetKey: 'builtin:scarf' },
+      reviewNote: '흰 털에서 대비 확인',
+    }));
+  });
+
+  it('keeps an owner-selected accessory locked throughout approval', async () => {
+    const lockedAccessory = { kind: 'ball', color: 'yellow', assetKey: 'builtin:ball' } as const;
+    const api = makeApi({
+      getQueue: vi.fn().mockResolvedValue([{
+        ...item,
+        accessorySelectionMode: 'owner',
+        requestedAccessory: lockedAccessory,
+        publishedAccessory: lockedAccessory,
+      }]),
+    });
+    render(<ReviewApp api={api} />);
+    await screen.findByRole('heading', { name: '테스트견' });
+    fireEvent.load(screen.getByRole('img', { name: '테스트견 실사 사진 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '테스트견 승인' }));
+
+    expect(screen.getByRole('button', { name: '애착 공' })).toHaveClass('is-selected');
+    expect(screen.getByRole('button', { name: '애착 공' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '스카프' })).toBeDisabled();
+    expect(screen.getByText(/사용자가 직접 고른 소품/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '승인 확정' }));
+
+    await waitFor(() => expect(api.review).toHaveBeenCalledWith({
+      petId: item.petId,
+      decision: 'approved',
+      finalName: '테스트견',
+      finalTraits: item.submittedTraits,
+      finalStyle: item.submittedStyle,
+      publishedAccessory: lockedAccessory,
+    }));
+  });
+
+  it('keeps the submitted photo and 64/114/190 final previews together in the approval editor', async () => {
+    const api = makeApi();
+    render(<ReviewApp api={api} />);
+    await screen.findByRole('heading', { name: '테스트견' });
+    fireEvent.load(screen.getByRole('img', { name: '테스트견 실사 사진 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '테스트견 승인' }));
+
+    expect(screen.getByRole('img', { name: '테스트견 검수 실사' })).toBeInTheDocument();
+    const previews = screen.getByLabelText('최종 크기 미리보기');
+    expect(within(previews).getByText('64px')).toBeInTheDocument();
+    expect(within(previews).getByText('114px')).toBeInTheDocument();
+    expect(within(previews).getByText('190px')).toBeInTheDocument();
   });
 
   it('disables approval when the photo is missing', async () => {
@@ -135,5 +251,49 @@ describe('ReviewApp', () => {
 
     expect(await screen.findByText('검수할 강아지가 없어요')).toBeInTheDocument();
     expect(getQueue).toHaveBeenCalledTimes(2);
+  });
+
+  it('finds an approved dog by name and pauses it with an audit note', async () => {
+    const catalogItem = {
+      petId: item.petId,
+      name: '우유',
+      status: 'approved' as const,
+      traits: item.traits,
+      publishedStyle: item.publishedStyle,
+      publishedAccessory: null,
+      designVersion: 2,
+    };
+    const api = makeApi({ getCatalog: vi.fn().mockResolvedValue([catalogItem]) });
+    render(<ReviewApp api={api} />);
+    await screen.findByRole('heading', { name: '테스트견' });
+
+    fireEvent.change(screen.getByPlaceholderText('예: 우유 또는 강아지 ID'), { target: { value: '우유' } });
+    fireEvent.click(screen.getByRole('button', { name: '검색' }));
+    expect(await screen.findByText('우유', { selector: 'strong' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '공개 중지' }));
+    fireEvent.change(screen.getByRole('textbox', { name: /변경 메모/ }), { target: { value: '원본 재확인' } });
+    fireEvent.click(screen.getByRole('button', { name: '변경 저장' }));
+
+    await waitFor(() => expect(api.manage).toHaveBeenCalledWith({
+      petId: item.petId,
+      action: 'pause',
+      reviewNote: '원본 재확인',
+    }));
+  });
+
+  it('requires a differentiation note when an unchanged draft is at least 80% similar', async () => {
+    const api = makeApi({
+      getQueue: vi.fn().mockResolvedValue([{ ...item, similarPets: [{ id: 'similar', name: '닮은이', traits:item.traits, publishedStyle:item.publishedStyle }] }]),
+    });
+    render(<ReviewApp api={api} />);
+    await screen.findByRole('heading', { name: '테스트견' });
+    fireEvent.load(screen.getByRole('img', { name: '테스트견 실사 사진 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '테스트견 승인' }));
+
+    expect(screen.getByText(/유사도 100점/)).toBeInTheDocument();
+    const approve = screen.getByRole('button', { name: '승인 확정' });
+    expect(approve).toBeDisabled();
+    fireEvent.change(screen.getByRole('textbox', { name: /검수 메모/ }), { target: { value: '혀 표정과 몽글한 윤곽으로 구분됨' } });
+    expect(approve).toBeEnabled();
   });
 });

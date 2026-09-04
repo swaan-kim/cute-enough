@@ -7,7 +7,10 @@ const PHOTO_HEART_HAPTIC_COOLDOWN_MS = 300;
 
 type RevealCardProps = {
   pet: PetSummary;
-  photoUrl: string;
+  photoUrl?: string;
+  loading?: boolean;
+  loadError?: string;
+  milestoneText?: string;
   onClose: () => void;
   onUpload: () => void;
   onReport: () => void;
@@ -16,7 +19,7 @@ type RevealCardProps = {
   onRetryPhoto?: () => Promise<void> | void;
 };
 
-export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare, onSave, onRetryPhoto }: RevealCardProps) {
+export function RevealCard({ pet, photoUrl, loading = false, loadError, milestoneText, onClose, onUpload, onReport, onShare, onSave, onRetryPhoto }: RevealCardProps) {
   const cardRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   const heartIdRef = useRef(0);
@@ -109,18 +112,30 @@ export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare
     }
   }
 
+  const failed = Boolean(loadError) || imageError;
+  const ready = Boolean(photoUrl) && !loading && !failed;
+
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="강아지 실사 사진">
       <article className="photo-card" ref={cardRef} tabIndex={-1}>
+        <header className="photo-card-header">
+          <span>{milestoneText ?? `${pet.name ?? '강아지'}의 사진`}</span>
+          <button type="button" onClick={onClose} aria-label="사진 닫기">×</button>
+        </header>
         <div className="photo-media">
-          {imageError ? (
+          {loading ? (
+            <div className="photo-frame photo-skeleton" role="status" aria-live="polite">
+              <span className="photo-skeleton-heart" aria-hidden="true">♡</span>
+              <strong>사진을 꺼내고 있어요</strong>
+            </div>
+          ) : failed ? (
             <div className="photo-frame photo-error" role="status" aria-live="polite">
               <span className="photo-error-icon" aria-hidden="true">♡</span>
               <strong>사진을 불러오지 못했어요</strong>
-              <p>잠시 후 다시 불러와 주세요.</p>
+              <p>{loadError ?? '잠시 후 다시 불러와 주세요.'}</p>
               <Button size="medium" color="dark" variant="weak" disabled={retryingPhoto} loading={retryingPhoto} onClick={() => void handleRetryPhoto()}>다시 불러오기</Button>
             </div>
-          ) : (
+          ) : photoUrl ? (
             <button
               className="photo-frame photo-like-surface"
               type="button"
@@ -145,8 +160,8 @@ export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare
                 >♥</span>
               )}
             </button>
-          )}
-          {onSave && !imageError && (
+          ) : null}
+          {onSave && ready && (
             <button
               className="photo-save-button"
               type="button"
@@ -155,13 +170,15 @@ export function RevealCard({ pet, photoUrl, onClose, onUpload, onReport, onShare
             >{saving ? '저장 중' : '사진 저장'}</button>
           )}
         </div>
-        <div className="photo-meta"><Asset.Icon name="heart-line" color="#ff506f" frameShape={Asset.frameShape.CleanH24} aria-hidden="true" /><h2>{pet.name ?? '이름 없는 귀요미'}</h2><p>귀엽기만 해도, 오늘은 충분해요.</p></div>
-        <div className="photo-card-actions">
-          {pet.shareable && onShare && <Button display="full" size="large" onClick={onShare}>이 귀여움 같이 보기</Button>}
-          <Button display="full" size="large" onClick={onUpload}>우리 강아지도 소개하기</Button>
-          <Button display="full" size="large" color="dark" variant="weak" onClick={onClose}>돌아가기</Button>
-        </div>
-        <TextButton className="report-button" size="small" variant="underline" color="#8b95a1" onClick={onReport}>이 사진 신고하기</TextButton>
+        {ready && <>
+          <div className="photo-meta"><Asset.Icon name="heart-line" color="#ff506f" frameShape={Asset.frameShape.CleanH24} aria-hidden="true" /><h2>{pet.name ?? '이름 없는 귀요미'}</h2><p>귀엽기만 해도, 오늘은 충분해요.</p></div>
+          <div className="photo-card-actions">
+            {pet.shareable && onShare && <Button display="full" size="large" onClick={onShare}>이 귀여움 같이 보기</Button>}
+            <Button display="full" size="large" color="dark" variant="weak" onClick={onClose}>돌아가기</Button>
+            <TextButton className="photo-upload-link" size="small" onClick={onUpload}>우리 강아지도 소개하기</TextButton>
+          </div>
+          <TextButton className="report-button" size="small" variant="underline" color="#6b7684" onClick={onReport}>이 사진 신고하기</TextButton>
+        </>}
       </article>
     </div>
   );

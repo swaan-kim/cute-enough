@@ -1,7 +1,9 @@
 import { useId } from 'react';
-import type { CoatColor, EarShape, PetExpression, PetTraitsV1 } from '../types';
+import type { CoatColor, EarShape, FurStyle, PetAccessory, PetExpression, PetStyleV1, PetTraitsV1 } from '../types';
 import type { PetEarVariant, PetSignature } from '../data/petSignature';
 import { normalizePetTraitColors } from '../lib/petTraits';
+import { PET_ACCESSORY_COLOR_HEX } from '../lib/petAccessory';
+import { normalizePetStyle } from '../lib/petStyle';
 
 export const COAT_COLOR_HEX: Readonly<Record<CoatColor, string>> = {
   cream: '#F6DEB3', caramel: '#C98955', chocolate: '#714536', black: '#3C3B41', gray: '#A8A6AE', white: '#FFFDF8',
@@ -79,6 +81,7 @@ export function getEarVisualSpec(earShape: EarShape, earVariant?: PetEarVariant)
 
 interface Props {
   traits: PetTraitsV1;
+  style?: PetStyleV1;
   expression?: PetExpression;
   signature?: PetSignature;
   earVariant?: PetEarVariant;
@@ -88,18 +91,53 @@ interface Props {
   panting?: boolean;
   happy?: boolean;
   size?: number;
+  accessory?: PetAccessory;
 }
 
-export function DogAvatar({ traits, expression = { browStyle: 'none', tongueShape: 'drop' }, signature, earVariant, name, active = false, eating = false, panting = false, happy = false, size = 150 }: Props) {
+function mixHex(source: string, target: string, amount: number): string {
+  const sourceValue = Number.parseInt(source.slice(1), 16);
+  const targetValue = Number.parseInt(target.slice(1), 16);
+  const channel = (shift: number) => Math.round(
+    ((sourceValue >> shift) & 0xff) * (1 - amount) + ((targetValue >> shift) & 0xff) * amount,
+  );
+  return `#${[channel(16), channel(8), channel(0)].map((value) => value.toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+}
+
+export function getSolidCoatShade(color: CoatColor): string {
+  return mixHex(COAT_COLOR_HEX[color], color === 'black' ? '#000000' : '#6D5548', 0.07);
+}
+
+export function getHeadOutlinePath(headRx: number, furStyle: FurStyle): string {
+  const left = 90 - headRx;
+  const right = 90 + headRx;
+  if (furStyle === 'fluffy') {
+    return `M90 10 C82 7 77 12 74 16 C62 10 52 16 49 22 C35 21 ${left + 4} 32 ${left + 2} 44 C${left - 3} 50 ${left - 2} 59 ${left + 1} 64 C${left - 4} 73 ${left} 84 ${left + 7} 88 C${left + 7} 102 ${left + 16} 114 ${left + 28} 120 C${left + 40} 130 74 134 90 134 C106 134 ${right - 40} 130 ${right - 28} 120 C${right - 16} 114 ${right - 7} 102 ${right - 7} 88 C${right} 84 ${right + 4} 73 ${right - 1} 64 C${right + 2} 59 ${right + 3} 50 ${right - 2} 44 C${right - 4} 32 145 21 131 22 C128 16 118 10 106 16 C103 12 98 7 90 10Z`;
+  }
+  if (furStyle === 'cloud') {
+    return `M90 11 C84 4 75 7 72 15 C64 8 53 12 51 21 C40 17 29 25 31 35 C20 35 ${left - 1} 45 ${left + 3} 55 C${left - 5} 61 ${left - 3} 74 ${left + 6} 78 C${left - 1} 88 ${left + 6} 101 ${left + 17} 102 C${left + 15} 115 54 126 67 123 C73 133 84 134 90 128 C96 134 107 133 113 123 C126 126 ${right - 15} 115 ${right - 17} 102 C${right - 6} 101 ${right + 1} 88 ${right - 6} 78 C${right + 3} 74 ${right + 5} 61 ${right - 3} 55 C${right + 1} 45 160 35 149 35 C151 25 140 17 129 21 C127 12 116 8 108 15 C105 7 96 4 90 11Z`;
+  }
+  return `M90 10 C52 10 ${left} 31 ${left} 70 C${left} 109 52 130 90 130 C128 130 ${right} 109 ${right} 70 C${right} 31 128 10 90 10Z`;
+}
+
+export function DogAvatar({ traits, style, expression = { browStyle: 'none', tongueShape: 'drop' }, signature, earVariant, name, active = false, eating = false, panting = false, happy = false, size = 150, accessory }: Props) {
   const headClipId = `dog-head-${useId().replace(/:/g, '')}`;
   const visualTraits = normalizePetTraitColors(traits);
+  const visualStyle = normalizePetStyle(visualTraits, style);
   const base = COAT_COLOR_HEX[visualTraits.baseColor];
-  const secondary = COAT_COLOR_HEX[visualTraits.secondaryColor];
+  const secondary = visualStyle.coatMode === 'solid'
+    ? getSolidCoatShade(visualTraits.baseColor)
+    : COAT_COLOR_HEX[visualTraits.secondaryColor];
   const ears = getEarVisualSpec(visualTraits.earShape, earVariant);
   const earsInFront = ears.layer === 'front';
   // 구르미의 흰 귀는 강아지 전용 예외이고, 일반 포근한 귀는 선택한 포인트 털색을 따라가요.
-  const earFill = earVariant === 'high-floppy' ? COAT_COLOR_HEX.white : secondary;
+  const earFill = earVariant === 'high-floppy'
+    ? COAT_COLOR_HEX.white
+    : signature === 'birthday-star'
+      ? '#FFF9EE'
+      : secondary;
   const headRx = visualTraits.headShape === 'long' ? 61 : visualTraits.headShape === 'oval' ? 68 : 74;
+  const headPath = getHeadOutlinePath(headRx, visualStyle.furStyle);
+  const accessoryColor = accessory ? PET_ACCESSORY_COLOR_HEX[accessory.color] : undefined;
   const earLayer = (
     <g
       className={`dog-ears dog-ears--${visualTraits.earShape}`}
@@ -136,11 +174,28 @@ export function DogAvatar({ traits, expression = { browStyle: 'none', tongueShap
       <svg viewBox="0 0 180 156" role="img" aria-hidden="true">
         <defs>
           <clipPath id={headClipId}>
-            <ellipse cx="90" cy="70" rx={headRx} ry="60" />
+            <path d={headPath} />
           </clipPath>
         </defs>
         <g className="dog-tail"><path d="M145 112c25-9 29-25 18-29-10-4-14 8-8 15" fill="none" stroke="#25222A" strokeWidth="7" strokeLinecap="round" /></g>
         <ellipse cx="90" cy="123" rx="59" ry="22" fill={base} stroke="#25222A" strokeWidth="5" />
+        {signature === 'gray-backpack' && (
+          <g data-pet-signature={signature} aria-hidden="true" pointerEvents="none">
+            <path data-backpack-part="body" d="M131 100 C133 89 142 84 154 86 C166 88 171 99 171 113 L169 138 Q157 147 133 138Z" fill="#B4BEC6" stroke="#25222A" strokeWidth="4" strokeLinejoin="round" />
+            <path d="M140 94 C143 83 157 82 162 95" fill="none" stroke="#68737C" strokeWidth="5" strokeLinecap="round" />
+            <path d="M133 103 Q151 91 169 103 L170 117 Q151 124 133 116Z" fill="#CED5DA" stroke="#25222A" strokeWidth="3" strokeLinejoin="round" />
+            <path d="M140 115 Q136 128 140 140" fill="none" stroke="#69747D" strokeWidth="3" strokeLinecap="round" />
+            <path d="M150 120 Q160 117 169 123 L168 137 Q159 142 150 137Z" fill="#E4E8EB" stroke="#25222A" strokeWidth="3" strokeLinejoin="round" />
+            <path d="M154 121 L154 137" fill="none" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" opacity=".9" />
+            <circle cx="161" cy="128" r="2.5" fill="#FFD25F" stroke="#25222A" strokeWidth="1.5" />
+          </g>
+        )}
+        {accessory?.kind === 'vest' && (
+          <g data-pet-accessory="vest" data-accessory-color={accessory.color} aria-hidden="true" pointerEvents="none">
+            <path d="M50 116 Q90 104 130 116 L126 140 Q90 151 54 140Z" fill={accessoryColor} stroke="#25222A" strokeWidth="4" strokeLinejoin="round" />
+            <path d="M76 112 Q90 126 104 112" fill="none" stroke="#FFF9F4" strokeWidth="4" strokeLinecap="round" />
+          </g>
+        )}
         {signature === 'sky-bandana' && (
           <g data-pet-signature={signature} aria-hidden="true" pointerEvents="none">
             <path d="M61 113 Q90 130 119 113 L108 133 Q100 138 90 132 Q80 138 72 133Z" fill="#79C8F2" stroke="#25222A" strokeWidth="3.5" strokeLinejoin="round" />
@@ -148,15 +203,28 @@ export function DogAvatar({ traits, expression = { browStyle: 'none', tongueShap
           </g>
         )}
         {!earsInFront && earLayer}
-        <ellipse data-head-fill cx="90" cy="70" rx={headRx} ry="60" fill={base} />
+        <path data-head-fill data-fur-style={visualStyle.furStyle} data-coat-mode={visualStyle.coatMode} d={headPath} fill={base} />
         <g data-head-markings clipPath={`url(#${headClipId})`}>
           {visualTraits.markingPattern === 'blaze' && <path data-marking-pattern="blaze" d="M90 16 C82 23 82 31 84.5 36 C86 39 88 41 90 43 C92 41 94 39 95.5 36 C98 31 98 23 90 16Z" fill={secondary} opacity=".95" />}
           {visualTraits.markingPattern === 'mask' && <path data-marking-pattern="mask" d="M27 53 Q47 25 73 40 L67 72 Q42 82 27 53M153 53 Q133 25 107 40 L113 72 Q138 82 153 53" fill={secondary} opacity=".9" />}
           {visualTraits.markingPattern === 'brow' && <g data-marking-pattern="brow"><ellipse cx="61" cy="43" rx="11" ry="7" fill={secondary} /><ellipse cx="119" cy="43" rx="11" ry="7" fill={secondary} /></g>}
           {visualTraits.markingPattern === 'spots' && <g data-marking-pattern="spots"><circle cx="53" cy="39" r="13" fill={secondary} /><circle cx="126" cy="83" r="10" fill={secondary} /></g>}
         </g>
-        <ellipse data-head-outline cx="90" cy="70" rx={headRx} ry="60" fill="none" stroke="#25222A" strokeWidth="5" />
+        <path data-head-outline data-fur-style={visualStyle.furStyle} d={headPath} fill="none" stroke="#25222A" strokeWidth="5" strokeLinejoin="round" />
         {earsInFront && earLayer}
+        {accessory?.kind === 'ribbon' && (
+          <g data-pet-accessory="ribbon" data-accessory-color={accessory.color} aria-hidden="true" pointerEvents="none" transform="translate(132 31) rotate(12)">
+            <path d="M0 6 C-11-3-16 7-8 13 L0 10Z" fill={accessoryColor} stroke="#25222A" strokeWidth="3" strokeLinejoin="round" />
+            <path d="M1 6 C12-3 17 7 9 13 L1 10Z" fill={accessoryColor} stroke="#25222A" strokeWidth="3" strokeLinejoin="round" />
+            <circle cx="0.5" cy="8" r="4" fill="#FFF8F0" stroke="#25222A" strokeWidth="2.5" />
+          </g>
+        )}
+        {accessory?.kind === 'scarf' && (
+          <g data-pet-accessory="scarf" data-accessory-color={accessory.color} aria-hidden="true" pointerEvents="none">
+            <path d="M56 110 Q90 127 124 110 L116 124 Q101 132 90 126 Q79 132 64 124Z" fill={accessoryColor} stroke="#25222A" strokeWidth="3.5" strokeLinejoin="round" />
+            <path d="M91 126 L107 145 L89 145 L80 133Z" fill={accessoryColor} stroke="#25222A" strokeWidth="3.5" strokeLinejoin="round" />
+          </g>
+        )}
         {signature === 'peach-hairpin' && (
           <g data-pet-signature={signature} aria-hidden="true" pointerEvents="none" transform="translate(126 29) rotate(12)">
             <path d="M0 6 C-11-3-16 7-8 13 L0 10Z" fill="#FF9E91" stroke="#25222A" strokeWidth="3" strokeLinejoin="round" />
@@ -173,6 +241,27 @@ export function DogAvatar({ traits, expression = { browStyle: 'none', tongueShap
         {signature === 'lemon-star' && (
           <g data-pet-signature={signature} aria-hidden="true" pointerEvents="none" transform="translate(132 37)">
             <path d="M0-10 3-3 11-2 5 3 7 11 0 7-7 11-5 3-11-2-3-3Z" fill="#FFD95B" stroke="#25222A" strokeWidth="3" strokeLinejoin="round" />
+          </g>
+        )}
+        {signature === 'milk-carton' && (
+          <g data-pet-signature={signature} aria-hidden="true" pointerEvents="none">
+            <path d="M20 111 L28 101 H45 L52 111 V143 H20Z" fill="#F9FCFF" stroke="#25222A" strokeWidth="3.5" strokeLinejoin="round" />
+            <path d="M28 101 L35 111 H52 L45 101Z" fill="#BCE9F6" stroke="#25222A" strokeWidth="3.5" strokeLinejoin="round" />
+            <path d="M35 111 V143" stroke="#25222A" strokeWidth="3" />
+            <path d="M22 124 H34 V141 H22Z" fill="#BCE9F6" />
+            <path d="M39 122 C43 117 49 122 46 127 L42 132 L38 127 C35 124 36 121 39 122Z" fill="#FF8EAA" stroke="#25222A" strokeWidth="2" strokeLinejoin="round" />
+            <path d="M43 99 L48 88" fill="none" stroke="#25222A" strokeWidth="3.5" strokeLinecap="round" />
+            <path d="M49 88 L53 98" fill="none" stroke="#FF8EAA" strokeWidth="3.5" strokeLinecap="round" />
+          </g>
+        )}
+        {signature === 'birthday-star' && (
+          <g data-pet-signature={signature} aria-hidden="true" pointerEvents="none">
+            <path d="M72 28 L90 2 L108 28Z" fill="#FFB0C4" stroke="#25222A" strokeWidth="3.5" strokeLinejoin="round" />
+            <path d="M77 21 H103" fill="none" stroke="#FFF5C7" strokeWidth="4" strokeLinecap="round" />
+            <circle cx="90" cy="4" r="7" fill="#FF8EAA" stroke="#25222A" strokeWidth="3" />
+            <path data-birthday-part="bib" d="M60 109 Q90 124 120 109 C121 124 117 138 105 144 C96 149 84 149 75 144 C63 138 59 124 60 109Z" fill="#FFF7F9" stroke="#25222A" strokeWidth="3.5" strokeLinejoin="round" />
+            <path d="M70 117 Q90 128 110 117" fill="none" stroke="#FFB0C4" strokeWidth="4" strokeLinecap="round" />
+            <path d="M86 128 C89 123 96 125 96 130 C96 134 92 137 90 139 C88 137 83 134 83 130 C83 126 87 124 90 128 C92 124 96 126 96 130" fill="#FF8EAA" stroke="#25222A" strokeWidth="2" strokeLinejoin="round" />
           </g>
         )}
         {expression.browStyle !== 'none' && (
@@ -193,6 +282,12 @@ export function DogAvatar({ traits, expression = { browStyle: 'none', tongueShap
           {expression.tongueShape === 'side' && <path d="M88 100 C91 102 97 103 98 107 C100 111 98 114 95 113 C92 112 90 106 88 100Z" fill="#FF8FA3" stroke="#25222A" strokeWidth="3" />}
         </g>
         <path d="M50 128v15M130 128v15" stroke="#25222A" strokeWidth="7" strokeLinecap="round" />
+        {accessory?.kind === 'ball' && (
+          <g data-pet-accessory="ball" data-accessory-color={accessory.color} aria-hidden="true" pointerEvents="none">
+            <circle cx="150" cy="132" r="14" fill={accessoryColor} stroke="#25222A" strokeWidth="4" />
+            <path d="M139 128 Q150 136 161 128 M143 121 Q150 128 157 121" fill="none" stroke="#FFF9F4" strokeWidth="2.5" strokeLinecap="round" opacity=".9" />
+          </g>
+        )}
       </svg>
       {name && <span className="dog-name">{name}</span>}
     </div>

@@ -1,4 +1,5 @@
 import type { CoatColor, PetTraitsV1 } from '../types';
+import { getSoftPointColor } from './petStyle';
 
 const MAX_EDGE = 1024;
 const JPEG_QUALITY = 0.86;
@@ -62,8 +63,9 @@ export function analyzePixelColors(pixels: Uint8ClampedArray): ColorAnalysis {
   if (samples === 0) throw new Error('사진의 색상을 읽지 못했어요. 다른 사진을 골라주세요.');
   const ranked = [...counts.entries()].sort((left, right) => right[1] - left[1]);
   const baseColor = ranked[0][0];
-  const secondaryColor = ranked.find(([color, count]) => color !== baseColor && count >= samples * 0.08)?.[0]
-    ?? (baseColor === 'white' ? 'cream' : 'white');
+  // 배경색이 섞이기 쉬운 두 번째 색은 자동 확정하지 않고, 대표색과
+  // 부드럽게 어울리는 안전한 제안만 사용해요. 사용자가 다음 단계에서 직접 확인합니다.
+  const secondaryColor = getSoftPointColor(baseColor);
   const share = ranked[0][1] / samples;
 
   return {

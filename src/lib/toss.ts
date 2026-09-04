@@ -215,7 +215,7 @@ export async function sharePet(petId: string, petName?: string): Promise<void> {
   }
   catch {
     if (!isPreviewRuntime) throw new Error('공유 화면을 열지 못했어요. 잠시 뒤 다시 시도해 주세요.');
-    if (navigator.share) return navigator.share({ title: '오늘의 강아지', text: `${petName ?? '귀여운 강아지'}가 기다리고 있어요 🐶`, url });
+    if (navigator.share) return navigator.share({ title: '옆집 강아지', text: `${petName ?? '귀여운 강아지'}가 기다리고 있어요 🐶`, url });
     await navigator.clipboard.writeText(url);
     throw new Error('링크를 복사했어요.');
   }

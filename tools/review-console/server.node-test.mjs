@@ -7,10 +7,13 @@ import {
   createReviewApiHandler,
   createSupabaseReviewGateway,
   loadReviewConfig,
+  validatePublicationInput,
   validateReviewInput,
 } from './server-lib.mjs';
 
 const PET_ID = '11111111-1111-4111-8111-111111111111';
+const TRAITS = { schemaVersion: 1, earShape: 'floppy', headShape: 'round', baseColor: 'cream', secondaryColor: 'caramel', markingPattern: 'none', muzzle: 'short', confidence: 1 };
+const STYLE = { schemaVersion: 1, coatMode: 'point', furStyle: 'neat' };
 
 test('queue exposes only safe fields and opaque same-origin photo URLs', async (t) => {
   const secretPath = 'owners/sensitive-hash/original.webp';
@@ -21,9 +24,18 @@ test('queue exposes only safe fields and opaque same-origin photo URLs', async (
         petId: PET_ID,
         name: '부용',
         traits: { schemaVersion: 1, baseColor: 'cream' },
+        submittedTraits: TRAITS,
+        submittedStyle: STYLE,
+        publishedStyle: STYLE,
         createdAt: '2026-08-29T00:00:00.000Z',
         photoPresent: true,
         signedPhotoUrls: [signedUrl],
+        accessorySelectionMode: 'reviewer',
+        accessoryRequired: true,
+        requestedAccessory: null,
+        publishedAccessory: null,
+        designVersion: 1,
+        similarPets: [],
         ownerHash: 'sensitive-hash',
         storagePaths: [secretPath],
         serviceRoleKey: 'never-return-this',
@@ -49,7 +61,9 @@ test('queue exposes only safe fields and opaque same-origin photo URLs', async (
   assert.doesNotMatch(queueText, /sensitive-hash|original\.webp|secret-token|never-return-this/);
   const queue = JSON.parse(queueText);
   assert.deepEqual(Object.keys(queue.items[0]).sort(), [
-    'createdAt', 'name', 'petId', 'photoPresent', 'photoUrls', 'traits',
+    'accessoryRequired', 'accessorySelectionMode', 'createdAt', 'designVersion', 'name',
+    'petId', 'photoPresent', 'photoUrls', 'publishedAccessory', 'publishedStyle',
+    'requestedAccessory', 'similarPets', 'submittedStyle', 'submittedTraits', 'traits',
   ]);
   assert.match(queue.items[0].photoUrls[0], /^\/api\/review-photo\/[A-Za-z0-9_-]+$/);
 
@@ -92,7 +106,16 @@ test('review requires exact origin, JSON, and normalized validated input', async
   });
   assert.equal(accepted.status, 200);
   assert.deepEqual(await accepted.json(), { petId: PET_ID, status: 'rejected' });
-  assert.deepEqual(calls, [{ petId: PET_ID, decision: 'rejected', reason: '사진이 흐려요.' }]);
+  assert.deepEqual(calls, [{
+    petId: PET_ID,
+    decision: 'rejected',
+    reason: '사진이 흐려요.',
+    finalName: null,
+    finalTraits: null,
+    finalStyle: null,
+    publishedAccessory: null,
+    reviewNote: null,
+  }]);
 });
 
 test('review rejects oversized and malformed requests before gateway calls', async (t) => {
@@ -141,10 +164,19 @@ test('Supabase gateway selects only review fields, signs for 180 seconds, and ca
       return { data: [{
         pet_id: PET_ID,
         name: '부용',
-        traits: { schemaVersion: 1 },
+        traits: TRAITS,
+        submitted_traits: TRAITS,
+        submitted_style: STYLE,
+        published_style: STYLE,
         created_at: '2026-08-29T00:00:00Z',
         storage_paths: ['private/photo.webp'],
         photo_present: true,
+        accessory_selection_mode: 'reviewer',
+        accessory_required: true,
+        requested_accessory: null,
+        published_accessory: null,
+        design_version: 1,
+        similar_pets: [],
       }], error: null };
     },
   };
@@ -179,13 +211,96 @@ test('Supabase gateway selects only review fields, signs for 180 seconds, and ca
   assert.equal(rows[0].signedPhotoUrls.length, 1);
   assert.ok(trace.some((entry) => entry[0] === 'sign' && entry[2] === 180));
   assert.ok(trace.some((entry) => entry[0] === 'select' && !entry[1].includes('owner_hash')));
-  await gateway.review({ petId: PET_ID, decision: 'approved', reason: null });
-  assert.deepEqual(trace.at(-1), ['rpc', 'review_pet_submission', {
+  const publishedAccessory = { kind: 'scarf', color: 'mint', assetKey: 'builtin:scarf' };
+  await gateway.review({ petId: PET_ID, decision: 'approved', reason: null, finalName: '티티', finalTraits: TRAITS, finalStyle: STYLE, publishedAccessory, reviewNote: '대비 확인' });
+  assert.deepEqual(trace.at(-1), ['rpc', 'review_pet_submission_v5', {
     p_actor: 'reviewer',
     p_decision: 'approved',
     p_pet_id: PET_ID,
     p_reason: null,
+    p_final_name: '티티',
+    p_final_traits: TRAITS,
+    p_final_style: STYLE,
+    p_published_accessory: publishedAccessory,
+    p_review_note: '대비 확인',
   }]);
+});
+
+test('review falls back to v4 only while the v5 RPC is missing from PostgREST', async () => {
+  const trace = [];
+  const client = {
+    async rpc(name, args) {
+      trace.push([name, args]);
+      if (name === 'review_pet_submission_v5') {
+        return {
+          data: null,
+          error: {
+            code: 'PGRST202',
+            message: 'Could not find the function public.review_pet_submission_v5 in the schema cache',
+          },
+        };
+      }
+      return { data: 'approved', error: null };
+    },
+  };
+  const gateway = createSupabaseReviewGateway({
+    actor: 'reviewer',
+    client,
+    supabaseUrl: 'https://example.supabase.co',
+  });
+  const input = {
+    petId: PET_ID,
+    decision: 'approved',
+    reason: null,
+    finalName: '티티',
+    finalTraits: TRAITS,
+    finalStyle: STYLE,
+    publishedAccessory: null,
+    reviewNote: null,
+  };
+
+  assert.equal(await gateway.review(input), 'approved');
+  assert.deepEqual(trace.map(([name]) => name), [
+    'review_pet_submission_v5',
+    'review_pet_submission_v4',
+  ]);
+  assert.deepEqual(trace[0][1], trace[1][1]);
+});
+
+test('review never retries a v5 domain conflict through the legacy RPC', async () => {
+  const calls = [];
+  const client = {
+    async rpc(name) {
+      calls.push(name);
+      return {
+        data: null,
+        error: {
+          code: 'P0001',
+          message: 'OWNER_ACCESSORY_IMMUTABLE',
+        },
+      };
+    },
+  };
+  const gateway = createSupabaseReviewGateway({
+    actor: 'reviewer',
+    client,
+    supabaseUrl: 'https://example.supabase.co',
+  });
+
+  await assert.rejects(
+    () => gateway.review({
+      petId: PET_ID,
+      decision: 'approved',
+      reason: null,
+      finalName: '티티',
+      finalTraits: TRAITS,
+      finalStyle: STYLE,
+      publishedAccessory: { kind: 'scarf', color: 'mint', assetKey: 'builtin:scarf' },
+      reviewNote: null,
+    }),
+    (error) => error?.name === 'PublicHttpError' && error?.code === 'OWNER_ACCESSORY_IMMUTABLE',
+  );
+  assert.deepEqual(calls, ['review_pet_submission_v5']);
 });
 
 test('one signing failure does not hide the rest of the review queue photos', async () => {
@@ -258,7 +373,7 @@ test('configuration has a fixed loopback host and requires server-only credentia
   }), /must use HTTPS/);
 });
 
-test('input validator requires a rejection reason and forbids approval notes', () => {
+test('input validator requires a rejection reason, forbids approval reasons, and accepts a bounded review note', () => {
   assert.throws(
     () => validateReviewInput({ petId: PET_ID, decision: 'rejected', reason: '  ' }),
     /REJECTION_REASON_REQUIRED/,
@@ -267,6 +382,48 @@ test('input validator requires a rejection reason and forbids approval notes', (
     () => validateReviewInput({ petId: PET_ID, decision: 'approved', reason: 'unexpected' }),
     /APPROVAL_REASON_NOT_ALLOWED/,
   );
+  assert.deepEqual(validateReviewInput({
+    petId: PET_ID,
+    decision: 'approved',
+    finalName: ' 티티 ',
+    finalTraits: TRAITS,
+    finalStyle: STYLE,
+    publishedAccessory: { kind: 'ball', color: 'yellow', assetKey: 'builtin:ball' },
+    reviewNote: '작은 화면 대비 확인',
+  }), {
+    petId: PET_ID,
+    decision: 'approved',
+    reason: null,
+    finalName: '티티',
+    finalTraits: TRAITS,
+    finalStyle: STYLE,
+    publishedAccessory: { kind: 'ball', color: 'yellow', assetKey: 'builtin:ball' },
+    reviewNote: '작은 화면 대비 확인',
+  });
+  assert.throws(
+    () => validateReviewInput({ petId: PET_ID, decision: 'approved', finalName: '이름이너무길어요', finalTraits: TRAITS, finalStyle: STYLE }),
+    /INVALID_FINAL_PET_NAME/,
+  );
+});
+
+test('publication validator requires an audit note and a valid design for revisions', () => {
+  assert.throws(() => validatePublicationInput({ petId: PET_ID, action: 'pause', reviewNote: ' ' }), /REVIEW_NOTE_REQUIRED/);
+  assert.deepEqual(validatePublicationInput({ petId: PET_ID, action: 'pause', reviewNote: '원본 재확인' }), {
+    petId: PET_ID,
+    action: 'pause',
+    finalTraits: null,
+    finalStyle: null,
+    publishedAccessory: null,
+    reviewNote: '원본 재확인',
+  });
+  assert.deepEqual(validatePublicationInput({ petId: PET_ID, action: 'revise', finalTraits: TRAITS, finalStyle: STYLE, publishedAccessory: null, reviewNote: '복슬한 털로 보정' }), {
+    petId: PET_ID,
+    action: 'revise',
+    finalTraits: TRAITS,
+    finalStyle: STYLE,
+    publishedAccessory: null,
+    reviewNote: '복슬한 털로 보정',
+  });
 });
 
 async function startFixture({ gateway, fetchFn = fetch, bodyLimitBytes } = {}) {

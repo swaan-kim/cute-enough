@@ -1,6 +1,6 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { COAT_COLOR_HEX, DogAvatar, EAR_VISUAL_SPECS, getEarVisualSpec } from './DogAvatar';
+import { COAT_COLOR_HEX, DogAvatar, EAR_VISUAL_SPECS, getEarVisualSpec, getSolidCoatShade } from './DogAvatar';
 import type { PetTraitsV1 } from '../types';
 
 const traits: PetTraitsV1 = {
@@ -15,6 +15,28 @@ const traits: PetTraitsV1 = {
 };
 
 describe('DogAvatar expressions', () => {
+  it('renders three distinct head outlines at the shared avatar boundary', () => {
+    const neat = render(<DogAvatar traits={traits} style={{ schemaVersion: 1, coatMode: 'point', furStyle: 'neat' }} />);
+    const neatPath = neat.container.querySelector('[data-head-outline]')?.getAttribute('d');
+    neat.unmount();
+    const fluffy = render(<DogAvatar traits={traits} style={{ schemaVersion: 1, coatMode: 'point', furStyle: 'fluffy' }} />);
+    const fluffyPath = fluffy.container.querySelector('[data-head-outline]')?.getAttribute('d');
+    fluffy.unmount();
+    const cloud = render(<DogAvatar traits={traits} style={{ schemaVersion: 1, coatMode: 'point', furStyle: 'cloud' }} />);
+    const cloudPath = cloud.container.querySelector('[data-head-outline]')?.getAttribute('d');
+    expect(new Set([neatPath, fluffyPath, cloudPath]).size).toBe(3);
+    expect(fluffyPath).toContain('C56 130 74 134 90 134 C106 134 124 130 136 120');
+    expect(cloud.container.querySelector('[data-head-fill]')).toHaveAttribute('data-fur-style', 'cloud');
+  });
+
+  it('uses only a subtle derived shade for a true single-color dog', () => {
+    const solidTraits = { ...traits, baseColor: 'white', secondaryColor: 'white', markingPattern: 'none' } as const;
+    const { container } = render(<DogAvatar traits={solidTraits} style={{ schemaVersion: 1, coatMode: 'solid', furStyle: 'fluffy' }} />);
+    expect(container.querySelector('[data-head-fill]')).toHaveAttribute('fill', COAT_COLOR_HEX.white);
+    expect(container.querySelector('[data-head-fill]')).toHaveAttribute('data-coat-mode', 'solid');
+    expect(container.querySelector('[data-ear-shape="floppy"]')).toHaveAttribute('fill', getSolidCoatShade('white'));
+    expect(container.querySelector('[data-head-markings]')?.children).toHaveLength(0);
+  });
   it('renders the safe default expression for existing data', () => {
     const { container } = render(<DogAvatar traits={traits} panting />);
     expect(container.querySelector('[data-brow-style]')).not.toBeInTheDocument();
@@ -35,6 +57,27 @@ describe('DogAvatar expressions', () => {
 
     const ordinary = render(<DogAvatar traits={traits} />);
     expect(ordinary.container.querySelector('[data-pet-signature]')).not.toBeInTheDocument();
+  });
+
+  it('renders the early-friend milk carton as Wooyoo\'s exclusive signature', () => {
+    const { container } = render(<DogAvatar traits={traits} signature="milk-carton" />);
+    expect(container.querySelector('[data-pet-signature="milk-carton"]')).toBeInTheDocument();
+  });
+
+  it('uses a rounded birthday bib for Baechu\'s exclusive signature', () => {
+    const baechuTraits = { ...traits, baseColor: 'white', secondaryColor: 'white', markingPattern: 'none' } as const;
+    const { container } = render(<DogAvatar traits={baechuTraits} style={{ schemaVersion: 1, coatMode: 'solid', furStyle: 'cloud' }} signature="birthday-star" />);
+    expect(container.querySelector('[data-birthday-part="bib"]')).toHaveAttribute(
+      'd',
+      expect.stringContaining('C121 124 117 138 105 144'),
+    );
+    expect(container.querySelector('[data-ear-shape="floppy"]')).toHaveAttribute('fill', '#FFF9EE');
+  });
+
+  it('renders Titi\'s brighter backpack with a separate flap and pocket', () => {
+    const { container } = render(<DogAvatar traits={traits} signature="gray-backpack" />);
+    expect(container.querySelector('[data-backpack-part="body"]')).toHaveAttribute('fill', '#B4BEC6');
+    expect(container.querySelectorAll('[data-pet-signature="gray-backpack"] path')).toHaveLength(6);
   });
 
   it('uses the Haneul and Gureumi reference specs for ordinary upright and floppy ears', () => {
@@ -122,5 +165,15 @@ describe('DogAvatar expressions', () => {
     expect(container.querySelector('[data-head-fill]')).toHaveAttribute('fill', COAT_COLOR_HEX.white);
     expect(container.querySelector('[data-marking-pattern="blaze"]')).toHaveAttribute('fill', COAT_COLOR_HEX.caramel);
     expect(container.querySelector('[data-ear-shape="floppy"]')).toHaveAttribute('fill', COAT_COLOR_HEX.caramel);
+  });
+
+  it.each([
+    ['ribbon', 'pink'],
+    ['scarf', 'sky'],
+    ['vest', 'yellow'],
+    ['ball', 'mint'],
+  ] as const)('renders the %s accessory with its reviewed color at every avatar size', (kind, color) => {
+    const { container } = render(<DogAvatar traits={traits} size={64} accessory={{ kind, color, assetKey: `builtin:${kind}` }} />);
+    expect(container.querySelector(`[data-pet-accessory="${kind}"]`)).toHaveAttribute('data-accessory-color', color);
   });
 });

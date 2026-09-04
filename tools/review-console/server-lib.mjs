@@ -6,7 +6,18 @@ export const DEFAULT_BODY_LIMIT_BYTES = 16 * 1024;
 export const DEFAULT_PHOTO_LIMIT_BYTES = 8 * 1024 * 1024;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
-const SAFE_RPC_CONFLICTS = new Set(['PET_NOT_PENDING', 'PET_PHOTO_MISSING']);
+const PET_NAME_PATTERN = /^[가-힣A-Za-z0-9]{1,4}$/u;
+const SAFE_RPC_CONFLICTS = new Set([
+  'PET_NOT_PENDING',
+  'PET_PHOTO_MISSING',
+  'OWNER_ACCESSORY_IMMUTABLE',
+  'ACCESSORY_REVIEW_REQUIRED',
+  'INVALID_PET_DESIGN',
+  'SIMILARITY_REVIEW_NOTE_REQUIRED',
+  'INVALID_FINAL_PET_NAME',
+]);
+const ACCESSORY_KINDS = new Set(['ribbon', 'scarf', 'vest', 'ball']);
+const ACCESSORY_COLORS = new Set(['pink', 'sky', 'yellow', 'mint']);
 const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const FALLBACK_TRAITS = Object.freeze({
   schemaVersion: 1,
@@ -70,7 +81,7 @@ export function createSupabaseReviewGateway({ client, supabaseUrl, actor }) {
     async listPending() {
       const { data, error } = await client
         .from('pending_pet_review_queue')
-        .select('pet_id,name,traits,created_at,storage_paths,photo_present')
+        .select('pet_id,name,submitted_traits,submitted_style,traits,published_style,created_at,storage_paths,photo_present,accessory_selection_mode,accessory_required,requested_accessory,published_accessory,design_version,similar_pets')
         .order('created_at', { ascending: false });
 
       if (error) throw new UpstreamError('QUEUE_QUERY_FAILED', error);
@@ -99,20 +110,48 @@ export function createSupabaseReviewGateway({ client, supabaseUrl, actor }) {
           petId: row.pet_id,
           name: typeof row.name === 'string' && row.name.trim() ? row.name.trim() : '이름 없음',
           traits: isPlainRecord(row.traits) ? row.traits : FALLBACK_TRAITS,
+          submittedTraits: isPlainRecord(row.submitted_traits) ? row.submitted_traits : (isPlainRecord(row.traits) ? row.traits : FALLBACK_TRAITS),
+          submittedStyle: isValidStyle(row.submitted_style, row.submitted_traits ?? row.traits)
+            ? row.submitted_style
+            : inferStyle(row.submitted_traits ?? row.traits),
+          publishedStyle: isValidStyle(row.published_style, row.traits)
+            ? row.published_style
+            : inferStyle(row.traits),
           createdAt: row.created_at,
           photoPresent: row.photo_present === true && signedPhotoUrls.length > 0,
           signedPhotoUrls,
+          accessorySelectionMode: row.accessory_selection_mode === 'owner' ? 'owner' : 'reviewer',
+          accessoryRequired: row.accessory_required === true,
+          requestedAccessory: isValidAccessory(row.requested_accessory) ? row.requested_accessory : null,
+          publishedAccessory: isValidAccessory(row.published_accessory) ? row.published_accessory : null,
+          designVersion: Number.isInteger(row.design_version) ? row.design_version : 1,
+          similarPets: Array.isArray(row.similar_pets)
+            ? row.similar_pets.filter(isReviewPetSummary).slice(0, 3)
+            : [],
         };
       }));
     },
 
-    async review({ petId, decision, reason }) {
-      const { data, error } = await client.rpc('review_pet_submission', {
+    async review({ petId, decision, reason, finalName, finalTraits, finalStyle, publishedAccessory, reviewNote }) {
+      const reviewArguments = {
         p_pet_id: petId,
         p_decision: decision,
         p_actor: actor,
         p_reason: reason,
-      });
+        p_final_name: finalName,
+        p_final_traits: finalTraits,
+        p_final_style: finalStyle,
+        p_published_accessory: publishedAccessory,
+        p_review_note: reviewNote,
+      };
+      let { data, error } = await client.rpc('review_pet_submission_v5', reviewArguments);
+
+      // The only compatibility fallback is the short deployment window where
+      // PostgREST has not discovered v5 yet. Domain conflicts and every other
+      // upstream error must stay on v5 and must never be retried through v4.
+      if (error && isMissingReviewV5Rpc(error)) {
+        ({ data, error } = await client.rpc('review_pet_submission_v4', reviewArguments));
+      }
 
       if (error) {
         const safeConflict = findSafeRpcConflict(error);
@@ -121,6 +160,46 @@ export function createSupabaseReviewGateway({ client, supabaseUrl, actor }) {
       }
 
       return typeof data === 'string' ? data : decision;
+    },
+
+    async listCatalog(search = '') {
+      let query = client.from('pet_review_catalog')
+        .select('pet_id,name,status,traits,published_style,published_accessory,design_version,reviewed_at,review_note')
+        .order('reviewed_at', { ascending: false })
+        .limit(30);
+      const normalized = typeof search === 'string' ? search.trim() : '';
+      if (normalized) {
+        query = UUID_PATTERN.test(normalized)
+          ? query.eq('pet_id', normalized.toLowerCase())
+          : query.ilike('name', `%${normalized.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`);
+      }
+      const { data, error } = await query;
+      if (error) throw new UpstreamError('CATALOG_QUERY_FAILED', error);
+      return (Array.isArray(data) ? data : []).map((row) => ({
+        petId: row.pet_id,
+        name: typeof row.name === 'string' ? row.name : null,
+        status: row.status === 'paused' ? 'paused' : 'approved',
+        traits: isValidTraits(row.traits) ? row.traits : FALLBACK_TRAITS,
+        publishedStyle: isValidStyle(row.published_style, row.traits) ? row.published_style : inferStyle(row.traits),
+        publishedAccessory: isValidAccessory(row.published_accessory) ? row.published_accessory : null,
+        designVersion: Number.isInteger(row.design_version) ? row.design_version : 1,
+        reviewedAt: typeof row.reviewed_at === 'string' ? row.reviewed_at : null,
+        reviewNote: typeof row.review_note === 'string' ? row.review_note : null,
+      }));
+    },
+
+    async manage({ petId, action, finalTraits, finalStyle, publishedAccessory, reviewNote }) {
+      const { data, error } = await client.rpc('manage_pet_publication_v3', {
+        p_pet_id: petId,
+        p_action: action,
+        p_actor: actor,
+        p_final_traits: finalTraits,
+        p_final_style: finalStyle,
+        p_published_accessory: publishedAccessory,
+        p_review_note: reviewNote,
+      });
+      if (error) throw new UpstreamError('PUBLICATION_RPC_FAILED', error);
+      return data === 'paused' ? 'paused' : 'approved';
     },
   });
 }
@@ -199,13 +278,15 @@ export function createReviewApiHandler({
     const url = new URL(request.url ?? '/', allowedOrigin);
     const isQueueRoute = url.pathname === '/api/review-queue';
     const isReviewRoute = url.pathname === '/api/review';
+    const isCatalogRoute = url.pathname === '/api/review-catalog';
+    const isPublicationRoute = url.pathname === '/api/review-publication';
     const photoToken = parsePhotoToken(url.pathname);
 
-    if (!isQueueRoute && !isReviewRoute && !photoToken) return false;
+    if (!isQueueRoute && !isReviewRoute && !isCatalogRoute && !isPublicationRoute && !photoToken) return false;
 
     const requestId = randomUUID();
     try {
-      enforceSameOrigin(request, allowedOrigin, allowedHost, isReviewRoute);
+      enforceSameOrigin(request, allowedOrigin, allowedHost, isReviewRoute || isPublicationRoute);
 
       if (isQueueRoute) {
         if (request.method !== 'GET') throw new PublicHttpError(405, 'METHOD_NOT_ALLOWED');
@@ -214,12 +295,21 @@ export function createReviewApiHandler({
           petId: row.petId,
           name: row.name,
           traits: row.traits,
+          submittedTraits: row.submittedTraits,
+          submittedStyle: row.submittedStyle,
+          publishedStyle: row.publishedStyle,
           createdAt: row.createdAt,
           photoPresent: row.photoPresent,
           photoUrls: row.signedPhotoUrls.map((signedUrl) => {
             const token = tokenStore.issue(signedUrl, SIGNED_PHOTO_TTL_SECONDS);
             return `/api/review-photo/${token}`;
           }),
+          accessorySelectionMode: row.accessorySelectionMode,
+          accessoryRequired: row.accessoryRequired,
+          requestedAccessory: row.requestedAccessory,
+          publishedAccessory: row.publishedAccessory,
+          designVersion: row.designVersion,
+          similarPets: row.similarPets,
         }));
         writeJson(response, 200, { items });
         return true;
@@ -231,6 +321,23 @@ export function createReviewApiHandler({
         const body = await readJsonBody(request, bodyLimitBytes);
         const input = validateReviewInput(body);
         const status = await gateway.review(input);
+        writeJson(response, 200, { petId: input.petId, status });
+        return true;
+      }
+
+      if (isCatalogRoute) {
+        if (request.method !== 'GET') throw new PublicHttpError(405, 'METHOD_NOT_ALLOWED');
+        const search = (url.searchParams.get('q') ?? '').trim();
+        if (search.length > 50) throw new PublicHttpError(400, 'INVALID_CATALOG_QUERY');
+        writeJson(response, 200, { items: await gateway.listCatalog(search) });
+        return true;
+      }
+
+      if (isPublicationRoute) {
+        if (request.method !== 'POST') throw new PublicHttpError(405, 'METHOD_NOT_ALLOWED');
+        enforceJsonContentType(request);
+        const input = validatePublicationInput(await readJsonBody(request, bodyLimitBytes));
+        const status = await gateway.manage(input);
         writeJson(response, 200, { petId: input.petId, status });
         return true;
       }
@@ -260,9 +367,34 @@ export function createReviewApiHandler({
   };
 }
 
+export function validatePublicationInput(value) {
+  if (!isPlainRecord(value)) throw new PublicHttpError(400, 'INVALID_PUBLICATION_REQUEST');
+  const allowedKeys = new Set(['petId','action','finalTraits','finalStyle','publishedAccessory','reviewNote']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) throw new PublicHttpError(400, 'INVALID_PUBLICATION_REQUEST');
+  const petId = typeof value.petId === 'string' ? value.petId.trim().toLowerCase() : '';
+  if (!UUID_PATTERN.test(petId)) throw new PublicHttpError(400, 'INVALID_PET_ID');
+  if (!['revise','pause','republish'].includes(value.action)) throw new PublicHttpError(400, 'INVALID_PUBLICATION_ACTION');
+  const reviewNote = typeof value.reviewNote === 'string' ? value.reviewNote.trim() : '';
+  if (!reviewNote || reviewNote.length > 500) throw new PublicHttpError(400, 'REVIEW_NOTE_REQUIRED');
+  const needsDesign = value.action !== 'pause';
+  if (needsDesign && (!isValidTraits(value.finalTraits) || !isValidStyle(value.finalStyle, value.finalTraits))) {
+    throw new PublicHttpError(400, 'INVALID_PET_DESIGN');
+  }
+  const accessory = value.publishedAccessory == null ? null : value.publishedAccessory;
+  if (accessory && !isValidAccessory(accessory)) throw new PublicHttpError(400, 'INVALID_PET_ACCESSORY');
+  return {
+    petId,
+    action: value.action,
+    finalTraits: needsDesign ? value.finalTraits : null,
+    finalStyle: needsDesign ? value.finalStyle : null,
+    publishedAccessory: needsDesign ? accessory : null,
+    reviewNote,
+  };
+}
+
 export function validateReviewInput(value) {
   if (!isPlainRecord(value)) throw new PublicHttpError(400, 'INVALID_REVIEW_REQUEST');
-  const allowedKeys = new Set(['petId', 'decision', 'reason']);
+  const allowedKeys = new Set(['petId', 'decision', 'reason', 'finalName', 'finalTraits', 'finalStyle', 'publishedAccessory', 'reviewNote']);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
     throw new PublicHttpError(400, 'INVALID_REVIEW_REQUEST');
   }
@@ -286,11 +418,80 @@ export function validateReviewInput(value) {
     throw new PublicHttpError(400, 'APPROVAL_REASON_NOT_ALLOWED');
   }
 
+  const rawReviewNote = value.reviewNote;
+  if (rawReviewNote !== undefined && rawReviewNote !== null && typeof rawReviewNote !== 'string') {
+    throw new PublicHttpError(400, 'INVALID_REVIEW_NOTE');
+  }
+  const reviewNote = typeof rawReviewNote === 'string' ? rawReviewNote.trim() : '';
+  if (reviewNote.length > 500) throw new PublicHttpError(400, 'INVALID_REVIEW_NOTE');
+
+  let publishedAccessory = null;
+  if (value.publishedAccessory !== undefined && value.publishedAccessory !== null) {
+    if (!isValidAccessory(value.publishedAccessory)) {
+      throw new PublicHttpError(400, 'INVALID_PET_ACCESSORY');
+    }
+    publishedAccessory = value.publishedAccessory;
+  }
+
+  let finalTraits = null;
+  let finalStyle = null;
+  let finalName = null;
+  if (value.decision === 'approved') {
+    finalName = typeof value.finalName === 'string' ? value.finalName.normalize('NFKC').trim() : '';
+    if (!PET_NAME_PATTERN.test(finalName)) throw new PublicHttpError(400, 'INVALID_FINAL_PET_NAME');
+    if (!isValidTraits(value.finalTraits)) throw new PublicHttpError(400, 'INVALID_PET_TRAITS');
+    if (!isValidStyle(value.finalStyle, value.finalTraits)) throw new PublicHttpError(400, 'INVALID_PET_STYLE');
+    finalTraits = value.finalTraits;
+    finalStyle = value.finalStyle;
+  }
+
   return {
     petId,
     decision: value.decision,
     reason: value.decision === 'rejected' ? trimmedReason : null,
+    finalName,
+    finalTraits,
+    finalStyle,
+    publishedAccessory: value.decision === 'approved' ? publishedAccessory : null,
+    reviewNote: reviewNote || null,
   };
+}
+
+function inferStyle(traits) {
+  const source = isPlainRecord(traits) ? traits : FALLBACK_TRAITS;
+  return {
+    schemaVersion: 1,
+    coatMode: source.baseColor === source.secondaryColor && source.markingPattern === 'none' ? 'solid' : 'point',
+    furStyle: 'neat',
+  };
+}
+
+function isValidTraits(value) {
+  if (!isPlainRecord(value)) return false;
+  const allowedKeys = new Set(['schemaVersion','earShape','headShape','baseColor','secondaryColor','markingPattern','muzzle','confidence']);
+  return !Object.keys(value).some((key) => !allowedKeys.has(key)) && value.schemaVersion === 1
+    && ['floppy','upright','semi','rounded'].includes(value.earShape)
+    && ['round','oval','long'].includes(value.headShape)
+    && ['cream','caramel','chocolate','black','gray','white'].includes(value.baseColor)
+    && ['cream','caramel','chocolate','black','gray','white'].includes(value.secondaryColor)
+    && ['none','brow','mask','blaze','spots'].includes(value.markingPattern)
+    && ['short','medium','long'].includes(value.muzzle)
+    && typeof value.confidence === 'number' && value.confidence >= 0 && value.confidence <= 1;
+}
+
+function isValidStyle(value, traits) {
+  if (!isPlainRecord(value) || !isValidTraits(traits)) return false;
+  if (Object.keys(value).some((key) => !['schemaVersion','coatMode','furStyle','expression'].includes(key))) return false;
+  const expression = value.expression;
+  const expressionValid = expression === undefined || (isPlainRecord(expression)
+    && !Object.keys(expression).some((key) => !['browStyle','tongueShape'].includes(key))
+    && ['none','soft','caterpillar','angled'].includes(expression.browStyle)
+    && ['drop','round','wide','side'].includes(expression.tongueShape));
+  if (value.schemaVersion !== 1 || !['solid','point'].includes(value.coatMode)
+    || !['neat','fluffy','cloud'].includes(value.furStyle) || !expressionValid) return false;
+  return value.coatMode === 'solid'
+    ? traits.baseColor === traits.secondaryColor && traits.markingPattern === 'none'
+    : traits.baseColor !== traits.secondaryColor;
 }
 
 function requiredEnv(env, name) {
@@ -352,8 +553,35 @@ function findSafeRpcConflict(error) {
   return null;
 }
 
+function isMissingReviewV5Rpc(error) {
+  if (!isPlainRecord(error)) return false;
+  const code = typeof error.code === 'string' ? error.code.toUpperCase() : '';
+  if (code !== 'PGRST202' && code !== '42883') return false;
+  const source = [error.message, error.details, error.hint]
+    .filter((value) => typeof value === 'string')
+    .join(' ')
+    .toLowerCase();
+  return source.includes('review_pet_submission_v5')
+    && (source.includes('not find') || source.includes('does not exist') || source.includes('schema cache'));
+}
+
 function isPlainRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isValidAccessory(value) {
+  if (!isPlainRecord(value)) return false;
+  if (Object.keys(value).some((key) => !['kind', 'color', 'assetKey'].includes(key))) return false;
+  if (!ACCESSORY_KINDS.has(value.kind) || !ACCESSORY_COLORS.has(value.color)) return false;
+  return value.assetKey === `builtin:${value.kind}`;
+}
+
+function isReviewPetSummary(value) {
+  return isPlainRecord(value)
+    && typeof value.id === 'string'
+    && (typeof value.name === 'string' || value.name === null)
+    && isPlainRecord(value.traits)
+    && (value.publishedAccessory === null || value.publishedAccessory === undefined || isValidAccessory(value.publishedAccessory));
 }
 
 function parsePhotoToken(pathname) {
