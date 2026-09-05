@@ -38,6 +38,7 @@ export function emptyAllowance(now = new Date()): DailyAllowance {
     freeUsed: 0,
     remaining: FREE_ALLOWANCE_CAPACITY,
     rewardedUsed: 0,
+    bonusTickets: 0,
     uploadCredit: false,
     uploadUsed: false,
   };
@@ -102,6 +103,7 @@ export function readAllowance(storage: Pick<Storage, 'getItem'> = localStorage, 
         remaining: storedFreeRemaining(stored),
         nextChargeAt: typeof stored.nextChargeAt === 'string' ? stored.nextChargeAt : undefined,
         rewardedUsed: Math.max(0, Math.min(MAX_REWARDED_PER_DAY, Number(stored.rewardedUsed) || 0)),
+        bonusTickets: bonusRemainingCount(stored),
         uploadCredit: Boolean(stored.uploadCredit),
         uploadUsed: Boolean(stored.uploadUsed),
         uploadRewardPetId: typeof stored.uploadRewardPetId === 'string' ? stored.uploadRewardPetId : undefined,
@@ -119,7 +121,8 @@ export function nextUnlockMethod(
 ): UnlockMethod | null {
   if (allowance.uploadCredit && !allowance.uploadUsed && allowance.uploadRewardPetId === petId) return 'UPLOAD';
   if (regularRemainingCount(allowance, now) > 0) return 'FREE';
-  if (rewardedAdsEnabled && allowance.rewardedUsed < MAX_REWARDED_PER_DAY) return 'REWARDED';
+  if (bonusRemainingCount(allowance) > 0) return 'SHARE';
+  if (rewardedAdsEnabled && (allowance.rewardedRemaining ?? Math.max(0, (allowance.rewardedLimit ?? MAX_REWARDED_PER_DAY) - allowance.rewardedUsed)) > 0) return 'REWARDED';
   return null;
 }
 
@@ -128,6 +131,11 @@ export function consumeAllowance(
   method: UnlockMethod,
   now = new Date(),
 ): DailyAllowance {
+  if (method === 'SHARE') {
+    const bonusTickets = bonusRemainingCount(allowance);
+    if (bonusTickets <= 0) throw new Error('보너스 티켓을 모두 사용했어요.');
+    return { ...allowance, bonusTickets: bonusTickets - 1 };
+  }
   if (method === 'FREE') {
     const current = refreshAllowance(allowance, now);
     const remaining = storedFreeRemaining(current);
@@ -177,7 +185,12 @@ export function hasUploadBonus(allowance: DailyAllowance): boolean {
   return Boolean(allowance.uploadCredit && !allowance.uploadUsed && allowance.uploadRewardPetId);
 }
 
+export function bonusRemainingCount(allowance: Pick<DailyAllowance, 'bonusTickets'>): number {
+  const balance = Number(allowance.bonusTickets);
+  return Number.isSafeInteger(balance) && balance > 0 ? balance : 0;
+}
+
 /** 지금 바로 쓸 수 있는 기본 무료 횟수와 업로드 전용 보너스의 합. 광고 기회는 포함하지 않는다. */
 export function remainingCount(allowance: DailyAllowance, now = new Date()): number {
-  return regularRemainingCount(allowance, now) + (hasUploadBonus(allowance) ? 1 : 0);
+  return regularRemainingCount(allowance, now) + bonusRemainingCount(allowance) + (hasUploadBonus(allowance) ? 1 : 0);
 }

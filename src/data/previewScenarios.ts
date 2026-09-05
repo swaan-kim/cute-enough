@@ -1,9 +1,10 @@
 import type { DailyAllowance, OwnedPetSummary, PetSummary } from '../types';
 import { FREE_RECHARGE_INTERVAL_MS } from '../lib/allowance';
 
-export type PreviewScenario = 'five' | 'owner' | 'complete' | 'ads-off';
+export type PreviewScenario = 'first-user' | 'four' | 'five' | 'owner' | 'complete' | 'ads-off';
 
-const PREVIEW_SCENARIOS = new Set<PreviewScenario>(['five', 'owner', 'complete', 'ads-off']);
+// `five`는 이전에 공유한 미리보기 주소를 깨뜨리지 않기 위한 별칭이다.
+const PREVIEW_SCENARIOS = new Set<PreviewScenario>(['first-user', 'four', 'five', 'owner', 'complete', 'ads-off']);
 
 /**
  * URL 시나리오는 웹 미리보기에서만 읽는다. 운영 런타임은 이 모듈을 호출하지 않으므로
@@ -47,6 +48,14 @@ export const PREVIEW_SCENARIO_PETS: PetSummary[] = [
   },
 ];
 
+/** 첫 방문 화면 검수용: 실제 사진 자산과 이름을 짝지어 `샘플` 표기를 노출하지 않는다. */
+export const PREVIEW_FIRST_USER_PETS: PetSummary[] = [
+  { ...PREVIEW_SCENARIO_PETS[0], name: '하늘' },
+  { ...PREVIEW_SCENARIO_PETS[1], name: '구르미' },
+  { ...PREVIEW_SCENARIO_PETS[2], name: '별이' },
+  { ...PREVIEW_SCENARIO_PETS[3], name: '몽실' },
+];
+
 export const PREVIEW_SCENARIO_OWNER_PET: OwnedPetSummary = {
   id: 'preview-fixture-owner', name: '내 샘플',
   photoUrl: '/sample-pets/gureumi.jpg',
@@ -61,6 +70,7 @@ export const PREVIEW_SCENARIO_OWNER_PET: OwnedPetSummary = {
 };
 
 export function getScenarioPublicPets(scenario: PreviewScenario | undefined): PetSummary[] | undefined {
+  if (scenario === 'first-user') return PREVIEW_FIRST_USER_PETS;
   return scenario ? PREVIEW_SCENARIO_PETS : undefined;
 }
 

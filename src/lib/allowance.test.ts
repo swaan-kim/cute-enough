@@ -15,6 +15,26 @@ import {
 } from './allowance';
 
 describe('three-hour free allowance', () => {
+  it('uses free tickets before bonus tickets and bonus tickets before new ads', () => {
+    const now = new Date('2026-09-05T03:00:00Z');
+    let allowance = { ...emptyAllowance(now), bonusTickets: 3 };
+    expect(nextUnlockMethod(allowance, undefined, true, now)).toBe('FREE');
+    allowance = consumeAllowance(consumeAllowance(allowance, 'FREE', now), 'FREE', now) as typeof allowance;
+    expect(nextUnlockMethod(allowance, undefined, true, now)).toBe('SHARE');
+    const nextChargeAt = allowance.nextChargeAt;
+    const afterBonus = consumeAllowance(allowance, 'SHARE', now);
+    expect(afterBonus).toMatchObject({ remaining: 0, bonusTickets: 2, nextChargeAt, rewardedUsed: 0 });
+    expect(refreshAllowance(afterBonus, new Date('2026-09-06T03:00:00Z'))).toMatchObject({ remaining: 2, bonusTickets: 2 });
+  });
+
+  it('preserves bonus balances across local reloads and refuses overspending', () => {
+    const now = new Date('2026-09-05T03:00:00Z');
+    const value = { ...emptyAllowance(now), bonusTickets: 8 };
+    const storage = { getItem: () => JSON.stringify(value) };
+    expect(readAllowance(storage, now).bonusTickets).toBe(8);
+    expect(() => consumeAllowance(emptyAllowance(now), 'SHARE', now)).toThrow('모두 사용');
+  });
+
   it('starts with two free reveals without counting future ads as charged allowance', () => {
     const value = emptyAllowance(new Date('2026-08-23T00:00:00Z'));
     expect(nextUnlockMethod(value)).toBe('FREE');

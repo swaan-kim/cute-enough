@@ -1,9 +1,11 @@
-import type { OwnedPetSummary, PetSummary } from '../types';
+import type { DailyProgress, OwnedPetSummary, PetSummary } from '../types';
 import { isPetRevisitActive } from './petAccess';
 import { hasPetPhoto } from './petPhoto';
 
-export const HOUSE_PET_LIMIT = 5;
+/** 오늘 집에 고정되는 공개 강아지 수. 내 강아지는 이 제한과 별도다. */
+export const HOUSE_PET_LIMIT = 4;
 export const OWNER_HOUSE_LIMIT = 1;
+export const HOUSE_VISIBLE_PET_LIMIT = HOUSE_PET_LIMIT + OWNER_HOUSE_LIMIT;
 
 /** 재열람 기한이 남은 친구는 집의 제한된 자리에서 새 친구보다 먼저 보존한다. */
 export function prioritizeRevealedPets<
@@ -37,11 +39,11 @@ export function orderDailyPets<T extends Pick<PetSummary, 'id'>>(
   });
 }
 
-/** 최신 내 강아지 한 마리를 먼저 보여주고, 고정된 일일 순서의 공개 친구로 총 다섯 자리를 채운다. */
+/** 공개 친구 네 마리와 최신 내 강아지 한 마리를 중복 없이 합친다. */
 export function composeHousePets(
   ownedPets: OwnedPetSummary[],
   publicPets: PetSummary[],
-  limit = HOUSE_PET_LIMIT,
+  publicLimit = HOUSE_PET_LIMIT,
 ): PetSummary[] {
   const eligibleOwnedPets = ownedPets
     .filter((pet) => hasPetPhoto(pet) && ['pending', 'approved'].includes(pet.approvalStatus))
@@ -63,12 +65,36 @@ export function composeHousePets(
     }));
 
   const result = primaryOwnedPet ? [{ ...primaryOwnedPet, ownerPinned: true }] : [];
-  const occupiedIds = new Set(result.map((pet) => pet.id));
-  const publicSlots = Math.max(0, limit - result.length);
+  const occupiedIds = new Set(ownedPets.map((pet) => pet.id));
   const dailyPublicPets = prioritizeRevealedPets(
-    eligiblePublicPets.filter((pet) => !occupiedIds.has(pet.id)),
+    eligiblePublicPets.filter((pet) => !pet.isMine && !occupiedIds.has(pet.id)),
   )
-    .slice(0, publicSlots);
+    .slice(0, Math.max(0, publicLimit));
 
   return [...result, ...dailyPublicPets];
+}
+
+/** 구버전 서버가 5슬롯 진행도를 보내도 현재 보이는 공개 4마리 기준으로 안전하게 정규화한다. */
+export function normalizeDailyProgress(
+  progress: DailyProgress | undefined,
+  dailyPets: ReadonlyArray<Pick<PetSummary, 'id'>>,
+  fallbackDate: string,
+): DailyProgress {
+  const visibleIds = new Set(dailyPets.slice(0, HOUSE_PET_LIMIT).map(({ id }) => id));
+  const metPetIds = Array.from(new Set(
+    (progress?.metPetIds ?? []).filter((petId) => visibleIds.has(petId)),
+  )).slice(0, HOUSE_PET_LIMIT);
+  // A viewed slot stays complete if moderation replaces its original dog.
+  // Only legacy five-slot responses need their count rebuilt from visible IDs.
+  const metCount = progress?.totalCount === HOUSE_PET_LIMIT && Number.isSafeInteger(progress.metCount)
+    ? Math.min(HOUSE_PET_LIMIT, Math.max(metPetIds.length, progress.metCount, 0))
+    : metPetIds.length;
+
+  return {
+    date: progress?.date || fallbackDate,
+    metPetIds,
+    metCount,
+    totalCount: HOUSE_PET_LIMIT,
+    completed: metCount >= HOUSE_PET_LIMIT,
+  };
 }

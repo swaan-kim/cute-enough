@@ -17,9 +17,10 @@ type RevealCardProps = {
   onShare?: () => void;
   onSave?: () => Promise<void> | void;
   onRetryPhoto?: () => Promise<void> | void;
+  retryPhotoLabel?: string;
 };
 
-export function RevealCard({ pet, photoUrl, loading = false, loadError, milestoneText, onClose, onUpload, onReport, onShare, onSave, onRetryPhoto }: RevealCardProps) {
+export function RevealCard({ pet, photoUrl, loading = false, loadError, milestoneText, onClose, onUpload, onReport, onShare, onSave, onRetryPhoto, retryPhotoLabel = '다시 불러오기' }: RevealCardProps) {
   const cardRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   const heartIdRef = useRef(0);
@@ -133,7 +134,7 @@ export function RevealCard({ pet, photoUrl, loading = false, loadError, mileston
               <span className="photo-error-icon" aria-hidden="true">♡</span>
               <strong>사진을 불러오지 못했어요</strong>
               <p>{loadError ?? '잠시 후 다시 불러와 주세요.'}</p>
-              <Button size="medium" color="dark" variant="weak" disabled={retryingPhoto} loading={retryingPhoto} onClick={() => void handleRetryPhoto()}>다시 불러오기</Button>
+              <Button size="medium" color="dark" variant="weak" disabled={retryingPhoto} loading={retryingPhoto} onClick={() => void handleRetryPhoto()}>{retryPhotoLabel}</Button>
             </div>
           ) : photoUrl ? (
             <button

@@ -10,9 +10,15 @@ export function trackProductEvent(
   logName: string,
   params: Record<string, AnalyticsValue> = {},
 ): void {
-  void Analytics.log({
-    log_type: 'event',
-    log_name: logName,
-    params,
-  }).catch(() => undefined);
+  queueMicrotask(() => {
+    try {
+      void Promise.resolve(Analytics.log({
+        log_type: 'event',
+        log_name: logName,
+        params,
+      })).catch(() => undefined);
+    } catch {
+      // Standalone previews do not expose the Apps in Toss bridge.
+    }
+  });
 }

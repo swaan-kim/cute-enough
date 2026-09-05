@@ -19,12 +19,17 @@ describe('pet API v2 house contract', () => {
     expect(houseBlock).toContain("rpc('get_pet_house_snapshot'");
   });
 
-  it('returns five public slots and the latest owner pet as separate fields', () => {
+  it('returns four public slots and the latest owner pet as an optional fifth field', () => {
+    expect(source).toContain('const DAILY_PUBLIC_PET_LIMIT = 4');
+    expect(source).toContain('const LEGACY_HOUSE_PET_LIMIT = 5');
     expect(houseBlock).toContain('apiVersion: 2');
     expect(houseBlock).toContain('dailyPets');
     expect(houseBlock).toContain('ownerBonusPet');
     expect(houseBlock).toContain('dailyProgress: snapshot.dailyProgress');
     expect(houseBlock).toContain('houseSlot: slot');
+    expect(houseBlock).toContain('dailyPets.length < DAILY_PUBLIC_PET_LIMIT');
+    expect(houseBlock).toContain('expectedCount: DAILY_PUBLIC_PET_LIMIT');
+    expect(houseBlock).toContain('pool.length >= LEGACY_HOUSE_PET_LIMIT');
   });
 
   it('does not let daily completion keep an expired revisit open', () => {
@@ -55,7 +60,7 @@ describe('pet API v2 house contract', () => {
 
   it('rejects rewarded unlocks when a server-authoritative free ticket is available', () => {
     expect(revealBlock).toContain("unlockMethod === 'REWARDED' && freeAllowance.remaining > 0");
-    expect(revealBlock).toContain("code: 'FREE_ALLOWANCE_AVAILABLE'");
-    expect(revealBlock).toContain("recordError.message.includes('FREE_ALLOWANCE_AVAILABLE')");
+    expect(revealBlock).toContain("new ApiError('FREE_ALLOWANCE_AVAILABLE', 409");
+    expect(revealBlock).toContain('throw rewardRpcError(recordError)');
   });
 });

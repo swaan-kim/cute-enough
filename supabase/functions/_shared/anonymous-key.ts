@@ -40,10 +40,15 @@ export async function verifyAnonymousKey(anonymousKey: string): Promise<void> {
     throw new ApiError('IDENTITY_VERIFY_UNAVAILABLE', 503, '사용자 확인 서버를 연결하지 못했어요.');
   }
 
-  const client = denoWithHttpClient.createHttpClient({
-    cert: certChain.replaceAll('\\n', '\n'),
-    key: privateKey.replaceAll('\\n', '\n'),
-  });
+  let client: { close(): void };
+  try {
+    client = denoWithHttpClient.createHttpClient({
+      cert: certChain.replaceAll('\\n', '\n'),
+      key: privateKey.replaceAll('\\n', '\n'),
+    });
+  } catch {
+    throw new ApiError('IDENTITY_VERIFY_UNAVAILABLE', 503, '사용자 확인 서버를 연결하지 못했어요.');
+  }
   try {
     const response = await fetch(VERIFY_URL, {
       method: 'POST',
@@ -53,6 +58,9 @@ export async function verifyAnonymousKey(anonymousKey: string): Promise<void> {
       client,
     } as RequestInit & { client: unknown });
     const payload = await response.json().catch(() => null) as AnonymousKeyVerificationPayload | null;
+    if (response.status === 429 || response.status >= 500) {
+      throw new ApiError('IDENTITY_VERIFY_UNAVAILABLE', 503, '사용자 확인이 잠시 늦어지고 있어요. 잠시 뒤 다시 시도해 주세요.');
+    }
     if (!response.ok || !parseAnonymousKeyVerificationSuccess(payload)) {
       console.warn('anonymous key verification rejected', {
         upstreamStatus: response.status,

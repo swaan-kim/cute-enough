@@ -71,7 +71,7 @@ export interface PetSummary {
   publishedStyle?: PetStyleV1;
   /** 승인 결과가 바뀌었을 때 기존 캐릭터 캐시를 무효화하는 단조 증가 버전이에요. */
   designVersion?: number;
-  /** API v2가 고정한 오늘의 공개견 슬롯(1~5). */
+  /** API v2가 고정한 오늘의 공개견 슬롯(1~4). */
   houseSlot?: number;
 }
 
@@ -98,13 +98,48 @@ export interface DailyAllowance {
   rewardedLimit?: number;
   /** 서버가 계산한 오늘 남은 보상형 광고 횟수. */
   rewardedRemaining?: number;
+  /** 친구 초대로 적립한 보너스. 무료 2개 한도와 자연 충전에서 분리한다. */
+  bonusTickets?: number;
   uploadCredit: boolean;
   uploadUsed: boolean;
   /** 업로드 보상으로만 무료 공개할 수 있는 강아지. */
   uploadRewardPetId?: string;
 }
 
-export type UnlockMethod = 'FREE' | 'REWARDED' | 'UPLOAD';
+export type UnlockMethod = 'FREE' | 'REWARDED' | 'UPLOAD' | 'SHARE';
+
+export interface RewardCapabilities {
+  ads: boolean;
+  share: boolean;
+  notifications?: boolean;
+}
+
+export interface AdRewardCredit {
+  sessionId: string;
+  petId: string;
+  canRebind?: boolean;
+}
+
+export interface RewardStatus {
+  allowance: DailyAllowance;
+  capabilities: RewardCapabilities;
+  adCredits: AdRewardCredit[];
+  serverNow?: string;
+}
+
+export interface RewardSessionResult extends RewardStatus {
+  sessionId: string;
+}
+
+export interface ShareCloseSummary {
+  sentRewardsCount: number;
+  sentRewardAmount?: number;
+  rewardUnit?: string;
+}
+
+export interface ShareRewardResult extends RewardStatus {
+  reconciliationRequired?: boolean;
+}
 
 export interface RevealResult {
   photoUrl: string;
@@ -132,17 +167,21 @@ export interface DailyProgress {
 }
 
 export interface HouseResult {
+  rewardStatus?: RewardStatus;
+  serverNow?: string;
   /** 구버전 화면과 테스트를 위한 평탄화 목록. API v2에서는 dailyPets와 동일하다. */
   pets: PetSummary[];
-  /** KST 날짜 동안 순서와 구성이 고정되는 공개 강아지(최대 5마리). */
+  /** KST 날짜 동안 순서와 구성이 고정되는 공개 강아지(최대 4마리). */
   dailyPets?: PetSummary[];
-  /** 공개 5마리와 진행도·이용권에서 완전히 분리된 내 최신 강아지. */
+  /** 공개 4마리와 진행도·이용권에서 완전히 분리된 내 최신 강아지(최대 다섯 번째). */
   ownerBonusPet?: PetSummary;
   allowance?: DailyAllowance;
   dailyProgress?: DailyProgress;
 }
 
 export interface SharedPetResult {
+  rewardStatus?: RewardStatus;
+  serverNow?: string;
   pet: PetSummary;
   allowance?: DailyAllowance;
 }

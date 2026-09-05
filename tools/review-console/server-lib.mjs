@@ -106,28 +106,46 @@ export function createSupabaseReviewGateway({ client, supabaseUrl, actor }) {
           .filter((result) => result.status === 'fulfilled')
           .map((result) => result.value);
 
+        const submittedTraits = isPlainRecord(row.submitted_traits)
+          ? row.submitted_traits
+          : (isPlainRecord(row.traits) ? row.traits : FALLBACK_TRAITS);
+        const submittedStyle = isValidStyle(row.submitted_style, submittedTraits)
+          ? row.submitted_style
+          : inferStyle(submittedTraits);
+        const accessorySelectionMode = row.accessory_selection_mode === 'owner' ? 'owner' : 'reviewer';
+        const requestedAccessory = isValidAccessory(row.requested_accessory) ? row.requested_accessory : null;
+        const publishedAccessory = isValidAccessory(row.published_accessory) ? row.published_accessory : null;
+        const submittedAccessory = accessorySelectionMode === 'owner' ? requestedAccessory : publishedAccessory;
+        const exactMatches = Array.isArray(row.similar_pets)
+          ? row.similar_pets
+            .filter(isReviewPetSummary)
+            .filter((candidate) => isExactDecorationMatch(
+              submittedTraits,
+              submittedStyle,
+              submittedAccessory,
+              candidate,
+            ))
+            .slice(0, 3)
+          : [];
+
         return {
           petId: row.pet_id,
           name: typeof row.name === 'string' && row.name.trim() ? row.name.trim() : '이름 없음',
           traits: isPlainRecord(row.traits) ? row.traits : FALLBACK_TRAITS,
-          submittedTraits: isPlainRecord(row.submitted_traits) ? row.submitted_traits : (isPlainRecord(row.traits) ? row.traits : FALLBACK_TRAITS),
-          submittedStyle: isValidStyle(row.submitted_style, row.submitted_traits ?? row.traits)
-            ? row.submitted_style
-            : inferStyle(row.submitted_traits ?? row.traits),
+          submittedTraits,
+          submittedStyle,
           publishedStyle: isValidStyle(row.published_style, row.traits)
             ? row.published_style
             : inferStyle(row.traits),
           createdAt: row.created_at,
           photoPresent: row.photo_present === true && signedPhotoUrls.length > 0,
           signedPhotoUrls,
-          accessorySelectionMode: row.accessory_selection_mode === 'owner' ? 'owner' : 'reviewer',
+          accessorySelectionMode,
           accessoryRequired: row.accessory_required === true,
-          requestedAccessory: isValidAccessory(row.requested_accessory) ? row.requested_accessory : null,
-          publishedAccessory: isValidAccessory(row.published_accessory) ? row.published_accessory : null,
+          requestedAccessory,
+          publishedAccessory,
           designVersion: Number.isInteger(row.design_version) ? row.design_version : 1,
-          similarPets: Array.isArray(row.similar_pets)
-            ? row.similar_pets.filter(isReviewPetSummary).slice(0, 3)
-            : [],
+          similarPets: exactMatches,
         };
       }));
     },
@@ -582,6 +600,19 @@ function isReviewPetSummary(value) {
     && (typeof value.name === 'string' || value.name === null)
     && isPlainRecord(value.traits)
     && (value.publishedAccessory === null || value.publishedAccessory === undefined || isValidAccessory(value.publishedAccessory));
+}
+
+function isExactDecorationMatch(traits, style, accessory, candidate) {
+  const otherTraits = candidate.traits;
+  const otherStyle = candidate.publishedStyle;
+  if (!isPlainRecord(traits) || !isPlainRecord(style) || !isPlainRecord(otherTraits) || !isPlainRecord(otherStyle)) {
+    return false;
+  }
+
+  const traitKeys = ['schemaVersion', 'earShape', 'headShape', 'baseColor', 'secondaryColor', 'markingPattern', 'muzzle'];
+  return traitKeys.every((key) => traits[key] === otherTraits[key])
+    && JSON.stringify(style) === JSON.stringify(otherStyle)
+    && JSON.stringify(accessory ?? null) === JSON.stringify(candidate.publishedAccessory ?? null);
 }
 
 function parsePhotoToken(pathname) {

@@ -4,6 +4,9 @@ import { ApiError } from '../_shared/api-error.ts';
 import { corsGuard, json } from '../_shared/cors.ts';
 import { orderDailyPets } from '../_shared/daily-pool.ts';
 import { decodeDataUri, hashUser, kstDate } from '../_shared/security.ts';
+import { rewardAllowance, rewardStatusPayload, rewardRpcRequest, rewardRpcError, type RewardDatabaseState } from '../_shared/reward-api.ts';
+import { getRechargeNotificationSettings, setRechargeNotificationSettings, noteRechargeNotificationVisit } from '../_shared/notification-settings.ts';
+import { collectKeysetPages } from '../_shared/keyset-pagination.ts';
 import {
   canOpenOwnerPhoto,
   canRevealStoredPetPhoto,
@@ -30,9 +33,22 @@ const supabase = createClient(
 
 const DAILY_FREE_PETS = 2;
 const MAX_REWARDED_PER_DAY = 2;
-const HOUSE_PET_LIMIT = 5;
+const DAILY_PUBLIC_PET_LIMIT = 4;
+// apiVersion 1은 이미 설치된 구버전 앱의 종전 최대 5자리 계약을 유지한다.
+const LEGACY_HOUSE_PET_LIMIT = 5;
 
 type FreeAllowance = { remaining: number; nextChargeAt?: string };
+type OwnedPetRow = {
+  id: string;
+  created_at: string;
+  name: string | null;
+  traits: Record<string, unknown>;
+  status: string;
+  rejection_reason: string | null;
+  published_accessory: Record<string, unknown> | null;
+  published_style: Record<string, unknown> | null;
+  design_version: number | null;
+};
 type RevealRow = {
   pet_id: string;
   unlock_method: string;
@@ -153,6 +169,24 @@ function allowancePayload(
   };
 }
 
+async function getRewardState(ownerHash: string): Promise<RewardDatabaseState> {
+  const { data, error } = await supabase.rpc('get_pet_reward_state', { p_owner_hash: ownerHash });
+  if (error || !data) throw error ?? new Error('REWARD_STATE_UNAVAILABLE');
+  return data as RewardDatabaseState;
+}
+
+function rewardFlags() {
+  return {
+    ads: Deno.env.get('AIT_REWARDED_ADS_ENABLED') === 'true',
+    share: Deno.env.get('AIT_SHARE_REWARDS_ENABLED') === 'true',
+  };
+}
+
+async function currentRewardStatus(ownerHash: string, state?: RewardDatabaseState) {
+  const [free, rewards] = await Promise.all([getFreeAllowance(ownerHash), state ?? getRewardState(ownerHash)]);
+  return rewardStatusPayload(rewards, allowancePayloadV2(kstDate(), free, rewards.adsCompletedToday), rewardFlags());
+}
+
 function allowancePayloadV2(
   date: string,
   freeAllowance: FreeAllowance,
@@ -190,11 +224,18 @@ async function selectDailyPhotoPath(petId: string, ownerHash: string, date: stri
 
 async function getExistingPetPhotos(petIds: string[]): Promise<Array<{ pet_id: string; storage_path: string; sort_order: number }>> {
   if (!petIds.length) return [];
-  const { data, error } = await supabase.rpc('get_existing_pet_photos', {
-    p_pet_ids: petIds,
-  });
-  if (error) throw error;
-  return (data ?? []) as Array<{ pet_id: string; storage_path: string; sort_order: number }>;
+  const photos: Array<{ pet_id: string; storage_path: string; sort_order: number }> = [];
+  for (let start = 0; start < petIds.length; start += 100) {
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await supabase.rpc('get_existing_pet_photos', {
+        p_pet_ids: petIds.slice(start, start + 100),
+      }).order('pet_id').order('sort_order').order('storage_path').range(offset, offset + 499);
+      if (error) throw error;
+      photos.push(...(data ?? []));
+      if (!data || data.length < 500) break;
+    }
+  }
+  return photos;
 }
 
 async function createPetPhotoSignedUrl(
@@ -235,6 +276,16 @@ const RATE_LIMITS: Record<PetApiAction, { seconds: number; limit: number }> = {
   submit: { seconds: 60 * 60, limit: 3 },
   submissionStatus: { seconds: 60, limit: 20 },
   report: { seconds: 60 * 60, limit: 10 },
+  rewardStart: { seconds: 60, limit: 10 },
+  rewardComplete: { seconds: 60, limit: 30 },
+  rewardCancel: { seconds: 60, limit: 30 },
+  rewardStatus: { seconds: 60, limit: 60 },
+  rewardRebind: { seconds: 60, limit: 10 },
+  shareStart: { seconds: 60, limit: 10 },
+  shareReward: { seconds: 60, limit: 120 },
+  shareClose: { seconds: 60, limit: 30 },
+  notificationSettings: { seconds: 60, limit: 30 },
+  setNotificationSettings: { seconds: 60, limit: 10 },
 };
 
 function boundedEnvInteger(name: string, fallback: number, maximum: number): number {
@@ -299,7 +350,9 @@ async function findSubmissionResult(ownerHash: string, submissionId: string, dat
 }
 
 Deno.serve(async (request) => {
-  const reply = (data: unknown, status = 200) => json(request, data, status);
+  const reply = (data: unknown, status = 200) => json(request,
+    data && typeof data === 'object' ? { ...data, serverNow: new Date().toISOString() } : data, status);
+  let verifiedOwnerHash: string | undefined;
   const corsResponse = corsGuard(request);
   if (corsResponse) return corsResponse;
   if (request.method !== 'POST') return reply({ error: '지원하지 않는 요청 방식이에요.', code: 'METHOD_NOT_ALLOWED' }, 405);
@@ -312,6 +365,7 @@ Deno.serve(async (request) => {
     const anonymousKey = requireAnonymousKey(body.userHash);
     await verifyAnonymousKey(anonymousKey);
     const ownerHash = await hashUser(anonymousKey);
+    verifiedOwnerHash = ownerHash;
 
     if (action === 'submissionStatus') {
       await enforceRateLimit(ownerHash, action);
@@ -328,7 +382,29 @@ Deno.serve(async (request) => {
 
     await enforceRateLimit(ownerHash, action);
 
+    if (action === 'notificationSettings') return reply(await getRechargeNotificationSettings(supabase, ownerHash));
+    if (action === 'setNotificationSettings') {
+      if (typeof body.enabled !== 'boolean') throw new ApiError('INVALID_NOTIFICATION_SETTINGS', 400, '알림 설정을 확인해 주세요.');
+      return reply(await setRechargeNotificationSettings(supabase, {
+        ownerHash, anonymousKey, enabled: body.enabled, tossAgreementGranted: body.tossAgreementGranted === true,
+      }));
+    }
+    if (['rewardStart', 'rewardComplete', 'rewardCancel', 'rewardStatus', 'rewardRebind', 'shareStart', 'shareReward', 'shareClose'].includes(action)) {
+      if (action === 'rewardStart' && !rewardFlags().ads) throw new ApiError('REWARDED_ADS_DISABLED', 403, '광고 만남은 잠시 준비 중이에요.');
+      if (action === 'shareStart' && !rewardFlags().share) throw new ApiError('SHARE_REWARDS_DISABLED', 403, '친구 초대 보상은 잠시 준비 중이에요.');
+      const rpc = rewardRpcRequest(action, body, ownerHash);
+      const { data, error } = await supabase.rpc(rpc.name, rpc.args);
+      if (error) throw rewardRpcError(error);
+      const status = await currentRewardStatus(ownerHash);
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId : body.requestId;
+      const state = data as RewardDatabaseState | null;
+      return reply({ ...status, ...(typeof sessionId === 'string' ? { sessionId } : {}),
+        reconciliationRequired: state?.rewardPendingReview || state?.shareSession?.reconciliationRequired
+          || state?.shareSessions?.find((row) => row.sessionId === sessionId)?.reconciliationRequired || false });
+    }
+
     if (action === 'house') {
+      await noteRechargeNotificationVisit(supabase, ownerHash);
       const date = kstDate();
       if (apiVersion === 2) {
         const { data: snapshotRow, error: snapshotError } = await supabase.rpc('get_pet_house_snapshot_v2', {
@@ -336,7 +412,7 @@ Deno.serve(async (request) => {
           p_date: date,
         }).single();
         if (snapshotError || !snapshotRow) throw snapshotError ?? new Error('HOUSE_SNAPSHOT_UNAVAILABLE');
-        const snapshot = snapshotRow.snapshot as HouseSnapshotV2;
+        const snapshot = (snapshotRow as { snapshot: HouseSnapshotV2 }).snapshot;
         const activeReveals = new Map(snapshot.activeReveals.map((reveal) => [reveal.petId, reveal]));
         const dailyPets = snapshot.dailyPets.map(({ status: _status, ownerHash: _petOwnerHash, slot, metAt: _metAt, ...pet }) => ({
           ...pet,
@@ -369,19 +445,21 @@ Deno.serve(async (request) => {
         const uploadReward = snapshot.uploadReward
           ? { pet_id: snapshot.uploadReward.petId, used_at: snapshot.uploadReward.usedAt }
           : null;
-        if (dailyPets.length < HOUSE_PET_LIMIT) {
+        if (dailyPets.length < DAILY_PUBLIC_PET_LIMIT) {
           console.warn('daily house has empty public slots', {
             date,
             assignedCount: dailyPets.length,
-            expectedCount: HOUSE_PET_LIMIT,
+            expectedCount: DAILY_PUBLIC_PET_LIMIT,
           });
         }
+        const rewards = await getRewardState(ownerHash);
         return reply({
           apiVersion: 2,
           dailyPets,
           ownerBonusPet,
           dailyProgress: snapshot.dailyProgress,
-          allowance: allowancePayloadV2(date, snapshot.freeAllowance, rewardedUsed, uploadReward),
+          allowance: rewardAllowance(allowancePayloadV2(date, snapshot.freeAllowance, rewardedUsed, uploadReward), rewards),
+          rewardStatus: rewardStatusPayload(rewards, allowancePayloadV2(date, snapshot.freeAllowance, rewardedUsed, uploadReward), rewardFlags()),
         });
       }
 
@@ -390,7 +468,7 @@ Deno.serve(async (request) => {
         p_date: date,
       }).single();
       if (snapshotError || !snapshotRow) throw snapshotError ?? new Error('HOUSE_SNAPSHOT_UNAVAILABLE');
-      const snapshot = snapshotRow.snapshot as HouseSnapshot;
+      const snapshot = (snapshotRow as { snapshot: HouseSnapshot }).snapshot;
       const activeReveals = new Map(snapshot.activeReveals.map((reveal) => [reveal.petId, reveal]));
       const owned = snapshot.ownedPets.map(({ status, ownerHash: _petOwnerHash, ...pet }) => ({
         ...pet,
@@ -452,7 +530,7 @@ Deno.serve(async (request) => {
       const pool: Array<Record<string, unknown>> = [];
       const occupiedIds = new Set<string>();
       const append = (pet: Record<string, unknown> | undefined) => {
-        if (!pet || pool.length >= HOUSE_PET_LIMIT) return;
+        if (!pet || pool.length >= LEGACY_HOUSE_PET_LIMIT) return;
         const petId = String(pet.id);
         if (occupiedIds.has(petId)) return;
         occupiedIds.add(petId);
@@ -484,6 +562,7 @@ Deno.serve(async (request) => {
     }
 
     if (action === 'shared') {
+      await noteRechargeNotificationVisit(supabase, ownerHash);
       const petId = requireUuid(body.petId);
       const { data: pet, error } = await supabase.from('pets')
         .select('id,name,traits,status,owner_hash,published_accessory,published_style,design_version')
@@ -501,12 +580,13 @@ Deno.serve(async (request) => {
         p_date: date,
       }).single();
       if (snapshotError || !snapshotRow) throw snapshotError ?? new Error('HOUSE_SNAPSHOT_UNAVAILABLE');
-      const snapshot = snapshotRow.snapshot as HouseSnapshot;
+      const snapshot = (snapshotRow as { snapshot: HouseSnapshot }).snapshot;
       const activeReveal = snapshot.activeReveals.find((reveal) => reveal.petId === petId);
       const uploadReward = snapshot.uploadReward
         ? { pet_id: snapshot.uploadReward.petId, used_at: snapshot.uploadReward.usedAt }
         : null;
       const isMine = petOwnerHash === ownerHash;
+      const rewards = apiVersion === 2 ? await getRewardState(ownerHash) : undefined;
       return reply({
         pet: {
           ...summary,
@@ -523,32 +603,40 @@ Deno.serve(async (request) => {
           revisitUntil: activeReveal?.revisitUntil,
         },
         allowance: apiVersion === 2
-          ? allowancePayloadV2(
+          ? rewardAllowance(allowancePayloadV2(
               date,
               snapshot.freeAllowance,
               snapshot.todayReveals.filter((item) => item.unlockMethod === 'REWARDED').length,
               uploadReward,
-            )
+            ), rewards!)
           : allowancePayload(
               date,
               snapshot.freeAllowance,
               snapshot.todayReveals.filter((item) => item.unlockMethod === 'REWARDED').length,
               uploadReward,
             ),
+        ...(rewards ? { rewardStatus: rewardStatusPayload(rewards,
+          allowancePayloadV2(date, snapshot.freeAllowance, rewards.adsCompletedToday, uploadReward), rewardFlags()) } : {}),
       });
     }
 
     if (action === 'mine') {
-      const [{ data: pets, error }, activeRows] = await Promise.all([
-        supabase.from('pets')
+      const [pets, activeRows] = await Promise.all([
+        collectKeysetPages<OwnedPetRow>(async (cursor, size) => {
+          let query = supabase.from('pets')
           .select('id,name,traits,status,created_at,rejection_reason,published_accessory,published_style,design_version')
           .eq('owner_hash', ownerHash)
-          .neq('status', 'deleted')
-          .order('created_at', { ascending: false })
-          .limit(50),
+          // Keep the owner's full submission history visible. A soft-deleted
+          // record remains as a status row; only an explicit privacy deletion
+          // removes the underlying record and photo.
+          .order('created_at', { ascending: false }).order('id', { ascending: false }).limit(size);
+          if (cursor) query = query.or(`created_at.lt.${cursor.created_at},and(created_at.eq.${cursor.created_at},id.lt.${cursor.id})`);
+          const { data, error } = await query;
+          if (error) throw error;
+          return (data ?? []) as OwnedPetRow[];
+        }),
         getActiveReveals(ownerHash),
       ]);
-      if (error) throw error;
       const activeReveals = activeRevisitMap(activeRows);
       const existingPhotoPetIds = new Set(
         (await getExistingPetPhotos((pets ?? []).map((pet) => pet.id))).map((photo) => photo.pet_id),
@@ -616,6 +704,29 @@ Deno.serve(async (request) => {
     if (action === 'reveal') {
       const petId = requireUuid(body.petId);
       const date = kstDate();
+      if (apiVersion === 2 && body.requestId !== undefined && body.revisit !== true && body.unlockMethod !== 'UPLOAD') {
+        const requestId = requireUuid(body.requestId, '사진 요청을 다시 확인해 주세요.');
+        if (typeof body.unlockMethod !== 'string' || !['FREE', 'SHARE', 'REWARDED'].includes(body.unlockMethod)) {
+          throw new ApiError('INVALID_UNLOCK_METHOD', 400, '올바르지 않은 이용권 방식이에요.');
+        }
+        const { data, error } = await supabase.rpc('record_pet_reveal_v4', {
+          p_owner_hash: ownerHash, p_reveal_date: date, p_pet_id: petId,
+          p_unlock_method: body.unlockMethod, p_request_id: requestId,
+          p_ad_session_id: body.adSessionId === undefined ? null : requireUuid(body.adSessionId),
+        });
+        if (error) throw rewardRpcError(error);
+        const result = data as AtomicRevealResult & { revealDate?: string; unlockMethod?: string };
+        if (!result?.revisitUntil || !isRevisitActive(result.revisitUntil)) {
+          throw new ApiError('PET_REVISIT_EXPIRED', 403, '다시 만날 수 있는 시간이 지났어요. 이용권으로 다시 만나주세요.');
+        }
+        const photoUrl = await createPetPhotoSignedUrl(petId, ownerHash, result.revealDate ?? date, false);
+        const status = await currentRewardStatus(ownerHash);
+        return reply({
+          apiVersion: 2, ...result, photoUrl,
+          signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+          allowance: status.allowance, rewardStatus: status,
+        });
+      }
       const [{ data: reveals, error: revealError }, activeRows] = await Promise.all([
         supabase.from('daily_reveals')
           .select('unlock_method,pet_id')
@@ -626,7 +737,9 @@ Deno.serve(async (request) => {
       if (revealError) throw revealError;
       const revealRows = reveals ?? [];
       const activeReveal = activeRows[0];
-      const rewardedUsed = revealRows.filter((item) => item.unlock_method === 'REWARDED').length;
+      const rewardState = await getRewardState(ownerHash);
+      const rewardedUsed = Math.max(rewardState.adsCompletedToday,
+        revealRows.filter((item) => item.unlock_method === 'REWARDED').length);
       const { data: uploadReward, error: uploadCheckError } = await supabase.from('upload_rewards')
         .select('pet_id,used_at')
         .eq('owner_hash', ownerHash)
@@ -635,9 +748,9 @@ Deno.serve(async (request) => {
       if (uploadCheckError) throw uploadCheckError;
       const uploadUsed = Boolean(uploadReward?.used_at);
       const freeAllowance = await getFreeAllowance(ownerHash);
-      const currentAllowance = apiVersion === 2
+      const currentAllowance = rewardAllowance(apiVersion === 2
         ? allowancePayloadV2(date, freeAllowance, rewardedUsed, uploadReward)
-        : allowancePayload(date, freeAllowance, rewardedUsed, uploadReward);
+        : allowancePayload(date, freeAllowance, rewardedUsed, uploadReward), rewardState);
 
       if (activeReveal) {
         const photoUrl = await createPetPhotoSignedUrl(petId, ownerHash, activeReveal.reveal_date, true);
@@ -649,7 +762,7 @@ Deno.serve(async (request) => {
           photoUrl,
           signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
           revisitUntil: activeReveal.revisit_until,
-          allowance: currentAllowance,
+          allowance: apiVersion === 2 ? rewardAllowance(currentAllowance, await getRewardState(ownerHash)) : currentAllowance,
           ...(dailyProgress ? { dailyProgress } : {}),
         });
       }
@@ -663,22 +776,15 @@ Deno.serve(async (request) => {
       }
       const unlockMethod = body.unlockMethod as 'FREE' | 'REWARDED' | 'UPLOAD';
       if (unlockMethod === 'REWARDED' && Deno.env.get('AIT_REWARDED_ADS_ENABLED') !== 'true') {
-        return reply({ error: '광고 만남은 아직 준비 중이에요.', code: 'REWARDED_ADS_DISABLED' }, 403);
+        throw new ApiError('REWARDED_ADS_DISABLED', 403, '광고 만남은 아직 준비 중이에요.');
       }
       const adSessionId = unlockMethod === 'REWARDED'
         ? requireUuid(body.adSessionId, '광고 완료 값을 다시 확인해 주세요.')
         : undefined;
-      if (unlockMethod === 'FREE' && freeAllowance.remaining < 1) return reply({
-        error: '이용권은 3시간마다 한 마리씩 충전돼요.',
-        code: 'FREE_ALLOWANCE_EMPTY',
-        nextChargeAt: freeAllowance.nextChargeAt,
-      }, 409);
-      if (unlockMethod === 'REWARDED' && freeAllowance.remaining > 0) return reply({
-        error: '충전된 이용권으로 먼저 만나보세요.',
-        code: 'FREE_ALLOWANCE_AVAILABLE',
-        allowance: currentAllowance,
-      }, 409);
-      if (unlockMethod === 'REWARDED' && rewardedUsed >= MAX_REWARDED_PER_DAY) return reply({ error: '오늘의 귀여움은 여기까지예요\n내일 다시 만나요', code: 'DAILY_LIMIT_REACHED' }, 409);
+      if (unlockMethod === 'FREE' && freeAllowance.remaining < 1) throw new ApiError('FREE_ALLOWANCE_EMPTY', 409, '이용권은 3시간마다 한 마리씩 충전돼요.');
+      if (unlockMethod === 'REWARDED' && freeAllowance.remaining > 0) throw new ApiError('FREE_ALLOWANCE_AVAILABLE', 409, '충전된 이용권으로 먼저 만나보세요.');
+      if (unlockMethod === 'REWARDED' && rewardState.bonusTickets > 0) throw new ApiError('BONUS_ALLOWANCE_AVAILABLE', 409, '보너스 티켓으로 먼저 만나보세요.');
+      if (unlockMethod === 'REWARDED' && rewardedUsed >= MAX_REWARDED_PER_DAY) throw new ApiError('DAILY_LIMIT_REACHED', 409, '오늘의 광고 보상을 모두 받았어요. 이용권 충전을 기다려 주세요.');
       if (unlockMethod === 'UPLOAD') {
         if (uploadUsed) return reply({ error: '사진 등록으로 받은 만남을 이미 사용했어요.', code: 'UPLOAD_REWARD_USED' }, 409);
         if (!uploadReward || uploadReward.pet_id !== petId) return reply({ error: '등록한 강아지에게만 쓸 수 있는 만남이에요.', code: 'UPLOAD_REWARD_MISMATCH' }, 403);
@@ -728,23 +834,7 @@ Deno.serve(async (request) => {
             });
           }
         }
-        if (recordError.message.includes('FREE_ALLOWANCE_EMPTY')) {
-          const latestFreeAllowance = await getFreeAllowance(ownerHash);
-          return reply({
-            error: '이용권은 3시간마다 한 마리씩 충전돼요.',
-            code: 'FREE_ALLOWANCE_EMPTY',
-            nextChargeAt: latestFreeAllowance.nextChargeAt,
-          }, 409);
-        }
-        if (recordError.message.includes('FREE_ALLOWANCE_AVAILABLE')) {
-          const latestFreeAllowance = await getFreeAllowance(ownerHash);
-          return reply({
-            error: '충전된 이용권으로 먼저 만나보세요.',
-            code: 'FREE_ALLOWANCE_AVAILABLE',
-            allowance: allowancePayloadV2(date, latestFreeAllowance, rewardedUsed, uploadReward),
-          }, 409);
-        }
-        return reply({ error: '이미 사용했거나 만료된 해금이에요.', code: 'UNLOCK_ALREADY_USED' }, 409);
+        throw rewardRpcError(recordError);
       }
       const atomicResult = apiVersion === 2 && recordedResult && typeof recordedResult === 'object'
         ? recordedResult as AtomicRevealResult
@@ -802,11 +892,12 @@ Deno.serve(async (request) => {
       const accessorySubmission = requireAccessorySubmission(body.accessorySelectionMode, body.requestedAccessory);
       const normalizedName = normalizePetName(body.name);
       const id = crypto.randomUUID();
-      const path = `${ownerHash}/${submissionId}.jpg`;
+      // Each attempt owns a different object; a retry cannot replace an already reviewed photo.
+      const path = `${ownerHash}/${submissionId}/${id}.jpg`;
       const { error: uploadError } = await supabase.storage.from('pet-photos').upload(path, bytes, {
         contentType: mime,
         cacheControl: '3600',
-        upsert: true,
+        upsert: false,
       });
       if (uploadError) throw uploadError;
       const { data: registered, error: registerError } = await supabase.rpc('register_pet_submission_v3', {
@@ -826,6 +917,7 @@ Deno.serve(async (request) => {
       if (registerError || !registered) {
         const committed = await findSubmissionResult(ownerHash, submissionId, date);
         if (committed) {
+          if (committed.pet.id !== id) await supabase.storage.from('pet-photos').remove([path]);
           return reply(committed);
         }
         const message = registerError?.message ?? '';
@@ -844,8 +936,15 @@ Deno.serve(async (request) => {
         }
         throw registerError ?? new Error('Pet registration failed');
       }
-      const rewardGranted = Boolean(registered.reward_granted);
-      const registeredPetId = String(registered.pet_id);
+      const registration = registered as { reward_granted: boolean; pet_id: string };
+      const rewardGranted = Boolean(registration.reward_granted);
+      const registeredPetId = registration.pet_id;
+      if (registeredPetId !== id) {
+        await supabase.storage.from('pet-photos').remove([path]);
+        const committed = await findSubmissionResult(ownerHash, submissionId, date);
+        if (!committed) throw new Error('SUBMISSION_RESULT_UNAVAILABLE');
+        return reply(committed);
+      }
       return reply({
         pet: {
           id: registeredPetId,
@@ -876,9 +975,19 @@ Deno.serve(async (request) => {
 
     return reply({ error: '알 수 없는 요청이에요.', code: 'INVALID_ACTION' }, 404);
   } catch (error) {
-    if (error instanceof ApiError) return reply({ error: error.message, code: error.code }, error.status);
+    let recovery: Record<string, unknown> = {};
+    if (verifiedOwnerHash) {
+      try {
+        const state = await currentRewardStatus(verifiedOwnerHash);
+        recovery = { allowance: state.allowance, nextChargeAt: state.allowance.nextChargeAt };
+      } catch { /* Preserve the original failure if allowance lookup is also unavailable. */ }
+    }
+    if (error instanceof ApiError) {
+      return reply({ error: error.message, code: error.code, ...recovery,
+        ...(error.status === 429 || error.status === 503 ? { retryAfter: 5 } : {}) }, error.status);
+    }
     const requestId = crypto.randomUUID();
     console.error('pet-api unhandled error', { requestId, error });
-    return reply({ error: '서버에서 요청을 완료하지 못했어요. 잠시 뒤 다시 시도해 주세요.', code: 'INTERNAL_ERROR', requestId }, 500);
+    return reply({ error: '서버에서 요청을 완료하지 못했어요. 잠시 뒤 다시 시도해 주세요.', code: 'INTERNAL_ERROR', requestId, ...recovery }, 500);
   }
 });

@@ -103,10 +103,9 @@
 }
 
 .house-room .house-slot--daily-a { left: 3%; top: 44%; }
-.house-room .house-slot--daily-b { left: 35%; top: 43%; z-index: 4; }
-.house-room .house-slot--daily-c { left: 2%; bottom: 0; }
-.house-room .house-slot--daily-d { left: 35%; bottom: 0; }
-.house-room .house-slot--daily-e { right: 1%; bottom: 0; }
+.house-room .house-slot--daily-b { right: 3%; top: 44%; z-index: 4; }
+.house-room .house-slot--daily-c { left: 10%; bottom: 0; }
+.house-room .house-slot--daily-d { right: 9%; bottom: 0; }
 .house-room .house-slot--owner { right: 1%; top: 19%; z-index: 5; }
 
 .house-room .house-pet.is-positioned {
@@ -116,8 +115,9 @@
 }
 
 .house-room .house-pet.is-idle-active:not(.is-grabbed):not(.is-arriving) {
-  animation: house-pet-wander 4.8s ease-in-out infinite alternate;
-  animation-delay: calc(var(--idle-index, 0) * -2.4s);
+  will-change: transform;
+  animation: house-pet-roam var(--idle-duration, 12s) ease-in-out infinite;
+  animation-delay: calc(var(--idle-index, 0) * -3.1s);
 }
 
 .house-room .house-pet.is-idle-calm:not(.is-grabbed):not(.is-arriving) {
@@ -194,9 +194,11 @@
 .house-room .house-first-hint strong { font-size: 13px; line-height: 1.35; }
 .house-room .house-first-hint small { margin-top: 2px; color: #6b7684; font-size: 11px; font-weight: 650; }
 
-@keyframes house-pet-wander {
-  from { transform: translate(-3px,2px); }
-  to { transform: translate(5px,-4px); }
+@keyframes house-pet-roam {
+  0%, 100% { transform: translate3d(0,0,0) rotate(0); }
+  22% { transform: translate3d(var(--roam-x1, 18px),var(--roam-y1, -8px),0) rotate(-.7deg); }
+  49% { transform: translate3d(var(--roam-x2, 36px),var(--roam-y2, 6px),0) rotate(.7deg); }
+  74% { transform: translate3d(var(--roam-x3, 10px),var(--roam-y3, 14px),0) rotate(-.45deg); }
 }
 
 @keyframes house-pet-calm {
@@ -256,3 +258,31 @@
     transition: none !important;
   }
 }
+
+.home-share-reward {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: center;
+  margin: 8px 20px 0;
+}
+
+.home-share-reward button, .reward-alternative {
+  min-height: 40px;
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: #fff0f3;
+  color: #ba3e58;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.home-share-reward button:disabled, .reward-alternative:disabled { opacity: .55; }
+.home-share-reward small { color: #6b7684; font-size: 11px; text-align: center; }
+.reward-alternative { display: block; width: 100%; margin-top: 12px; }
+
+.home-recharge-notification { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 8px 16px; }
+.home-recharge-notification button, .home-reward-rebind button { border: 0; background: transparent; color: #4e5968; text-decoration: underline; font-size: 12px; padding: 8px; min-height: 36px; }
+.home-recharge-notification small { color: #6b7684; font-size: 10px; text-align: center; }
+.home-reward-rebind { margin: 8px 20px; font-size: 12px; color: #4e5968; }

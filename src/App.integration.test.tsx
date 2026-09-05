@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { getKstDate } from './lib/allowance';
+import { enqueueRewardRecovery, readActiveRewardSessions, readRewardRecovery, rememberActiveRewardSession } from './lib/rewardRecovery';
 
 const appHarness = vi.hoisted(() => {
   const submittedPet = {
@@ -32,6 +33,7 @@ const appHarness = vi.hoisted(() => {
       uploadRewardPetId: submittedPet.id,
     },
     initialSharedPetId: undefined as string | undefined,
+    adsEnabled: false,
     navigationHandlers: undefined as undefined | { onBack: () => void; onHome: () => void },
   };
 });
@@ -44,7 +46,26 @@ const apiMocks = vi.hoisted(() => ({
   reopenPet: vi.fn(),
   reportPet: vi.fn(),
   revealPet: vi.fn(),
+  fetchRewardStatus: vi.fn(),
+  startAdReward: vi.fn(),
+  completeAdReward: vi.fn(),
+  cancelAdReward: vi.fn(),
+  rebindAdReward: vi.fn(),
+  startShareReward: vi.fn(),
+  recordShareReward: vi.fn(),
+  closeShareReward: vi.fn(),
+  fetchRechargeNotificationSettings: vi.fn(),
+  setRechargeNotificationSettings: vi.fn(),
 }));
+
+const rewardMocks = vi.hoisted(() => ({
+  openShareReward: vi.fn(),
+  supportsShareReward: vi.fn(() => true),
+  showRewardedAd: vi.fn(),
+  requestRechargeNotificationAgreement: vi.fn(),
+}));
+vi.mock('./lib/shareReward', () => ({ openShareReward: rewardMocks.openShareReward, supportsShareReward: rewardMocks.supportsShareReward }));
+vi.mock('./lib/rechargeNotification', () => ({ requestRechargeNotificationAgreement: rewardMocks.requestRechargeNotificationAgreement }));
 
 const hapticMocks = vi.hoisted(() => ({
   playHaptic: vi.fn(() => Promise.resolve()),
@@ -76,15 +97,15 @@ vi.mock('./lib/nativeNavigation', () => ({
 }));
 
 vi.mock('./lib/rewardedAd', () => ({
-  getRewardedAdStatus: vi.fn(() => 'disabled'),
+  getRewardedAdStatus: vi.fn(() => appHarness.adsEnabled ? 'loaded' : 'disabled'),
   preloadRewardedAd: vi.fn(() => Promise.resolve()),
-  showRewardedAd: vi.fn(() => Promise.reject(new Error('not used in this test'))),
+  showRewardedAd: rewardMocks.showRewardedAd,
   subscribeRewardedAdStatus: vi.fn(() => () => undefined),
 }));
 
 vi.mock('./lib/runtime', () => ({
   isPreviewRuntime: false,
-  rewardedAdsEnabled: false,
+  get rewardedAdsEnabled() { return appHarness.adsEnabled; },
 }));
 
 vi.mock('./lib/safeArea', () => ({
@@ -129,7 +150,7 @@ vi.mock('./components/UploadFlow', () => ({
 }));
 
 vi.mock('./components/SharedPetLanding', () => ({
-  SharedPetLanding: () => <main>공유 화면</main>,
+  SharedPetLanding: ({ pet }: { pet: typeof appHarness.submittedPet }) => <main data-testid="shared-screen" data-status={pet.approvalStatus}>공유 화면</main>,
 }));
 
 vi.mock('./components/PetArtwork', () => ({
@@ -153,18 +174,19 @@ vi.mock('./components/PlayScene', () => ({
 }));
 
 vi.mock('./components/RevealCard', () => ({
-  RevealCard: ({ pet, photoUrl, onClose, onRetryPhoto, onReport }: {
+  RevealCard: ({ pet, photoUrl, onClose, onRetryPhoto, onReport, retryPhotoLabel }: {
     pet: typeof appHarness.submittedPet;
     photoUrl: string;
     onClose: () => void;
     onRetryPhoto?: () => Promise<void> | void;
     onReport: () => Promise<void> | void;
+    retryPhotoLabel?: string;
   }) => (
     <div role="dialog" aria-label="강아지 실사 사진">
       <span>{pet.name} 사진</span>
       <span data-testid="revealed-photo-url">{photoUrl}</span>
       <button type="button" onClick={onClose}>사진 닫기</button>
-      {onRetryPhoto && <button type="button" onClick={() => { void Promise.resolve(onRetryPhoto()).catch(() => undefined); }}>사진 다시 불러오기</button>}
+      {onRetryPhoto && <button type="button" onClick={() => { void Promise.resolve(onRetryPhoto()).catch(() => undefined); }}>{retryPhotoLabel ?? '사진 다시 불러오기'}</button>}
       <button type="button" onClick={() => { void Promise.resolve(onReport()).catch(() => undefined); }}>이 사진 신고하기</button>
     </div>
   ),
@@ -194,8 +216,13 @@ describe('App upload submission integration', () => {
     localStorage.clear();
     window.history.replaceState({}, '', '/');
     appHarness.initialSharedPetId = undefined;
+    appHarness.adsEnabled = false;
     appHarness.navigationHandlers = undefined;
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
+    Object.values(rewardMocks).forEach((mock) => mock.mockReset());
+    rewardMocks.supportsShareReward.mockReturnValue(true);
+    apiMocks.fetchRewardStatus.mockRejectedValue(new Error('legacy server'));
+    apiMocks.fetchRechargeNotificationSettings.mockResolvedValue({ enabled: false, available: false });
     hapticMocks.playHaptic.mockClear();
     analyticsMocks.trackProductEvent.mockClear();
     tossMocks.sharePet.mockClear();
@@ -453,6 +480,192 @@ describe('App upload submission integration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '사진 닫기' }));
     expect(await screen.findByRole('button', { name: '보리 만나기' })).toBeInTheDocument();
+  });
+
+  it('retries an uncertain first reveal with the original method and request ID', async () => {
+    const pet = { ...appHarness.submittedPet, id: 'retry-first', isMine: false, ownerPinned: false, approvalStatus: 'approved' as const };
+    const allowance = { date: getKstDate(), freeUsed: 0, remaining: 2, rewardedUsed: 0, uploadCredit: false, uploadUsed: false };
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [pet], allowance });
+    apiMocks.revealPet.mockRejectedValueOnce(new Error('응답을 확인하지 못했어요.')).mockResolvedValueOnce({
+      photoUrl: 'https://example.test/retried.jpg', signedUrlExpiresAt: '2099-09-05T12:00:00Z',
+      allowance: { ...allowance, freeUsed: 1, remaining: 1 }, revisitUntil: '2099-09-05T12:00:00Z',
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '보리 옮기기 또는 선택' }));
+    fireEvent.click(await screen.findByRole('button', { name: '간식 주기' }));
+    await screen.findByText('응답을 확인하지 못했어요.');
+    const original = apiMocks.revealPet.mock.calls[0];
+    expect(original[1]).toBe('FREE');
+    expect(original[3]).toEqual(expect.any(String));
+    fireEvent.click(screen.getByRole('button', { name: '사진 다시 불러오기' }));
+    await waitFor(() => expect(screen.getByTestId('revealed-photo-url')).toHaveTextContent('retried.jpg'));
+    expect(apiMocks.revealPet.mock.calls[1]).toEqual(original);
+    expect(apiMocks.reopenPet).not.toHaveBeenCalled();
+  });
+
+  it('uses a restored earned ad credit before a newly charged free ticket even when new ads are disabled', async () => {
+    const pet = { ...appHarness.submittedPet, id: 'earned-pet', isMine: false, ownerPinned: false, approvalStatus: 'approved' as const };
+    const allowance = { date: getKstDate(), freeUsed: 0, remaining: 2, rewardedUsed: 1, uploadCredit: false, uploadUsed: false };
+    const rewardStatus = { allowance, capabilities: { ads: false, share: false }, adCredits: [{ sessionId: 'earned-session', petId: pet.id }] };
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [pet], allowance, rewardStatus });
+    apiMocks.fetchRewardStatus.mockResolvedValue(rewardStatus);
+    apiMocks.revealPet.mockResolvedValue({ photoUrl: 'https://example.test/earned.jpg', signedUrlExpiresAt: '2099-09-05T12:00:00Z', allowance });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '보리 옮기기 또는 선택' }));
+    fireEvent.click(await screen.findByRole('button', { name: '간식 주기' }));
+    await waitFor(() => expect(apiMocks.revealPet).toHaveBeenCalledWith(expect.objectContaining({ id: pet.id }), 'REWARDED', 'earned-session', expect.any(String)));
+    expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+    expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+  });
+
+  it('shows share rewards at full free capacity and replays an uncertain grant with the same event identity', async () => {
+    let allowance = { date: getKstDate(), freeUsed: 0, remaining: 2, rewardedUsed: 0, bonusTickets: 0, uploadCredit: false, uploadUsed: false };
+    const status = () => ({ allowance, capabilities: { ads: false, share: true }, adCredits: [] });
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [], allowance, rewardStatus: status() });
+    apiMocks.fetchRewardStatus.mockImplementation(async () => status());
+    apiMocks.startShareReward.mockImplementation(async () => ({ ...status(), sessionId: 'share-session' }));
+    apiMocks.recordShareReward.mockRejectedValueOnce(new Error('response lost')).mockImplementation(async () => {
+      allowance = { ...allowance, bonusTickets: 1 };
+      return status();
+    });
+    apiMocks.closeShareReward.mockImplementation(async () => status());
+    rewardMocks.openShareReward.mockImplementation(async ({ onReward, onClose }) => {
+      onReward(1, 1, '강아지 티켓');
+      onClose({ sentRewardsCount: 1, sentRewardAmount: 1 });
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '친구에게 공유하고 티켓 받기' }));
+    await waitFor(() => expect(screen.getByText('무료 2/2 · 보너스 1장')).toBeInTheDocument());
+    expect(apiMocks.recordShareReward).toHaveBeenCalledTimes(2);
+    expect(apiMocks.recordShareReward.mock.calls[0]).toEqual(apiMocks.recordShareReward.mock.calls[1]);
+    expect(apiMocks.recordShareReward.mock.calls[0]).toEqual(['share-session', expect.any(String), 1, 1]);
+    expect(apiMocks.closeShareReward).toHaveBeenCalledOnce();
+  });
+
+  it('uses a bonus ticket when free tickets are empty without opening an ad', async () => {
+    const pet = { ...appHarness.submittedPet, id: 'bonus-pet', isMine: false, ownerPinned: false, approvalStatus: 'approved' as const };
+    const allowance = { date: getKstDate(), freeUsed: 2, remaining: 0, nextChargeAt: new Date(Date.now() + 3600000).toISOString(), rewardedUsed: 0, bonusTickets: 1, uploadCredit: false, uploadUsed: false };
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [pet], allowance });
+    apiMocks.revealPet.mockResolvedValue({ photoUrl: 'https://example.test/bonus.jpg', signedUrlExpiresAt: '2099-09-05T12:00:00Z', allowance: { ...allowance, bonusTickets: 0 } });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '보리 옮기기 또는 선택' }));
+    fireEvent.click(await screen.findByRole('button', { name: '간식 주기' }));
+    await waitFor(() => expect(apiMocks.revealPet).toHaveBeenCalledWith(expect.objectContaining({ id: pet.id }), 'SHARE', undefined, expect.any(String)));
+    expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+  });
+
+  it('starts the server ad session before showing and records earned reward while the native ad remains open', async () => {
+    appHarness.adsEnabled = true;
+    const pet = { ...appHarness.submittedPet, id: 'new-ad-pet', isMine: false, ownerPinned: false, approvalStatus: 'approved' as const };
+    const allowance = { date: getKstDate(), freeUsed: 2, remaining: 0, nextChargeAt: new Date(Date.now() + 3600000).toISOString(), rewardedUsed: 0, bonusTickets: 0, uploadCredit: false, uploadUsed: false };
+    let status = { allowance, capabilities: { ads: true, share: false }, adCredits: [] as { sessionId: string; petId: string }[] };
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [pet], allowance, rewardStatus: status });
+    apiMocks.fetchRewardStatus.mockImplementation(async () => status);
+    apiMocks.startAdReward.mockImplementation(async () => ({ ...status, sessionId: 'started-ad' }));
+    apiMocks.completeAdReward.mockImplementation(async () => {
+      status = { ...status, adCredits: [{ sessionId: 'started-ad', petId: pet.id }] };
+      return status;
+    });
+    const dismissed = deferred<void>();
+    rewardMocks.showRewardedAd.mockImplementation((_signal, earned) => { earned(); return dismissed.promise; });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '보리 옮기기 또는 선택' }));
+    fireEvent.click(await screen.findByRole('button', { name: '광고 보고 이 친구 만나기' }));
+    await waitFor(() => expect(apiMocks.completeAdReward).toHaveBeenCalledWith('started-ad'));
+    expect(apiMocks.startAdReward.mock.invocationCallOrder[0]).toBeLessThan(rewardMocks.showRewardedAd.mock.invocationCallOrder[0]);
+    expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+    await act(async () => { dismissed.resolve(); await dismissed.promise; });
+    expect(await screen.findByTestId('play-scene')).toBeInTheDocument();
+    expect(apiMocks.cancelAdReward).not.toHaveBeenCalled();
+  });
+
+  it('enables charging notifications only after an explicit native agreement, and supports switching them off', async () => {
+    const allowance = { date: getKstDate(), freeUsed: 2, remaining: 0, nextChargeAt: new Date(Date.now() + 3600000).toISOString(), rewardedUsed: 0, uploadCredit: false, uploadUsed: false };
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [], allowance });
+    apiMocks.fetchRechargeNotificationSettings.mockResolvedValue({ enabled: false, available: true, templateCode: 'charge-ready' });
+    rewardMocks.requestRechargeNotificationAgreement.mockResolvedValueOnce('denied').mockResolvedValueOnce('granted');
+    apiMocks.setRechargeNotificationSettings.mockImplementation(async (enabled) => ({ enabled, available: true, templateCode: 'charge-ready' }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '충전되면 알려주세요' }));
+    await waitFor(() => expect(rewardMocks.requestRechargeNotificationAgreement).toHaveBeenCalledOnce());
+    expect(apiMocks.setRechargeNotificationSettings).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: '충전되면 알려주세요' }));
+    fireEvent.click(await screen.findByRole('button', { name: '충전 알림 끄기' }));
+    await waitFor(() => expect(apiMocks.setRechargeNotificationSettings.mock.calls).toEqual([[true, true], [false]]));
+  });
+
+  it('keeps notification opt-out available while new notifications are disabled', async () => {
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [] });
+    apiMocks.fetchRechargeNotificationSettings.mockResolvedValue({ enabled: true, available: false });
+    apiMocks.setRechargeNotificationSettings.mockResolvedValue({ enabled: false, available: false });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '충전 알림 끄기' }));
+    await waitFor(() => expect(apiMocks.setRechargeNotificationSettings).toHaveBeenCalledWith(false));
+    expect(rewardMocks.requestRechargeNotificationAgreement).not.toHaveBeenCalled();
+  });
+
+  it('returns home after a revisit expires without silently spending another ticket', async () => {
+    const pet = { ...appHarness.submittedPet, id: 'expired-revisit', isMine: false, approvalStatus: 'approved' as const, revisitUntil: '2099-09-05T12:00:00Z' };
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [pet] });
+    apiMocks.reopenPet.mockRejectedValue(Object.assign(new Error('다시 만날 시간이 지났어요.'), { code: 'PET_REVISIT_EXPIRED' }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '보리 옮기기 또는 선택' }));
+    fireEvent.click(await screen.findByRole('button', { name: '집에서 다시 만나기' }));
+    expect(await screen.findByRole('region', { name: '강아지들이 있는 집' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: '강아지 실사 사진' })).not.toBeInTheDocument();
+    expect(apiMocks.reopenPet).toHaveBeenCalledOnce();
+    expect(apiMocks.revealPet).not.toHaveBeenCalled();
+  });
+
+  it('recovers interrupted native sessions after restart, grants known callbacks before abandoning unknown share totals, and retries online', async () => {
+    const allowance = { date: getKstDate(), freeUsed: 0, remaining: 2, rewardedUsed: 0, bonusTickets: 0, uploadCredit: false, uploadUsed: false };
+    const status = { allowance, capabilities: { ads: false, share: false }, adCredits: [] };
+    rememberActiveRewardSession({ kind: 'share', sessionId: 'interrupted-share' });
+    rememberActiveRewardSession({ kind: 'ad', sessionId: 'interrupted-ad' });
+    enqueueRewardRecovery({ kind: 'shareReward', sessionId: 'interrupted-share', requestId: 'known-earned', eventSequence: 1, rewardAmount: 2 });
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [], allowance });
+    apiMocks.fetchRewardStatus.mockResolvedValue(status);
+    apiMocks.recordShareReward.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(status);
+    apiMocks.closeShareReward.mockResolvedValue(status);
+    apiMocks.cancelAdReward.mockResolvedValue(status);
+    render(<App />);
+    await waitFor(() => expect(apiMocks.cancelAdReward).toHaveBeenCalledWith('interrupted-ad'));
+    expect(apiMocks.closeShareReward).not.toHaveBeenCalled();
+    await act(async () => { window.dispatchEvent(new Event('online')); });
+    await waitFor(() => expect(apiMocks.closeShareReward).toHaveBeenCalledWith('interrupted-share', expect.any(String), null));
+    expect(apiMocks.recordShareReward.mock.calls).toEqual([
+      ['interrupted-share', 'known-earned', 2, 1], ['interrupted-share', 'known-earned', 2, 1],
+    ]);
+    expect(apiMocks.recordShareReward.mock.invocationCallOrder[1]).toBeLessThan(apiMocks.closeShareReward.mock.invocationCallOrder[0]);
+    expect(readActiveRewardSessions()).toEqual([]);
+    expect(readRewardRecovery()).toEqual([]);
+    expect(rewardMocks.openShareReward).not.toHaveBeenCalled();
+    expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+  });
+
+  it('refreshes a visible pending share every 30 seconds and on return, then stops after approval', async () => {
+    const interval = vi.spyOn(window, 'setInterval');
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    appHarness.initialSharedPetId = 'pending-share';
+    const pet = { ...appHarness.submittedPet, id: 'pending-share', isMine: false };
+    apiMocks.fetchSharedPet.mockResolvedValue({ pet });
+    render(<App />);
+    expect(await screen.findByTestId('shared-screen')).toHaveAttribute('data-status', 'pending');
+    const tick = interval.mock.calls.find((call) => call[1] === 30_000)?.[0] as () => void;
+    expect(tick).toEqual(expect.any(Function));
+    hidden.mockReturnValue(true);
+    await act(async () => tick());
+    expect(apiMocks.fetchSharedPet).toHaveBeenCalledOnce();
+    hidden.mockReturnValue(false);
+    await act(async () => tick());
+    expect(apiMocks.fetchSharedPet).toHaveBeenCalledTimes(2);
+    apiMocks.fetchSharedPet.mockResolvedValue({ pet: { ...pet, approvalStatus: 'approved' } });
+    const clear = vi.spyOn(window, 'clearInterval');
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(await screen.findByTestId('shared-screen')).toHaveAttribute('data-status', 'approved');
+    expect(clear).toHaveBeenCalled();
+    expect(apiMocks.openOwnerPhoto).not.toHaveBeenCalled();
+    expect(apiMocks.revealPet).not.toHaveBeenCalled();
   });
 
   it('keeps the photo open when reporting fails and returns home only after success', async () => {

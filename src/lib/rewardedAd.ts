@@ -88,6 +88,7 @@ export class RewardedAdController {
           onEvent: (event) => { if (event.type === 'loaded') finish('loaded'); },
           onError: (error) => finish('error', error),
         });
+        if (settled) { this.loadCleanup?.(); this.loadCleanup = undefined; }
       } catch (error) {
         finish('error', error);
       }
@@ -95,7 +96,7 @@ export class RewardedAdController {
     return this.loadPromise;
   }
 
-  async show(signal?: AbortSignal): Promise<void> {
+  async show(signal?: AbortSignal, onEarnedReward?: () => void): Promise<void> {
     await this.preload();
     if (signal?.aborted) throw new DOMException('광고 요청이 취소됐어요.', 'AbortError');
     this.setStatus('showing');
@@ -103,7 +104,7 @@ export class RewardedAdController {
     return new Promise<void>((resolve, reject) => {
       let rewarded = false;
       let settled = false;
-      const finish = (result: 'dismissed' | 'failed' | 'aborted', error?: unknown) => {
+      const finish = (result: 'dismissed' | 'failed' | 'aborted', error?: unknown, persistenceFailed = false) => {
         if (settled) return;
         settled = true;
         signal?.removeEventListener('abort', abort);
@@ -111,7 +112,9 @@ export class RewardedAdController {
         this.showCleanup = undefined;
         this.cancelActiveShow = undefined;
         this.setStatus('idle');
-        if (result === 'dismissed' && rewarded) resolve();
+        // A late bridge error cannot take back an already earned reward.
+        if (persistenceFailed) reject(friendlyError(error, '보상 기록을 저장하지 못했어요. 앱을 닫지 말고 다시 시도해 주세요.'));
+        else if (rewarded) resolve();
         else if (result === 'aborted') reject(new DOMException('광고 요청이 취소됐어요.', 'AbortError'));
         else if (result === 'dismissed') reject(new Error('광고 시청을 완료해야 이 친구를 만날 수 있어요.'));
         else reject(friendlyError(error, '광고를 보여드리지 못했어요. 잠시 뒤 다시 시도해 주세요.'));
@@ -123,12 +126,17 @@ export class RewardedAdController {
         this.showCleanup = this.bridge.show({
           adGroupId: this.adGroupId,
           onEvent: (event) => {
-            if (event.type === 'userEarnedReward') rewarded = true;
+            if (settled) return;
+            if (event.type === 'userEarnedReward' && !rewarded) {
+              rewarded = true;
+              try { onEarnedReward?.(); } catch (error) { finish('failed', error, true); }
+            }
             else if (event.type === 'dismissed') finish('dismissed');
             else if (event.type === 'failedToShow') finish('failed');
           },
           onError: (error) => finish('failed', error),
         });
+        if (settled) { this.showCleanup?.(); this.showCleanup = undefined; }
       } catch (error) {
         finish('failed', error);
       }
@@ -158,5 +166,5 @@ const rewardedAd = new RewardedAdController(
 export const getRewardedAdStatus = () => rewardedAd.getStatus();
 export const subscribeRewardedAdStatus = (listener: (status: RewardedAdStatus) => void) => rewardedAd.subscribe(listener);
 export const preloadRewardedAd = () => rewardedAd.preload();
-export const showRewardedAd = (signal?: AbortSignal) => rewardedAd.show(signal);
+export const showRewardedAd = (signal?: AbortSignal, onEarnedReward?: () => void) => rewardedAd.show(signal, onEarnedReward);
 export const disposeRewardedAd = () => rewardedAd.dispose();

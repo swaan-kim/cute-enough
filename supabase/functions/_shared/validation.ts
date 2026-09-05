@@ -40,7 +40,11 @@ export type ValidPetStyle = {
   };
 };
 
-export const PET_API_ACTIONS = ['house', 'shared', 'mine', 'reveal', 'ownerPhoto', 'submit', 'submissionStatus', 'report'] as const;
+export const PET_API_ACTIONS = [
+  'house', 'shared', 'mine', 'reveal', 'ownerPhoto', 'submit', 'submissionStatus', 'report',
+  'rewardStart', 'rewardComplete', 'rewardCancel', 'rewardStatus', 'rewardRebind',
+  'shareStart', 'shareReward', 'shareClose', 'notificationSettings', 'setNotificationSettings',
+] as const;
 export type PetApiAction = typeof PET_API_ACTIONS[number];
 
 function graphemeLength(value: string): number {
@@ -123,8 +127,8 @@ export function requirePetStyle(value: unknown, traitsValue: Record<string, unkn
       throw new ApiError('INVALID_PET_EXPRESSION', 400, '강아지 표정을 다시 확인해 주세요.');
     }
     expression = {
-      browStyle: candidate.browStyle as ValidPetStyle['expression']['browStyle'],
-      tongueShape: candidate.tongueShape as ValidPetStyle['expression']['tongueShape'],
+      browStyle: candidate.browStyle as NonNullable<ValidPetStyle['expression']>['browStyle'],
+      tongueShape: candidate.tongueShape as NonNullable<ValidPetStyle['expression']>['tongueShape'],
     };
   }
 

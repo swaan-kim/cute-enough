@@ -55,6 +55,21 @@ describe('rewarded ad controller', () => {
     await expect(showing).rejects.toThrow('완료해야');
   });
 
+  it('persists earned reward before dismissal and preserves it after a late SDK failure', async () => {
+    const testBridge = bridge();
+    const controller = new RewardedAdController(true, 'live-group', testBridge.value);
+    const loading = controller.preload(); testBridge.loaded(); await loading;
+    const onEarned = vi.fn();
+    const showing = controller.show(undefined, onEarned);
+    await Promise.resolve();
+    testBridge.event('userEarnedReward');
+    expect(onEarned).toHaveBeenCalledOnce();
+    testBridge.event('userEarnedReward');
+    expect(onEarned).toHaveBeenCalledOnce();
+    testBridge.event('failedToShow');
+    await expect(showing).resolves.toBeUndefined();
+  });
+
   it('aborts and unregisters when the screen exits', async () => {
     const testBridge = bridge();
     const controller = new RewardedAdController(true, 'live-group', testBridge.value);
@@ -65,5 +80,17 @@ describe('rewarded ad controller', () => {
     abort.abort();
     await expect(showing).rejects.toMatchObject({ name: 'AbortError' });
     expect(testBridge.showCleanup).toHaveBeenCalledOnce();
+  });
+
+  it('surfaces a persistence failure without treating it as a successful saved reward', async () => {
+    const testBridge = bridge();
+    const controller = new RewardedAdController(true, 'live-group', testBridge.value);
+    const loading = controller.preload(); testBridge.loaded(); await loading;
+    const showing = controller.show(undefined, () => { throw new Error('보상 기록 저장 실패'); });
+    await Promise.resolve();
+    testBridge.event('userEarnedReward');
+    await expect(showing).rejects.toThrow('보상 기록 저장 실패');
+    expect(testBridge.showCleanup).toHaveBeenCalledOnce();
+    controller.dispose();
   });
 });

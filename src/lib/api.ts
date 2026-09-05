@@ -10,7 +10,7 @@ import {
 } from '../data/previewScenarios';
 import type { AccessorySelectionMode, HouseResult, OwnedPetSummary, OwnerPhotoResult, PetAccessory, PetStyleV1, PetSummary, PetTraitsV1, RevealResult, SharedPetResult, SubmissionStatusResult, SubmitPetResult, UnlockMethod } from '../types';
 import { consumeAllowance, FREE_RECHARGE_INTERVAL_MS, getKstDate, readAllowance, saveAllowance } from './allowance';
-import { HOUSE_PET_LIMIT, orderDailyPets } from './housePets';
+import { HOUSE_PET_LIMIT, normalizeDailyProgress, orderDailyPets } from './housePets';
 import {
   findActivePreviewReveal,
   findPreviewSubmission,
@@ -26,6 +26,7 @@ import { hasPetPhoto, selectPetPhotoUrl } from './petPhoto';
 import { normalizePetTraitColors } from './petTraits';
 import { applyCoatMode, normalizePetStyle } from './petStyle';
 import { getUserHash } from './toss';
+import type { DailyAllowance, RewardStatus, RewardSessionResult, ShareCloseSummary, ShareRewardResult } from '../types';
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
@@ -40,14 +41,20 @@ const functions = !isPreviewRuntime && url && key
 export type PetApiErrorOutcome = 'definite' | 'unknown';
 
 export class PetApiError extends Error {
+  readonly allowance?: DailyAllowance;
+  readonly nextChargeAt?: string;
+  readonly serverNow?: string;
+  readonly retryAfter?: number;
   constructor(
     message: string,
     public readonly code: string,
     public readonly outcome: PetApiErrorOutcome,
     public readonly status?: number,
+    details: { allowance?: DailyAllowance; nextChargeAt?: string; serverNow?: string; retryAfter?: number } = {},
   ) {
     super(message);
     this.name = 'PetApiError';
+    Object.assign(this, details);
   }
 }
 
@@ -85,12 +92,13 @@ export async function toPetApiError(error: unknown): Promise<PetApiError> {
     : undefined;
   if (context && typeof context.json === 'function') {
     try {
-      const payload = await context.json() as { error?: string; code?: string };
+      const payload = await context.json() as { error?: string; code?: string; allowance?: DailyAllowance; nextChargeAt?: string; serverNow?: string; retryAfter?: number };
       if (payload.error) return new PetApiError(
         payload.error,
         payload.code ?? 'FUNCTION_ERROR',
-        context.status >= 500 && (!payload.code || payload.code === 'INTERNAL_ERROR') ? 'unknown' : 'definite',
+        context.status >= 500 && (!payload.code || ['INTERNAL_ERROR', 'REWARD_UNAVAILABLE'].includes(payload.code)) ? 'unknown' : 'definite',
         context.status,
+        { allowance: payload.allowance, nextChargeAt: payload.nextChargeAt, serverNow: payload.serverNow, retryAfter: payload.retryAfter },
       );
     } catch { /* Fall through to a transport-safe error. */ }
   }
@@ -112,16 +120,36 @@ function requestSignal(timeoutMs: number, externalSignal?: AbortSignal): AbortSi
   return controller.signal;
 }
 
+let pendingIdentity: Promise<string> | undefined;
+
+function getRequestIdentity(signal: AbortSignal): Promise<string> {
+  if (!pendingIdentity) {
+    const attempt = getUserHash().finally(() => { if (pendingIdentity === attempt) pendingIdentity = undefined; });
+    pendingIdentity = attempt;
+  }
+  const identity = pendingIdentity;
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      if (pendingIdentity === identity) pendingIdentity = undefined;
+      reject(new DOMException('사용자 확인 시간이 지났어요.', 'TimeoutError'));
+    };
+    if (signal.aborted) { abort(); return; }
+    signal.addEventListener('abort', abort, { once: true });
+    identity.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+
 async function invokePetApi<T>(body: Record<string, unknown>, timeoutMs = 12_000, externalSignal?: AbortSignal): Promise<T> {
   const client = requireFunctions();
-  const userHash = await getUserHash();
   if (externalSignal?.aborted) {
     throw new PetApiError('이전 요청을 취소했어요.', 'REQUEST_CANCELLED', 'definite');
   }
   try {
+    const signal = requestSignal(timeoutMs, externalSignal);
+    const userHash = await getRequestIdentity(signal);
     const { data, error } = await client.invoke('pet-api', {
       body: { ...body, userHash },
-      signal: requestSignal(timeoutMs, externalSignal),
+      signal,
     });
     if (error) throw await toPetApiError(error);
     return data as T;
@@ -202,7 +230,12 @@ export async function fetchHouse(signal?: AbortSignal): Promise<HouseResult> {
   const ownerBonusPet = result.ownerBonusPet
     ? normalizePetSummaryColors(result.ownerBonusPet)
     : undefined;
-  return { ...result, pets: dailyPets, dailyPets, ownerBonusPet };
+  const dailyProgress = normalizeDailyProgress(
+    result.dailyProgress,
+    dailyPets,
+    result.allowance?.date ?? getKstDate(),
+  );
+  return { ...result, pets: dailyPets, dailyPets, ownerBonusPet, dailyProgress };
 }
 
 export async function fetchSharedPet(petId: string, signal?: AbortSignal): Promise<SharedPetResult> {
@@ -232,7 +265,7 @@ export async function fetchSharedPet(petId: string, signal?: AbortSignal): Promi
       allowance,
     };
   }
-  const result = await invokePetApi<SharedPetResult>({ action: 'shared', petId }, 12_000, signal);
+  const result = await invokePetApi<SharedPetResult>({ action: 'shared', apiVersion: 2, petId }, 12_000, signal);
   return { ...result, pet: normalizePetSummaryColors(result.pet) };
 }
 
@@ -254,7 +287,7 @@ export async function fetchMyPets(signal?: AbortSignal): Promise<OwnedPetSummary
   return data.pets.map(normalizePetSummaryColors);
 }
 
-export async function revealPet(pet: PetSummary, method: UnlockMethod, adSessionId?: string): Promise<RevealResult> {
+export async function revealPet(pet: PetSummary, method: UnlockMethod, adSessionId?: string, requestId?: string): Promise<RevealResult> {
   if (isPreviewRuntime) {
     const now = new Date();
     const scenario = getPreviewScenario();
@@ -291,7 +324,47 @@ export async function revealPet(pet: PetSummary, method: UnlockMethod, adSession
       },
     };
   }
-  return invokePetApi<RevealResult>({ action: 'reveal', apiVersion: 2, petId: pet.id, unlockMethod: method, adSessionId });
+  return invokePetApi<RevealResult>({ action: 'reveal', apiVersion: 2, petId: pet.id, unlockMethod: method, adSessionId, requestId });
+}
+
+export async function fetchRewardStatus(): Promise<RewardStatus> {
+  if (isPreviewRuntime) return {
+    allowance: readAllowance(getScenarioStorage(getPreviewScenario())),
+    capabilities: { ads: false, share: false }, adCredits: [], serverNow: new Date().toISOString(),
+  };
+  return invokePetApi<RewardStatus>({ action: 'rewardStatus', apiVersion: 2 });
+}
+
+export function startAdReward(petId: string, requestId: string): Promise<RewardSessionResult> {
+  return invokePetApi({ action: 'rewardStart', apiVersion: 2, petId, requestId });
+}
+export function completeAdReward(sessionId: string): Promise<RewardStatus> {
+  return invokePetApi({ action: 'rewardComplete', apiVersion: 2, sessionId });
+}
+export function cancelAdReward(sessionId: string): Promise<RewardStatus> {
+  return invokePetApi({ action: 'rewardCancel', apiVersion: 2, sessionId });
+}
+export function rebindAdReward(sessionId: string, petId: string): Promise<RewardStatus> {
+  return invokePetApi({ action: 'rewardRebind', apiVersion: 2, sessionId, petId });
+}
+export function startShareReward(requestId: string): Promise<RewardSessionResult> {
+  return invokePetApi({ action: 'shareStart', apiVersion: 2, requestId });
+}
+export function recordShareReward(sessionId: string, requestId: string, rewardAmount: number, eventSequence: number): Promise<ShareRewardResult> {
+  return invokePetApi({ action: 'shareReward', apiVersion: 2, sessionId, requestId, rewardAmount, eventSequence });
+}
+export function closeShareReward(sessionId: string, requestId: string, summary: ShareCloseSummary | null): Promise<ShareRewardResult> {
+  return invokePetApi({ action: 'shareClose', apiVersion: 2, sessionId, requestId, summary,
+    ...(summary === null ? { abandoned: true } : {}) });
+}
+
+export interface RechargeNotificationSettings { enabled: boolean; available: boolean; templateCode?: string }
+export async function fetchRechargeNotificationSettings(): Promise<RechargeNotificationSettings> {
+  if (isPreviewRuntime) return { enabled: false, available: false };
+  return invokePetApi({ action: 'notificationSettings', apiVersion: 2 });
+}
+export function setRechargeNotificationSettings(enabled: boolean, tossAgreementGranted = false): Promise<RechargeNotificationSettings> {
+  return invokePetApi({ action: 'setNotificationSettings', apiVersion: 2, enabled, tossAgreementGranted });
 }
 
 /** 충전 경계 전에 공개한 같은 사진을 이용권 차감 없이 다시 연다. */

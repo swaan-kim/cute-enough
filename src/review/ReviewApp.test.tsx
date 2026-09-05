@@ -54,6 +54,15 @@ describe('ReviewApp', () => {
     expect(reviewSimilarityScore(item.traits, item.publishedStyle, item.traits, item.publishedStyle)).toBe(100);
   });
 
+  it('does not call a partially matching design similar', () => {
+    expect(reviewSimilarityScore(
+      item.traits,
+      item.publishedStyle,
+      { ...item.traits, secondaryColor: 'white' },
+      item.publishedStyle,
+    )).toBe(0);
+  });
+
   it('shows loading, then renders the photo, character, name, time, and photo status', async () => {
     let resolveQueue: ((items: ReviewQueueItem[]) => void) | undefined;
     const api = makeApi({
@@ -281,7 +290,7 @@ describe('ReviewApp', () => {
     }));
   });
 
-  it('requires a differentiation note when an unchanged draft is at least 80% similar', async () => {
+  it('shows only an exact decoration match without forcing a review note', async () => {
     const api = makeApi({
       getQueue: vi.fn().mockResolvedValue([{ ...item, similarPets: [{ id: 'similar', name: '닮은이', traits:item.traits, publishedStyle:item.publishedStyle }] }]),
     });
@@ -290,10 +299,8 @@ describe('ReviewApp', () => {
     fireEvent.load(screen.getByRole('img', { name: '테스트견 실사 사진 1' }));
     fireEvent.click(screen.getByRole('button', { name: '테스트견 승인' }));
 
-    expect(screen.getByText(/유사도 100점/)).toBeInTheDocument();
+    expect(screen.getByText(/모든 꾸밈 설정이 같은 승인 강아지/)).toBeInTheDocument();
     const approve = screen.getByRole('button', { name: '승인 확정' });
-    expect(approve).toBeDisabled();
-    fireEvent.change(screen.getByRole('textbox', { name: /검수 메모/ }), { target: { value: '혀 표정과 몽글한 윤곽으로 구분됨' } });
     expect(approve).toBeEnabled();
   });
 });

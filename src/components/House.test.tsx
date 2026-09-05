@@ -75,8 +75,8 @@ describe('House dog drag haptic', () => {
 });
 
 describe('House daily and owner slots', () => {
-  it('keeps five daily dogs in unique anchors and the owner on the sofa spot', () => {
-    const dailyPets = makePets(5);
+  it('keeps four daily dogs in unique anchors and the owner as the optional fifth dog', () => {
+    const dailyPets = makePets(4);
     const ownerBonusPet = {
       ...SAMPLE_PETS[0],
       id: 'my-dog',
@@ -96,34 +96,32 @@ describe('House daily and owner slots', () => {
     );
 
     const dailyButtons = document.querySelectorAll('[data-pet-kind="daily"]');
-    expect(dailyButtons).toHaveLength(5);
-    expect(new Set(Array.from(dailyButtons, (button) => button.getAttribute('data-house-slot'))).size).toBe(5);
+    expect(dailyButtons).toHaveLength(4);
+    expect(new Set(Array.from(dailyButtons, (button) => button.getAttribute('data-house-slot'))).size).toBe(4);
     expect(document.querySelector('[data-pet-kind="owner"]')).toHaveAttribute('data-house-slot', 'owner');
     expect(screen.getByText('내 강아지')).toBeInTheDocument();
     expect(screen.queryByLabelText('새 친구를 기다리는 빈자리')).not.toBeInTheDocument();
   });
 
-  it('renders explicit empty anchors instead of cloning dogs when fewer than five are available', () => {
+  it('renders explicit empty anchors instead of cloning dogs when fewer than four are available', () => {
     render(<House dailyPets={makePets(2)} onSelect={() => undefined} onSound={() => undefined} />);
-    expect(screen.getAllByLabelText('새 친구를 기다리는 빈자리')).toHaveLength(3);
+    expect(screen.getAllByLabelText('새 친구를 기다리는 빈자리')).toHaveLength(2);
   });
 
   it('keeps server slot numbers and leaves vacant middle anchors empty', () => {
-    const [first, third, fifth] = makePets(3).map((pet, index) => ({
+    const [first, third, fourth] = makePets(3).map((pet, index) => ({
       ...pet,
-      houseSlot: [1, 3, 5][index],
+      houseSlot: [1, 3, 4][index],
     }));
 
-    render(<House dailyPets={[first, third, fifth]} onSelect={() => undefined} onSound={() => undefined} />);
+    render(<House dailyPets={[first, third, fourth]} onSelect={() => undefined} onSound={() => undefined} />);
 
     expect(screen.getByRole('button', { name: '강아지1 옮기기 또는 선택' })).toHaveAttribute('data-house-slot', 'daily-a');
     expect(screen.getByRole('button', { name: '강아지2 옮기기 또는 선택' })).toHaveAttribute('data-house-slot', 'daily-c');
-    expect(screen.getByRole('button', { name: '강아지3 옮기기 또는 선택' })).toHaveAttribute('data-house-slot', 'daily-e');
+    expect(screen.getByRole('button', { name: '강아지3 옮기기 또는 선택' })).toHaveAttribute('data-house-slot', 'daily-d');
     const emptySlots = screen.getAllByLabelText('새 친구를 기다리는 빈자리');
-    expect(emptySlots.map((slot) => slot.className)).toEqual(expect.arrayContaining([
-      expect.stringContaining('house-slot--daily-b'),
-      expect.stringContaining('house-slot--daily-d'),
-    ]));
+    expect(emptySlots).toHaveLength(1);
+    expect(emptySlots[0]).toHaveClass('house-slot--daily-b');
   });
 
   it('shows revisit and met state beside the dog name', () => {
@@ -144,7 +142,7 @@ describe('House daily and owner slots', () => {
   });
 
   it('swaps occupied anchors when a dog is dropped onto another dog', () => {
-    const dailyPets = makePets(5);
+    const dailyPets = makePets(4);
     render(<House dailyPets={dailyPets} onSelect={() => undefined} onSound={() => undefined} />);
     const room = screen.getByRole('region', { name: '강아지들이 있는 집' });
     const first = screen.getByRole('button', { name: '강아지1 옮기기 또는 선택' });
@@ -163,8 +161,8 @@ describe('House daily and owner slots', () => {
     });
 
     firePointer(first, 'pointerdown', { pointerId: 1, clientX: 60, clientY: 226 });
-    firePointer(first, 'pointermove', { pointerId: 1, clientX: 160, clientY: 224 });
-    firePointer(first, 'pointerup', { pointerId: 1, clientX: 160, clientY: 224 });
+    firePointer(first, 'pointermove', { pointerId: 1, clientX: 256, clientY: 228 });
+    firePointer(first, 'pointerup', { pointerId: 1, clientX: 256, clientY: 228 });
 
     expect(first).toHaveAttribute('data-house-slot', 'daily-b');
     expect(screen.getByRole('button', { name: '강아지2 옮기기 또는 선택' })).toHaveAttribute('data-house-slot', 'daily-a');
@@ -195,10 +193,41 @@ describe('House first-use hint', () => {
 });
 
 describe('getNearestHouseSlot', () => {
-  it('maps pointer coordinates to one of the five stable anchors', () => {
-    expect(getNearestHouseSlot({ x: 160, y: 224 }, { width: 320, height: 400 })).toBe('daily-b');
-    expect(getNearestHouseSlot({ x: 266, y: 344 }, { width: 320, height: 400 })).toBe('daily-e');
-    expect(HOUSE_DAILY_SLOTS).toHaveLength(5);
+  it('maps pointer coordinates to one of the four stable public anchors', () => {
+    expect(getNearestHouseSlot({ x: 256, y: 228 }, { width: 320, height: 400 })).toBe('daily-b');
+    expect(getNearestHouseSlot({ x: 237, y: 344 }, { width: 320, height: 400 })).toBe('daily-d');
+    expect(HOUSE_DAILY_SLOTS).toHaveLength(4);
+  });
+});
+
+describe('House idle motion', () => {
+  it('gives every daily and owner dog a staggered multi-point roaming path', () => {
+    const dailyPets = makePets(4);
+    const ownerBonusPet = {
+      ...makePets(1)[0],
+      id: 'owner-pet',
+      name: '내 강아지',
+      isMine: true,
+      ownerPinned: true,
+    };
+
+    render(
+      <House
+        dailyPets={dailyPets}
+        ownerBonusPet={ownerBonusPet}
+        onSelect={() => undefined}
+        onSound={() => undefined}
+      />,
+    );
+
+    const dogs = screen.getAllByRole('button', { name: /옮기기 또는 선택/ });
+    expect(dogs).toHaveLength(5);
+    expect(dogs.every((dog) => dog.classList.contains('is-idle-active'))).toBe(true);
+    expect(new Set(dogs.map((dog) => dog.style.getPropertyValue('--idle-duration'))).size).toBeGreaterThan(2);
+    expect(dogs.every((dog) => ['--roam-x1', '--roam-y1', '--roam-x2', '--roam-y2', '--roam-x3', '--roam-y3']
+      .every((variable) => dog.style.getPropertyValue(variable)))).toBe(true);
+    expect(dogs.slice(0, 4).every((dog) => [1, 2, 3]
+      .some((step) => Math.abs(Number.parseFloat(dog.style.getPropertyValue(`--roam-x${step}`))) >= 20))).toBe(true);
   });
 });
 

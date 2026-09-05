@@ -4,7 +4,7 @@
 
 | 상태 | 업로더의 집 | 다른 사람의 집 | 공유 링크 | 실제 사진 |
 | --- | --- | --- | --- | --- |
-| 업로드 직후 `pending` | 최신 1마리를 공개 5마리와 별도의 `내 강아지` 보너스 자리에 즉시 노출 | 노출하지 않음 | 타인은 캐릭터만 무료로 교감 | 업로더만 소유권 확인 후 언제든 무차감 열람 |
+| 업로드 직후 `pending` | 최신 1마리를 공개 4마리와 별도의 `내 강아지` 보너스 자리에 즉시 노출 | 노출하지 않음 | 타인은 캐릭터만 무료로 교감 | 업로더만 소유권 확인 후 언제든 무차감 열람 |
 | `approved` | 최신 본인 캐릭터를 보너스 자리에 유지 | 승인 다음 KST 날짜부터 공개 집 후보 | 승인 즉시 같은 링크에서 최종 디자인과 일반 만남 흐름 | 업로더는 무차감, 타인은 이용권/광고 후 서명 URL 제공 |
 | `rejected`·`paused`·`deleted` | 집에서 제거, 내 목록에 상태 표시 | 노출하지 않음 | 이용 불가 | 비공개 |
 
@@ -22,15 +22,15 @@
 1. 기기에서 사진을 최대 1024px JPEG로 재인코딩하고 EXIF를 제거한다.
 2. 사용자가 이름·귀·털 윤곽·원톤/포인트 털색·무늬와 소품을 확인한다. 원톤은 한 색으로 저장하고 같은 계열의 5~8% 렌더링 음영만 사용한다.
 3. Edge Function이 앱인토스 익명키를 mTLS로 확인하고 사진을 다시 디코드·JPEG로 재인코딩한다.
-4. `submission_id` 멱등 키로 private Storage 업로드, `pets` 행과 `pet_photos`의 0번 대표 사진을 한 번만 만든다. 기존 앱 호환용 `upload_rewards`가 함께 생성될 수 있지만, v2의 내 강아지는 `ownerPhoto` 권한으로 열고 오늘의 `5/5`나 무료 이용권을 사용하지 않는다.
+4. `submission_id` 멱등 키로 private Storage 업로드, `pets` 행과 `pet_photos`의 0번 대표 사진을 한 번만 만든다. 기존 앱 호환용 `upload_rewards`가 함께 생성될 수 있지만, v2의 내 강아지는 `ownerPhoto` 권한으로 열고 오늘의 `4/4`나 무료 이용권을 사용하지 않는다.
 5. `mine`은 소유자의 모든 비삭제 업로드와 서버가 검증한 `ownerPhotoAvailable`을 최신순으로 반환한다.
-6. v2 `house`는 `get_pet_house_snapshot_v2`를 호출한다. `daily_house_assignments`의 공개 슬롯 5개와 최신 `ownerBonusPet`을 별도로 반환하므로 내 강아지는 공개 슬롯과 중복되지 않는다.
+6. v2 `house`는 `get_pet_house_snapshot_v2`를 호출한다. `daily_house_assignments`의 공개 슬롯 4개와 최신 `ownerBonusPet`을 별도로 반환하므로 내 강아지는 공개 슬롯과 중복되지 않는다.
 7. 공개 슬롯은 첫 진입에 사용자·KST 날짜·강아지 ID를 기준으로 결정적으로 채운다. 자정 전에는 순서와 구성을 유지하고, 공개 중지되거나 사진이 사라진 강아지의 슬롯만 교체한다. 후보가 부족한 빈 슬롯은 복제하지 않는다.
 8. 검수자는 수동 ChatGPT 검수를 참고해 `review_pet_submission_v5` RPC로 승인 또는 반려한다. 제출 원본은 `submitted_traits/submitted_style`에 보존되고, 최종 이름·traits·style·소품·디자인 버전·상태와 감사 로그가 한 트랜잭션으로 기록된다.
 9. 사용자 직접 선택 소품은 검수 UI에서 읽기 전용이고, DB 트리거와 v5 RPC가 `requestedAccessory`와 다른 값을 거부한다. 검수자 위임 모드에서만 최종 소품을 정한다.
 10. `shared`는 pending/approved 캐릭터 정보만 반환한다. Storage 경로나 사진 URL은 반환하지 않는다.
 11. `reveal`은 타인의 approved 사진 공개를 담당하고, `ownerPhoto`는 `pending`/`approved` 소유자에게만 이용권을 변경하지 않고 10분 서명 URL을 발급한다.
-12. 공개견의 실제 사진 URL 발급이 성공한 뒤에만 해당 공개 슬롯의 `met_at`을 기록한다. `dailyProgress.totalCount`는 항상 5이고 내 강아지는 진행도에 포함하지 않는다.
+12. 공개견의 실제 사진 URL 발급이 성공한 뒤에만 해당 공개 슬롯의 `met_at`을 기록한다. `dailyProgress.totalCount`는 항상 4이고 내 강아지는 진행도에 포함하지 않는다.
 13. 운영자가 사용 권리를 확인한 초기 강아지에 여러 사진을 연결한 경우, 사용자·강아지·KST 날짜 기준으로 한 장을 결정해 서명한다.
 
 ## 이용권·광고·재열람
@@ -40,7 +40,7 @@
 - 광고는 무료 이용권이 0개이고 남은 일일 횟수가 있을 때만 제안한다. 하루 최대 2번이며 `userEarnedReward` 이후에만 선택한 한 마리의 공개 흐름을 시작한다.
 - 광고로 공개해도 기존 무료 이용권의 다음 충전 시각은 바꾸지 않는다. 취소·오류·미지원·중복 콜백은 사진 권한이나 보상을 만들지 않는다.
 - 처음 만나는 공개견만 간식과 쓰다듬기 과정을 거친다. 다음 무료 이용권 충전 경계 전 재열람과 본인 강아지는 사진창을 먼저 띄우고 즉시 사진을 요청한다.
-- 오늘의 다섯 번째 공개 사진창을 닫고 홈으로 돌아왔을 때만 완료 안내를 하루 한 번 보여준다. 재접속에서는 카드의 `5/5` 상태만 유지한다.
+- 오늘의 네 번째 공개 사진창을 닫고 홈으로 돌아왔을 때만 완료 안내를 하루 한 번 보여준다. 재접속에서는 카드의 `4/4` 상태만 유지한다.
 
 ## API 버전 호환
 
@@ -48,9 +48,9 @@
 
 ```text
 HouseResultV2
-├─ dailyPets[]       오늘의 공개견과 houseSlot(최대 5)
+├─ dailyPets[]       오늘의 공개견과 houseSlot(최대 4)
 ├─ ownerBonusPet     최신 본인 pending/approved 또는 null
-├─ dailyProgress     date, metPetIds, metCount, totalCount=5, completed
+├─ dailyProgress     date, metPetIds, metCount, totalCount=4, completed
 └─ allowance         remaining, nextChargeAt, rewardedUsed/Limit/Remaining
 ```
 
@@ -121,7 +121,7 @@ localhost와 Vercel의 `preview` 업로드는 업로더 브라우저의 Local St
 
 - 같은 `submission_id` 재시도는 강아지와 보상을 중복 생성하지 않는다.
 - 업로드 직후 `mine`에 누적되고 업로더의 집 소파 보너스 자리에 나타난다.
-- 공개 5마리와 최신 내 강아지 1마리가 ID 중복 없이 표시된다.
+- 공개 4마리와 최신 내 강아지 1마리가 ID 중복 없이 표시되어 최대 5마리가 된다.
 - 타인은 pending 공유에서 실제 사진을 받을 수 없고 이용권도 차감되지 않는다.
 - 승인 뒤에는 다른 사용자의 집 후보와 공유 링크에서 정상 해금할 수 있다.
 - 반려·중지·삭제된 강아지는 집과 공유에서 제외된다.

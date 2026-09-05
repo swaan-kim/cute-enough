@@ -21,15 +21,26 @@ describe('preview scenario API flows', () => {
     expect(result.dailyPets?.map(({ id }) => id).sort()).toEqual(['sample-gureumi', 'sample-haneul']);
   });
 
-  it('shows exactly five fixture public dogs and supports reveal then reopen', async () => {
+  it('shows the clean four-dog first-user entrance without sample labels or an owner dog', async () => {
+    openScenario('first-user');
+    const result = await fetchHouse();
+
+    expect(result.dailyPets).toHaveLength(4);
+    expect(result.dailyPets?.map(({ name }) => name).sort()).toEqual(['구르미', '몽실', '별이', '하늘'].sort());
+    expect(result.dailyPets?.every(({ name }) => !name?.startsWith('샘플'))).toBe(true);
+    expect(result.ownerBonusPet).toBeUndefined();
+    expect(result.dailyProgress).toMatchObject({ metCount: 0, totalCount: 4, completed: false });
+  });
+
+  it('shows exactly four fixture public dogs and supports reveal then reopen', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-04T01:00:00.000Z'));
-    openScenario('five');
+    openScenario('four');
 
     const initial = await fetchHouse();
-    expect(initial.dailyPets).toHaveLength(5);
+    expect(initial.dailyPets).toHaveLength(4);
     expect(initial.ownerBonusPet).toBeUndefined();
-    expect(initial.dailyProgress).toMatchObject({ metCount: 0, totalCount: 5, completed: false });
+    expect(initial.dailyProgress).toMatchObject({ metCount: 0, totalCount: 4, completed: false });
 
     const firstPet = initial.dailyPets![0];
     const revealed = await revealPet(firstPet, 'FREE');
@@ -47,11 +58,11 @@ describe('preview scenario API flows', () => {
     expect(localStorage.getItem('cute-enough:allowance')).toBeNull();
   });
 
-  it('shows five public fixtures plus a free owner bonus photo', async () => {
+  it('shows four public fixtures plus a free owner bonus photo', async () => {
     openScenario('owner');
     const result = await fetchHouse();
 
-    expect(result.dailyPets).toHaveLength(5);
+    expect(result.dailyPets).toHaveLength(4);
     expect(result.ownerBonusPet).toMatchObject({
       id: 'preview-fixture-owner', isMine: true, ownerPhotoAvailable: true, approvalStatus: 'pending',
     });
@@ -60,17 +71,17 @@ describe('preview scenario API flows', () => {
     });
   });
 
-  it('marks all five complete and keeps every fixture revisit-ready', async () => {
+  it('marks all four complete and keeps every visible fixture revisit-ready', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-04T01:00:00.000Z'));
     openScenario('complete');
     const result = await fetchHouse();
 
-    expect(result.dailyProgress).toMatchObject({ metCount: 5, totalCount: 5, completed: true });
-    expect(result.dailyPets).toHaveLength(5);
+    expect(result.dailyProgress).toMatchObject({ metCount: 4, totalCount: 4, completed: true });
+    expect(result.dailyPets).toHaveLength(4);
     expect(result.dailyPets?.every(({ revealedToday, revisitUntil }) => revealedToday && revisitUntil)).toBe(true);
-    await expect(reopenPet(result.dailyPets![4])).resolves.toMatchObject({
-      dailyProgress: { metCount: 5, completed: true },
+    await expect(reopenPet(result.dailyPets![3])).resolves.toMatchObject({
+      dailyProgress: { metCount: 4, totalCount: 4, completed: true },
     });
   });
 
@@ -80,7 +91,7 @@ describe('preview scenario API flows', () => {
     openScenario('ads-off');
     const result = await fetchHouse();
 
-    expect(result.dailyPets).toHaveLength(5);
+    expect(result.dailyPets).toHaveLength(4);
     expect(result.allowance).toMatchObject({
       remaining: 0,
       freeUsed: 2,

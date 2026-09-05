@@ -226,6 +226,44 @@ test('Supabase gateway selects only review fields, signs for 180 seconds, and ca
   }]);
 });
 
+test('Supabase gateway keeps only fully identical decoration matches', async () => {
+  const exact = {
+    id: '22222222-2222-4222-8222-222222222222',
+    name: '완전같음',
+    traits: { ...TRAITS, confidence: 0.2 },
+    publishedStyle: STYLE,
+    publishedAccessory: null,
+    designVersion: 1,
+  };
+  const partial = {
+    ...exact,
+    id: '33333333-3333-4333-8333-333333333333',
+    name: '부분같음',
+    traits: { ...TRAITS, secondaryColor: 'white' },
+  };
+  const query = {
+    select() { return this; },
+    async order() {
+      return { data: [{
+        pet_id: PET_ID, name: '부용', traits: TRAITS, submitted_traits: TRAITS,
+        submitted_style: STYLE, published_style: STYLE, created_at: '2026-08-29T00:00:00Z',
+        storage_paths: [], photo_present: false, accessory_selection_mode: 'reviewer',
+        accessory_required: false, requested_accessory: null, published_accessory: null,
+        design_version: 1, similar_pets: [partial, exact],
+      }], error: null };
+    },
+  };
+  const client = {
+    from() { return query; },
+    storage: { from() { return { createSignedUrl: async () => ({ data: null, error: null }) }; } },
+  };
+  const gateway = createSupabaseReviewGateway({ actor: 'reviewer', client, supabaseUrl: 'https://example.supabase.co' });
+
+  const rows = await gateway.listPending();
+
+  assert.deepEqual(rows[0].similarPets.map((pet) => pet.name), ['완전같음']);
+});
+
 test('review falls back to v4 only while the v5 RPC is missing from PostgREST', async () => {
   const trace = [];
   const client = {

@@ -101,9 +101,9 @@ export function buildReviewCopy(item: ReviewQueueItem) {
     `기본 털색: ${item.submittedTraits.baseColor} / 포인트색: ${item.submittedTraits.secondaryColor}`,
     `털색 방식: ${item.submittedStyle.coatMode} / 털 윤곽: ${item.submittedStyle.furStyle}`,
     `귀: ${item.submittedTraits.earShape} / 얼굴 무늬: ${item.submittedTraits.markingPattern}`,
-    `비슷한 기존 강아지: ${similar}`,
+    `꾸밈 설정이 모두 같은 기존 강아지: ${similar}`,
     '',
-    '사진 속 강아지의 흰색 톤과 기존 캐릭터 중복 정도를 확인해 주세요.',
+    '사진 속 강아지의 털색과 캐릭터 설정이 자연스러운지 확인해 주세요.',
     '작은 64px 화면에서도 구분되는지, 소품 대비가 충분한지만 추천해 주세요.',
     '실사에 맞는 보정 방향만 추천하고 SVG/HTML 코드는 만들지 마세요.',
   ].join('\n');
@@ -303,8 +303,8 @@ function ReviewCard({
         </button>
       </section>
 
-      <section className="review-similar" aria-label="비슷한 기존 강아지">
-        <div className="review-section-heading"><span>비슷한 기존 강아지</span><span className="review-character-status">최대 3마리</span></div>
+      <section className="review-similar" aria-label="꾸밈 설정이 같은 강아지">
+        <div className="review-section-heading"><span>꾸밈 설정이 같은 강아지</span><span className="review-character-status">완전 일치만</span></div>
         {item.similarPets.length ? (
           <div className="review-similar-list">
             {item.similarPets.map((similar) => (
@@ -314,7 +314,7 @@ function ReviewCard({
               </figure>
             ))}
           </div>
-        ) : <p className="review-similar-empty">비교할 승인 강아지가 아직 없어요.</p>}
+        ) : <p className="review-similar-empty">모든 꾸밈 설정이 같은 강아지는 없어요.</p>}
       </section>
 
       <div className="review-card-footer">
@@ -371,13 +371,15 @@ export function reviewSimilarityScore(
     coatMode: otherTraits.baseColor === otherTraits.secondaryColor && otherTraits.markingPattern === 'none' ? 'solid' : 'point',
     furStyle: 'neat',
   };
-  return (traits.baseColor === otherTraits.baseColor ? 24 : 0)
-    + (traits.earShape === otherTraits.earShape ? 18 : 0)
-    + (traits.headShape === otherTraits.headShape ? 14 : 0)
-    + (traits.markingPattern === otherTraits.markingPattern ? 12 : 0)
-    + (traits.muzzle === otherTraits.muzzle ? 8 : 0)
-    + (style.coatMode === resolvedOtherStyle.coatMode ? 12 : 0)
-    + (style.furStyle === resolvedOtherStyle.furStyle ? 12 : 0);
+  const traitsMatch = traits.schemaVersion === otherTraits.schemaVersion
+    && traits.earShape === otherTraits.earShape
+    && traits.headShape === otherTraits.headShape
+    && traits.baseColor === otherTraits.baseColor
+    && traits.secondaryColor === otherTraits.secondaryColor
+    && traits.markingPattern === otherTraits.markingPattern
+    && traits.muzzle === otherTraits.muzzle;
+  const styleMatch = JSON.stringify(style) === JSON.stringify(resolvedOtherStyle);
+  return traitsMatch && styleMatch ? 100 : 0;
 }
 
 function ReviewDesignEditor({ item, name, traits, style, accessory, photoUrl, accessoryLocked = false, disabled, onTraits, onStyle, onAccessory }: {
@@ -475,11 +477,10 @@ function ReviewDialog({
   const trimmedFinalName = finalName.trim();
   const finalNameValid = /^[가-힣A-Za-z0-9]{1,4}$/u.test(trimmedFinalName);
   const displayName = getPetDisplayName(pending.item);
-  const similarityScore = Math.max(0, ...pending.item.similarPets.map((pet) => reviewSimilarityScore(finalTraits, finalStyle, pet.traits, pet.publishedStyle)));
-  const unchanged = JSON.stringify(finalTraits) === JSON.stringify(pending.item.submittedTraits)
-    && JSON.stringify(finalStyle) === JSON.stringify(pending.item.submittedStyle)
-    && JSON.stringify(publishedAccessory) === JSON.stringify(pending.item.requestedAccessory);
-  const similarityNoteRequired = !isReject && similarityScore >= 80 && unchanged;
+  const hasExactDecorationMatch = !isReject && pending.item.similarPets.some((pet) => (
+    reviewSimilarityScore(finalTraits, finalStyle, pet.traits, pet.publishedStyle) === 100
+      && JSON.stringify(publishedAccessory) === JSON.stringify(pet.publishedAccessory ?? null)
+  ));
 
   useEffect(() => {
     dialogRef.current?.focus();
@@ -560,14 +561,14 @@ function ReviewDialog({
           </>
         )}
 
-        {!isReject && similarityScore >= 80 && (
+        {hasExactDecorationMatch && (
           <p className="review-similarity-warning" role="note">
-            기존 강아지와 유사도 {similarityScore}점이에요. {unchanged ? '그대로 승인하려면 구분 근거를 검수 메모에 남겨주세요.' : '수정된 최종안을 한 번 더 확인해 주세요.'}
+            모든 꾸밈 설정이 같은 승인 강아지가 있어요. 사진과 이름만 확인한 뒤 그대로 승인해도 됩니다.
           </p>
         )}
 
         <label className="review-reason-field">
-          <span>검수 메모 <strong>{similarityNoteRequired ? '필수' : '선택'}</strong></span>
+          <span>검수 메모 <strong>선택</strong></span>
           <textarea
             value={reviewNote}
             onChange={(event) => setReviewNote(event.target.value)}
@@ -605,7 +606,7 @@ function ReviewDialog({
                   : publishedAccessory,
               reviewNote: reviewNote.trim(),
             })}
-            disabled={submitting || (isReject && !trimmedReason) || (!isReject && !finalNameValid) || reason.length > 300 || reviewNote.length > 500 || (similarityNoteRequired && !reviewNote.trim())}
+            disabled={submitting || (isReject && !trimmedReason) || (!isReject && !finalNameValid) || reason.length > 300 || reviewNote.length > 500}
           >
             {submitting ? '저장 중…' : isReject ? '반려 확정' : '승인 확정'}
           </button>

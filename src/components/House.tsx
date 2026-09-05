@@ -13,7 +13,7 @@ import type { SoundEffect } from '../lib/sound';
 import { PetArtwork } from './PetArtwork';
 import './House.css';
 
-export const HOUSE_DAILY_SLOTS = ['daily-a', 'daily-b', 'daily-c', 'daily-d', 'daily-e'] as const;
+export const HOUSE_DAILY_SLOTS = ['daily-a', 'daily-b', 'daily-c', 'daily-d'] as const;
 export type HouseDailySlot = (typeof HOUSE_DAILY_SLOTS)[number];
 
 type HouseSlot = HouseDailySlot | 'owner';
@@ -51,11 +51,23 @@ function assignHouseSlots(pets: readonly PetSummary[]): Record<string, HouseDail
 
 const SLOT_POINTS: Readonly<Record<HouseSlot, { x: number; y: number }>> = {
   'daily-a': { x: 0.18, y: 0.57 },
-  'daily-b': { x: 0.50, y: 0.56 },
-  'daily-c': { x: 0.17, y: 0.86 },
-  'daily-d': { x: 0.50, y: 0.86 },
-  'daily-e': { x: 0.83, y: 0.86 },
+  'daily-b': { x: 0.80, y: 0.57 },
+  'daily-c': { x: 0.22, y: 0.86 },
+  'daily-d': { x: 0.74, y: 0.86 },
   owner: { x: 0.83, y: 0.33 },
+};
+
+const ROAMING_PATHS: Readonly<Record<HouseSlot, readonly [
+  readonly [number, number],
+  readonly [number, number],
+  readonly [number, number],
+]>> = {
+  'daily-a': [[22, -3], [42, 5], [13, 8]],
+  'daily-b': [[-20, -4], [-42, 4], [-12, 8]],
+  // 아래쪽 두 친구는 방 중앙으로 몰리지 않고 각자 바깥쪽 영역을 왕복한다.
+  'daily-c': [[16, -4], [-20, -7], [8, -3]],
+  'daily-d': [[-16, -5], [20, -8], [-8, -3]],
+  owner: [[-10, -2], [-23, -5], [-7, 2]],
 };
 
 const DOG_DRAG_MAX_LIFT_Y = 30;
@@ -327,15 +339,29 @@ export function House({
       ? ({ kind: 'owner', label: '내 강아지' } as const)
       : getPetStateLabel(pet, metIdSet, new Date());
     const petName = pet.name ?? '이름 없는 강아지';
-    const idleClass = !owner && index < 2 ? 'is-idle-active' : 'is-idle-calm';
+    // Each slot has its own collision-safe roaming path in CSS. Long, staggered
+    // durations make the dogs walk around the room instead of merely wobbling.
+    const idleDuration = owner ? 14.8 : 10.8 + ((index * 1.15) % 3.8);
+    const [roam1, roam2, roam3] = ROAMING_PATHS[slot];
     return (
       <button
-        className={`pet-button house-pet house-slot--${slot} ${idleClass} ${position ? 'is-positioned' : ''} ${grabbedId === pet.id ? 'is-grabbed' : ''} ${arriving ? 'is-arriving' : ''}`}
+        className={`pet-button house-pet house-slot--${slot} is-idle-active ${position ? 'is-positioned' : ''} ${grabbedId === pet.id ? 'is-grabbed' : ''} ${arriving ? 'is-arriving' : ''}`}
         data-house-slot={slot}
         data-pet-kind={owner ? 'owner' : 'daily'}
         data-pet-state={state?.kind ?? 'available'}
         key={`${pet.id}-${pet.designVersion ?? 1}`}
-        style={{ ...position, '--arrival-index': index, '--idle-index': index, '--calm-index': Math.max(0, index - 2) } as CSSProperties}
+        style={{
+          ...position,
+          '--arrival-index': index,
+          '--idle-index': index,
+          '--idle-duration': `${idleDuration}s`,
+          '--roam-x1': `${roam1[0]}px`,
+          '--roam-y1': `${roam1[1]}px`,
+          '--roam-x2': `${roam2[0]}px`,
+          '--roam-y2': `${roam2[1]}px`,
+          '--roam-x3': `${roam3[0]}px`,
+          '--roam-y3': `${roam3[1]}px`,
+        } as CSSProperties}
         onPointerDown={(event) => startDrag(pet.id, slot, event)}
         onPointerMove={movePet}
         onPointerUp={endDrag}

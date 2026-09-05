@@ -4,12 +4,12 @@ import { AppToast, DAILY_COMPLETE_TOAST, DAILY_LIMIT_TOAST } from './components/
 import { House } from './components/House';
 import { PetArtwork } from './components/PetArtwork';
 import { SoundToggle } from './components/SoundToggle';
-import { fetchHouse, fetchMyPets, fetchSharedPet, openOwnerPhoto, reopenPet, reportPet, revealPet } from './lib/api';
-import { getKstDate, grantUploadCredit, hasUploadBonus, isAllowanceForToday, MAX_REWARDED_PER_DAY, millisecondsUntilNextFreeRecharge, millisecondsUntilNextKstDay, readAllowance, refreshAllowance, regularRemainingCount, resetStoredAllowance, saveAllowance } from './lib/allowance';
+import { cancelAdReward, closeShareReward, completeAdReward, fetchHouse, fetchMyPets, fetchRechargeNotificationSettings, fetchRewardStatus, fetchSharedPet, openOwnerPhoto, rebindAdReward, recordShareReward, reopenPet, reportPet, revealPet, setRechargeNotificationSettings, startAdReward, startShareReward, type RechargeNotificationSettings } from './lib/api';
+import { bonusRemainingCount, getKstDate, grantUploadCredit, hasUploadBonus, isAllowanceForToday, MAX_REWARDED_PER_DAY, millisecondsUntilNextFreeRecharge, millisecondsUntilNextKstDay, readAllowance, refreshAllowance, regularRemainingCount, resetStoredAllowance, saveAllowance } from './lib/allowance';
 import { trackProductEvent } from './lib/analytics';
 import { createInitialRouteStack, getCurrentRoute, homeRouteStack, popRoute, pushRoute } from './lib/appRoutes';
 import { getSharedPetId } from './lib/deepLink';
-import { HOUSE_PET_LIMIT } from './lib/housePets';
+import { HOUSE_PET_LIMIT, normalizeDailyProgress } from './lib/housePets';
 import { playHaptic } from './lib/haptics';
 import { closeMiniApp, getInitialSharedPetId, subscribeNativeNavigation } from './lib/nativeNavigation';
 import { isPetRevisitActive, resolvePetAccess, type PetAccessDecision } from './lib/petAccess';
@@ -21,7 +21,10 @@ import { subscribeSafeArea } from './lib/safeArea';
 import { getPetSoundVariant, playSoundEffect, readSoundEnabled, resumeSound, saveSoundEnabled, suspendSound, type SoundEffect } from './lib/sound';
 import { sharePet } from './lib/toss';
 import { resetPreviewReveals } from './lib/previewPetStore';
-import type { AppRoute, DailyAllowance, DailyProgress, HouseResult, OwnedPetSummary, PetSummary, UnlockMethod } from './types';
+import { openShareReward, supportsShareReward } from './lib/shareReward';
+import { requestRechargeNotificationAgreement } from './lib/rechargeNotification';
+import { acknowledgeRewardRecovery, acknowledgeRewardStart, assertRewardStorage, canReplayRewardJob, enqueueRewardRecovery, forgetActiveRewardSession, getRewardStartRequest, readActiveRewardSessions, readRewardRecovery, rememberActiveRewardSession } from './lib/rewardRecovery';
+import type { AdRewardCredit, AppRoute, DailyAllowance, DailyProgress, HouseResult, OwnedPetSummary, PetSummary, RewardCapabilities, RewardStatus, UnlockMethod } from './types';
 
 const MyPetsScreen = lazy(() => import('./components/MyPetsScreen').then((module) => ({ default: module.MyPetsScreen })));
 const PlayScene = lazy(() => import('./components/PlayScene').then((module) => ({ default: module.PlayScene })));
@@ -33,10 +36,11 @@ type PreparedVisit = {
   petId: string;
   method?: UnlockMethod;
   adSessionId?: string;
+  requestId?: string;
   characterOnlyReason?: Extract<PetAccessDecision, { kind: 'characterOnly' }>['reason'];
 };
 
-type PhotoAccessKind = 'ownerPhoto' | 'revisit';
+type PhotoAccessKind = 'ownerPhoto' | 'revisit' | 'initial';
 type PhotoReturnMode = 'overlay' | 'home';
 
 const HOUSE_SWR_MS = 5 * 60_000;
@@ -78,12 +82,15 @@ export default function App() {
   const [allowance, setAllowance] = useState<DailyAllowance>(() => readAllowance());
   const allowanceRef = useRef(allowance);
   const [rechargeClock, setRechargeClock] = useState(() => new Date());
+  const serverOffsetRef = useRef(0);
   const [photoUrl, setPhotoUrl] = useState<string>();
   const photoUrlRef = useRef(photoUrl);
+  const photoExpiresAtRef = useRef<string>();
   const [photoOpen, setPhotoOpen] = useState(false);
   const photoOpenRef = useRef(false);
   const [photoLoading, setPhotoLoading] = useState(false);
   const [photoLoadError, setPhotoLoadError] = useState('');
+  const [photoAccessExpired, setPhotoAccessExpired] = useState(false);
   const [photoMilestone, setPhotoMilestone] = useState<string>();
   const [photoAccessKind, setPhotoAccessKind] = useState<PhotoAccessKind>();
   const [photoReturnMode, setPhotoReturnMode] = useState<PhotoReturnMode>('overlay');
@@ -93,6 +100,19 @@ export default function App() {
   const adPromptPetRef = useRef<PetSummary>();
   const adCreditsRef = useRef(new Map<string, string>());
   const adAbortRef = useRef<AbortController>();
+  const shareAbortRef = useRef<AbortController>();
+  const [shareBusy, setShareBusy] = useState(false);
+  const shareBusyRef = useRef(false);
+  const [rewardCapabilities, setRewardCapabilities] = useState<RewardCapabilities>({ ads: false, share: false });
+  const [rewardCredits, setRewardCredits] = useState<AdRewardCredit[]>([]);
+  const [rebindSessionId, setRebindSessionId] = useState<string>();
+  const [notificationSettings, setNotificationSettings] = useState<RechargeNotificationSettings>({ enabled: false, available: false });
+  const [notificationBusy, setNotificationBusy] = useState(false);
+  const notificationBusyRef = useRef(false);
+  const notificationAbortRef = useRef<AbortController>();
+  const recoveryRef = useRef<Promise<void>>();
+  const [ticketPromptPet, setTicketPromptPet] = useState<PetSummary>();
+  const ticketPromptPetRef = useRef<PetSummary>();
   const [adStatus, setAdStatus] = useState<RewardedAdStatus>(getRewardedAdStatus);
   const [toast, setToastText] = useState('');
   const [toastEventId, setToastEventId] = useState(0);
@@ -187,6 +207,8 @@ export default function App() {
       setPets(value.dailyPets ?? value.pets);
       setOwnerBonusPet(value.ownerBonusPet);
       setDailyProgress(value.dailyProgress);
+      synchronizeServerClock(value.serverNow);
+      if (value.rewardStatus) applyRewardStatus(value.rewardStatus);
       if (value.allowance) {
         allowanceRef.current = value.allowance;
         setAllowance(value.allowance);
@@ -223,6 +245,73 @@ export default function App() {
     allowanceRef.current = next;
     setAllowance(next);
     saveAllowance(next);
+  }
+
+  function applyRewardStatus(status: RewardStatus) {
+    synchronizeServerClock(status.serverNow);
+    applyServerAllowance(status.allowance);
+    setRewardCapabilities(status.capabilities);
+    setRewardCredits(status.adCredits);
+    adCreditsRef.current = new Map(status.adCredits.filter((credit) => !credit.canRebind).map((credit) => [credit.petId, credit.sessionId]));
+  }
+
+  function synchronizeServerClock(serverNow?: string) {
+    const timestamp = Date.parse(serverNow ?? '');
+    if (!Number.isFinite(timestamp)) return;
+    serverOffsetRef.current = timestamp - Date.now();
+    setRechargeClock(new Date(timestamp));
+  }
+
+  function serverDate() { return new Date(Date.now() + serverOffsetRef.current); }
+
+  function applyErrorAllowance(error: unknown) {
+    if (error && typeof error === 'object' && 'serverNow' in error && typeof error.serverNow === 'string') {
+      synchronizeServerClock(error.serverNow);
+    }
+    if (error && typeof error === 'object' && 'allowance' in error && error.allowance) {
+      applyServerAllowance(error.allowance as DailyAllowance);
+    }
+  }
+
+  function isExpiredPhotoError(error: unknown): boolean {
+    return Boolean(error && typeof error === 'object' && 'code' in error
+      && ['PET_REVISIT_EXPIRED', 'REVEAL_REQUEST_EXPIRED'].includes(String(error.code)));
+  }
+
+  function recoverRewards(): Promise<void> {
+    if (recoveryRef.current) return recoveryRef.current;
+    const run = async () => {
+      for (const session of readActiveRewardSessions()) {
+        if ((session.kind === 'ad' && adAbortRef.current) || (session.kind === 'share' && shareAbortRef.current)) continue;
+        const jobs = readRewardRecovery();
+        const terminal = jobs.some((job) => job.sessionId === session.sessionId && job.kind !== 'shareReward');
+        if (!terminal) {
+          enqueueRewardRecovery(session.kind === 'ad'
+            ? { kind: 'adCancel', sessionId: session.sessionId, requestId: crypto.randomUUID() }
+            : { kind: 'shareClose', sessionId: session.sessionId, requestId: crypto.randomUUID(), summary: null });
+        }
+        forgetActiveRewardSession(session.sessionId);
+      }
+      for (const job of readRewardRecovery()) {
+        if (!canReplayRewardJob(job, readRewardRecovery())) continue;
+        try {
+          const status = job.kind === 'adComplete' ? await completeAdReward(job.sessionId)
+            : job.kind === 'adCancel' ? await cancelAdReward(job.sessionId)
+              : job.kind === 'shareReward' ? await recordShareReward(job.sessionId, job.requestId, job.rewardAmount, job.eventSequence)
+                : await closeShareReward(job.sessionId, job.requestId, job.summary);
+          applyRewardStatus(status);
+          acknowledgeRewardRecovery(job.requestId);
+          if ('reconciliationRequired' in status && status.reconciliationRequired) {
+            setToast('공유 결과를 확인하고 있어요. 확인된 티켓은 그대로 보관돼요.');
+          }
+        } catch (error) { applyErrorAllowance(error); }
+      }
+      try { applyRewardStatus(await fetchRewardStatus()); } catch { /* Keep confirmed balances during temporary outages. */ }
+    };
+    recoveryRef.current = run().catch((error) => {
+      setToast(error instanceof Error ? error.message : '보상 기록을 다시 확인하지 못했어요. 앱을 다시 열어 주세요.');
+    }).finally(() => { recoveryRef.current = undefined; });
+    return recoveryRef.current;
   }
 
   /** 공개/재열람 결과가 어느 화면에서 시작됐든 모든 로컬 강아지 캐시를 같이 갱신한다. */
@@ -289,6 +378,8 @@ export default function App() {
       if (generation !== sharedGenerationRef.current) return;
       setSelected(result.pet);
       if (result.allowance) applyServerAllowance(result.allowance);
+      synchronizeServerClock(result.serverNow);
+      if (result.rewardStatus) applyRewardStatus(result.rewardStatus);
       setSharedError('');
     } catch (error) {
       if (generation !== sharedGenerationRef.current) return;
@@ -302,6 +393,36 @@ export default function App() {
   useEffect(() => {
     if (!initialSharedPetId) void loadHouse();
   }, [initialSharedPetId]);
+  useEffect(() => {
+    const onVisible = () => { if (!document.hidden) void recoverRewards(); };
+    onVisible();
+    void fetchRechargeNotificationSettings().then(setNotificationSettings).catch(() => undefined);
+    window.addEventListener('focus', onVisible);
+    window.addEventListener('pageshow', onVisible);
+    window.addEventListener('online', onVisible);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      shareAbortRef.current?.abort();
+      notificationAbortRef.current?.abort();
+      window.removeEventListener('focus', onVisible);
+      window.removeEventListener('pageshow', onVisible);
+      window.removeEventListener('online', onVisible);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
+  useEffect(() => {
+    const pending = screen === 'shared' ? selected?.approvalStatus === 'pending'
+      : screen === 'mine' ? myPets.some((pet) => pet.approvalStatus === 'pending')
+        : screen === 'home' && ownerBonusPet?.approvalStatus === 'pending';
+    if (!pending) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden || busyRef.current) return;
+      if (screen === 'shared' && sharedPetId) void loadSharedPet(sharedPetId);
+      else if (screen === 'mine') void refreshMyPets();
+      else void loadHouse();
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [screen, sharedPetId, selected?.approvalStatus, myPets, ownerBonusPet?.approvalStatus]);
   useEffect(() => {
     const refreshVisibleHome = () => {
       if (document.hidden || screen !== 'home' || Date.now() - lastHouseLoadedAtRef.current < HOUSE_SWR_MS) return;
@@ -348,6 +469,7 @@ export default function App() {
   }, [showHomeHint]);
   useEffect(() => { allowanceRef.current = allowance; }, [allowance]);
   useEffect(() => { adPromptPetRef.current = adPromptPet; }, [adPromptPet]);
+  useEffect(() => { ticketPromptPetRef.current = ticketPromptPet; }, [ticketPromptPet]);
   useEffect(() => { uploadDraftDirtyRef.current = uploadDraftDirty; }, [uploadDraftDirty]);
   useEffect(() => { uploadDiscardOpenRef.current = uploadDiscardOpen; }, [uploadDiscardOpen]);
   useEffect(() => {
@@ -362,9 +484,9 @@ export default function App() {
     return () => window.removeEventListener('cute-enough:upload-dirty-change', handleUploadDirtyChange);
   }, []);
   useEffect(() => {
-    setRechargeClock(new Date());
+    setRechargeClock(serverDate());
     if (!allowance.nextChargeAt) return undefined;
-    const timer = window.setInterval(() => setRechargeClock(new Date()), RECHARGE_COPY_REFRESH_MS);
+    const timer = window.setInterval(() => setRechargeClock(serverDate()), RECHARGE_COPY_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [allowance.nextChargeAt]);
   useEffect(() => {
@@ -400,13 +522,13 @@ export default function App() {
     const refreshFreeAllowance = async () => {
       if (document.hidden || !isAllowanceForToday(allowanceRef.current)) return;
       const current = allowanceRef.current;
-      const refreshed = refreshAllowance(current);
+      const refreshed = refreshAllowance(current, serverDate());
       const changed = refreshed.remaining !== current.remaining
         || refreshed.nextChargeAt !== current.nextChargeAt;
       if (!changed) return;
       await loadHouse(true);
     };
-    const delay = millisecondsUntilNextFreeRecharge(allowance);
+    const delay = millisecondsUntilNextFreeRecharge(allowance, serverDate());
     if (delay !== null) {
       rechargeTimer = window.setTimeout(() => void refreshFreeAllowance(), delay + 500);
     }
@@ -435,7 +557,6 @@ export default function App() {
       if (document.hidden || isAllowanceForToday(allowanceRef.current)) return;
       adAbortRef.current?.abort();
       adPromptPetRef.current = undefined;
-      adCreditsRef.current.clear();
       setPreparedVisit(undefined);
       setAdPromptPet(undefined);
       await loadHouse(true);
@@ -489,9 +610,12 @@ export default function App() {
   }, [pets, ownerBonusPet, myPets, selected]);
 
   const remaining = useMemo(
-    () => regularRemainingCount(allowance),
-    [allowance],
+    () => regularRemainingCount(allowance, rechargeClock),
+    [allowance, rechargeClock],
   );
+  const bonusTickets = bonusRemainingCount(allowance);
+  const adsAvailable = rewardedAdsEnabled && rewardCapabilities.ads;
+  const shareAvailable = rewardCapabilities.share && supportsShareReward();
   const rechargeCopy = useMemo(
     () => formatRechargeCountdown(allowance.nextChargeAt, rechargeClock),
     [allowance.nextChargeAt, rechargeClock],
@@ -511,21 +635,18 @@ export default function App() {
   function updateDailyProgressAfterPhoto(pet: PetSummary, serverProgress?: DailyProgress): DailyProgress | undefined {
     if (pet.isMine || ownerBonusPet?.id === pet.id) return dailyProgress;
     const previous = dailyProgress ?? visibleProgress;
-    const next = serverProgress ?? (() => {
-      const metPetIds = previous.metPetIds.includes(pet.id)
-        ? previous.metPetIds
-        : [...previous.metPetIds, pet.id];
-      return {
-        date: previous.date || allowance.date,
-        metPetIds,
-        metCount: Math.min(HOUSE_PET_LIMIT, metPetIds.length),
-        totalCount: HOUSE_PET_LIMIT,
-        completed: metPetIds.length >= HOUSE_PET_LIMIT,
-      };
-    })();
+    const source = serverProgress ?? previous;
+    const sourceMetPetIds = source.metPetIds.includes(pet.id)
+      ? source.metPetIds
+      : [...source.metPetIds, pet.id];
+    const next = normalizeDailyProgress(
+      { ...source, metPetIds: sourceMetPetIds },
+      pets,
+      source.date || allowance.date,
+    );
     setDailyProgress(next);
     if (!previous.completed && next.completed) {
-      setPhotoMilestone(`오늘의 다섯 번째 친구 · ${next.metCount}/${next.totalCount}`);
+      setPhotoMilestone(`오늘의 네 번째 친구 · ${next.metCount}/${next.totalCount}`);
       completionPendingDateRef.current = next.date;
     }
     return next;
@@ -534,7 +655,7 @@ export default function App() {
   function enterPlay(pet: PetSummary, visit: PreparedVisit, playGreeting = true) {
     if (playGreeting) playSound('bark', getPetSoundVariant(pet.id));
     setSelected(pet);
-    setPreparedVisit(visit);
+    setPreparedVisit({ ...visit, requestId: visit.requestId ?? crypto.randomUUID() });
     navigateTo({ screen: 'play', petId: pet.id });
     photoUrlRef.current = undefined;
     setPhotoUrl(undefined);
@@ -543,7 +664,7 @@ export default function App() {
     setPhotoLoadError('');
   }
 
-  async function openDirectPhoto(pet: PetSummary, kind: PhotoAccessKind, retry = false): Promise<boolean> {
+  async function openDirectPhoto(pet: PetSummary, kind: Exclude<PhotoAccessKind, 'initial'>, retry = false): Promise<boolean> {
     if (busyRef.current) return false;
     busyRef.current = true;
     setBusy(true);
@@ -552,6 +673,7 @@ export default function App() {
     setPhotoOpen(true);
     setPhotoLoading(true);
     setPhotoLoadError('');
+    setPhotoAccessExpired(false);
     if (!retry) {
       setPhotoReturnMode('overlay');
       photoReturnModeRef.current = 'overlay';
@@ -565,10 +687,12 @@ export default function App() {
       let nextProgress: DailyProgress | undefined;
       if (kind === 'ownerPhoto') {
         const result = await openOwnerPhoto(pet);
+        photoExpiresAtRef.current = result.signedUrlExpiresAt;
         nextPhotoUrl = result.photoUrl;
         patch = { ownerPhotoAvailable: result.ownerPhotoAvailable };
       } else {
         const result = await reopenPet(pet);
+        photoExpiresAtRef.current = result.signedUrlExpiresAt;
         applyServerAllowance(result.allowance);
         nextPhotoUrl = result.photoUrl;
         nextProgress = result.dailyProgress;
@@ -592,7 +716,9 @@ export default function App() {
       trackProductEvent('photo_reveal', { access_method: kind });
       return true;
     } catch (error) {
+      applyErrorAllowance(error);
       const message = error instanceof Error ? error.message : '사진을 다시 열지 못했어요.';
+      setPhotoAccessExpired(isExpiredPhotoError(error));
       setPhotoLoadError(message);
       setToast(message);
       return false;
@@ -605,7 +731,26 @@ export default function App() {
 
   function choosePet(pet: PetSummary) {
     dismissHomeHint();
-    const access = resolvePetAccess(pet, allowance, rewardedAdsEnabled);
+    if (busyRef.current || shareBusyRef.current) return;
+    if (rebindSessionId) {
+      if (pet.isMine || pet.approvalStatus !== 'approved' || isPetRevisitActive(pet, serverDate())) {
+        setToast('사진을 새로 만날 공개 친구를 골라 주세요.');
+        return;
+      }
+      busyRef.current = true;
+      setBusy(true);
+      const sessionId = rebindSessionId;
+      void rebindAdReward(sessionId, pet.id).then((status) => {
+        applyRewardStatus(status);
+        setRebindSessionId(undefined);
+        enterPlay(pet, { petId: pet.id, method: 'REWARDED', adSessionId: sessionId });
+      }).catch((error) => {
+        applyErrorAllowance(error);
+        setToast(error instanceof Error ? error.message : '보상을 옮기지 못했어요. 다시 선택해 주세요.');
+      }).finally(() => { busyRef.current = false; setBusy(false); });
+      return;
+    }
+    const access = resolvePetAccess(pet, allowanceRef.current, adsAvailable, serverDate());
     trackProductEvent('pet_select', { access_kind: access.kind });
     if (access.kind === 'ownerPhoto') {
       void openDirectPhoto(pet, 'ownerPhoto');
@@ -623,17 +768,17 @@ export default function App() {
       setToast('이 친구는 지금 잠시 쉬고 있어요.');
       return;
     }
+    const existingCredit = adCreditsRef.current.get(pet.id);
+    if (existingCredit) {
+      enterPlay(pet, { petId: pet.id, method: 'REWARDED', adSessionId: existingCredit });
+      return;
+    }
     if (access.kind === 'exhausted') {
-      setToast(DAILY_LIMIT_TOAST);
+      setTicketPromptPet(pet);
       return;
     }
     const method = access.method;
     if (method === 'REWARDED') {
-      const existingCredit = adCreditsRef.current.get(pet.id);
-      if (existingCredit) {
-        enterPlay(pet, { petId: pet.id, method, adSessionId: existingCredit });
-        return;
-      }
       playSound('bark', getPetSoundVariant(pet.id));
       setSelected(pet);
       adPromptPetRef.current = pet;
@@ -654,6 +799,7 @@ export default function App() {
   }
 
   function navigateBack() {
+    if (ticketPromptPetRef.current) { ticketPromptPetRef.current = undefined; setTicketPromptPet(undefined); return; }
     if (uploadDiscardOpenRef.current) {
       uploadDiscardOpenRef.current = false;
       setUploadDiscardOpen(false);
@@ -704,6 +850,7 @@ export default function App() {
     adAbortRef.current?.abort();
     adPromptPetRef.current = undefined;
     setAdPromptPet(undefined);
+    setTicketPromptPet(undefined);
     updateRouteStack(homeRouteStack());
     setSelected(undefined);
     setPreparedVisit(undefined);
@@ -740,15 +887,40 @@ export default function App() {
     const abort = new AbortController();
     adAbortRef.current = abort;
     await suspendSound();
+    let sessionId: string | undefined;
+    let earned = false;
     try {
-      await showRewardedAd(abort.signal);
-      const adSessionId = crypto.randomUUID();
-      adCreditsRef.current.set(pet.id, adSessionId);
+      await recoverRewards();
+      assertRewardStorage();
+      const session = await startAdReward(pet.id, getRewardStartRequest(`ad:${pet.id}`));
+      sessionId = session.sessionId;
+      rememberActiveRewardSession({ kind: 'ad', sessionId: session.sessionId });
+      acknowledgeRewardStart(`ad:${pet.id}`);
+      applyRewardStatus(session);
+      await showRewardedAd(abort.signal, () => {
+        earned = true;
+        enqueueRewardRecovery({ kind: 'adComplete', requestId: crypto.randomUUID(), sessionId: session.sessionId, petId: pet.id });
+        forgetActiveRewardSession(session.sessionId);
+        void recoverRewards();
+      });
+      if (!earned) throw new Error('광고 완료 결과를 확인하지 못했어요.');
+      await recoverRewards();
+      if (readRewardRecovery().some((job) => job.kind === 'adComplete' && job.sessionId === session.sessionId)) await recoverRewards();
       adPromptPetRef.current = undefined;
       setAdPromptPet(undefined);
-      enterPlay(pet, { petId: pet.id, method: 'REWARDED', adSessionId }, false);
+      if (!adCreditsRef.current.has(pet.id)) {
+        setToast('광고 보상을 저장하고 있어요. 연결되면 이 친구를 바로 만날 수 있어요.');
+        return;
+      }
+      enterPlay(pet, { petId: pet.id, method: 'REWARDED', adSessionId: session.sessionId }, false);
       trackProductEvent('rewarded_ad_result', { result: 'rewarded' });
     } catch (error) {
+      applyErrorAllowance(error);
+      if (sessionId && !earned) {
+        enqueueRewardRecovery({ kind: 'adCancel', sessionId, requestId: crypto.randomUUID() });
+        forgetActiveRewardSession(sessionId);
+        void recoverRewards();
+      }
       trackProductEvent('rewarded_ad_result', {
         result: error instanceof DOMException && error.name === 'AbortError' ? 'cancelled' : 'failed',
       });
@@ -763,9 +935,84 @@ export default function App() {
     }
   }
 
+  async function inviteFriends() {
+    if (shareBusyRef.current || busyRef.current || !shareAvailable) return;
+    shareBusyRef.current = true;
+    setShareBusy(true);
+    setToast('');
+    const abort = new AbortController();
+    shareAbortRef.current = abort;
+    const initialBonus = bonusRemainingCount(allowanceRef.current);
+    try {
+      await recoverRewards();
+      assertRewardStorage();
+      const session = await startShareReward(getRewardStartRequest('share'));
+      rememberActiveRewardSession({ kind: 'share', sessionId: session.sessionId });
+      acknowledgeRewardStart('share');
+      applyRewardStatus(session);
+      await openShareReward({
+        onReward(rewardAmount, eventSequence) {
+          enqueueRewardRecovery({ kind: 'shareReward', sessionId: session.sessionId, requestId: crypto.randomUUID(), rewardAmount, eventSequence });
+          void recoverRewards();
+        },
+        onClose(summary) {
+          enqueueRewardRecovery({ kind: 'shareClose', sessionId: session.sessionId, requestId: crypto.randomUUID(), summary });
+          forgetActiveRewardSession(session.sessionId);
+          void recoverRewards();
+        },
+      }, undefined, abort.signal);
+      await recoverRewards();
+      if (readRewardRecovery().some((job) => job.sessionId === session.sessionId)) await recoverRewards();
+      const granted = bonusRemainingCount(allowanceRef.current) - initialBonus;
+      if (granted > 0) {
+        setToast(`보너스 티켓 ${granted}장을 받았어요.`);
+        adPromptPetRef.current = undefined;
+        setAdPromptPet(undefined);
+        setTicketPromptPet(undefined);
+      } else if (readRewardRecovery().some((job) => job.sessionId === session.sessionId)) {
+        setToast('공유 결과를 저장하고 있어요. 연결되면 티켓을 확인할 수 있어요.');
+      }
+    } catch (error) {
+      applyErrorAllowance(error);
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        setToast(error instanceof Error ? error.message : '친구 초대를 열지 못했어요.');
+      }
+    } finally {
+      shareAbortRef.current = undefined;
+      shareBusyRef.current = false;
+      setShareBusy(false);
+      void recoverRewards();
+    }
+  }
+
   async function openMyPets() {
     if (getCurrentRoute(routeStackRef.current).screen !== 'mine') navigateTo({ screen: 'mine' });
     await refreshMyPets();
+  }
+
+  async function toggleRechargeNotification() {
+    if (notificationBusyRef.current || busyRef.current || shareBusyRef.current) return;
+    notificationBusyRef.current = true;
+    setNotificationBusy(true);
+    const abort = new AbortController();
+    notificationAbortRef.current = abort;
+    try {
+      if (notificationSettings.enabled) {
+        setNotificationSettings(await setRechargeNotificationSettings(false));
+        setToast('충전 알림을 껐어요.');
+        return;
+      }
+      if (!notificationSettings.templateCode) return;
+      const agreement = await requestRechargeNotificationAgreement(notificationSettings.templateCode, abort.signal);
+      if (agreement !== 'granted') {
+        if (agreement === 'unsupported') setToast('토스 앱을 업데이트한 뒤 충전 알림을 신청해 주세요.');
+        return;
+      }
+      setNotificationSettings(await setRechargeNotificationSettings(true, true));
+      setToast('이용권이 충전되면 하루 한 번 알려드릴게요.');
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '알림 설정을 저장하지 못했어요.');
+    } finally { notificationAbortRef.current = undefined; notificationBusyRef.current = false; setNotificationBusy(false); }
   }
 
   async function handleFed() {
@@ -780,18 +1027,19 @@ export default function App() {
     }
     busyRef.current = true;
     setBusy(true);
-    setPhotoAccessKind(selected.isMine ? 'ownerPhoto' : 'revisit');
+    setPhotoAccessKind('initial');
     setPhotoReturnMode('home');
     photoReturnModeRef.current = 'home';
     setPhotoMilestone(undefined);
     setPhotoLoadError('');
     setPhotoLoading(true);
+    setPhotoAccessExpired(false);
     photoUrlRef.current = undefined;
     setPhotoUrl(undefined);
     photoOpenRef.current = true;
     setPhotoOpen(true);
     try {
-      const result = await revealPet(selected, preparedVisit.method, preparedVisit.adSessionId);
+      const result = await revealPet(selected, preparedVisit.method, preparedVisit.adSessionId, preparedVisit.requestId);
       applyServerAllowance(result.allowance);
       const revisitUntil = result.revisitUntil;
       patchPetCaches(selected.id, {
@@ -803,13 +1051,20 @@ export default function App() {
       mineGenerationRef.current += 1;
       mineNeedsRefreshRef.current = true;
       invalidateHouseSnapshot();
-      if (preparedVisit.method === 'REWARDED') adCreditsRef.current.delete(selected.id);
+      if (preparedVisit.method === 'REWARDED') {
+        adCreditsRef.current.delete(selected.id);
+        setRewardCredits((credits) => credits.filter((credit) => credit.sessionId !== preparedVisit.adSessionId));
+      }
+      photoExpiresAtRef.current = result.signedUrlExpiresAt;
+      setPhotoAccessKind(selected.isMine ? 'ownerPhoto' : 'revisit');
       photoUrlRef.current = result.photoUrl;
       setPhotoUrl(result.photoUrl); setToast(''); playSound('reveal');
       trackProductEvent('play_complete', { access_method: preparedVisit.method });
       trackProductEvent('photo_reveal', { access_method: preparedVisit.method });
     } catch (error) {
+      applyErrorAllowance(error);
       const message = error instanceof Error ? error.message : '사진을 열지 못했어요.';
+      setPhotoAccessExpired(isExpiredPhotoError(error));
       setPhotoLoadError(message);
       setToast(message);
     }
@@ -827,10 +1082,10 @@ export default function App() {
     <ConfirmDialog
       open={Boolean(adPromptPet)}
       title="광고를 보고 지금 이 친구 만나기"
-      description={`광고를 끝까지 보면 바로 만날 수 있어요.\n오늘 ${allowance.rewardedUsed}/${rewardedLimit}번 사용${rechargeCopy ? ` · 또는 ${rechargeCopy}` : ''}`}
+      description={<><span>{`광고를 끝까지 보면 바로 만날 수 있어요.\n오늘 ${allowance.rewardedUsed}/${rewardedLimit}번 사용${rechargeCopy ? ` · 또는 ${rechargeCopy}` : ''}`}</span>{shareAvailable && <button type="button" className="reward-alternative" disabled={shareBusy || busy} onClick={() => void inviteFriends()}>공유하고 티켓 받기</button>}</>}
       closeOnBackEvent={false}
       onClose={closeAdPrompt}
-      cancelButton={<ConfirmDialog.CancelButton onClick={closeAdPrompt}>다른 강아지 고르기</ConfirmDialog.CancelButton>}
+      cancelButton={<ConfirmDialog.CancelButton onClick={closeAdPrompt}>충전 기다리기</ConfirmDialog.CancelButton>}
       confirmButton={(
         <ConfirmDialog.ConfirmButton
           onClick={() => void confirmRewardedVisit()}
@@ -842,6 +1097,15 @@ export default function App() {
       )}
     />
   );
+  const ticketDialog = <ConfirmDialog
+    open={Boolean(ticketPromptPet)}
+    title="다음 친구도 만나볼까요?"
+    description={shareAvailable ? `친구에게 초대하면 보너스 티켓을 받아요.${rechargeCopy ? `\n또는 ${rechargeCopy}` : ''}` : rechargeCopy ?? '이용권은 3시간마다 한 장씩 충전돼요.'}
+    closeOnBackEvent={false}
+    onClose={() => setTicketPromptPet(undefined)}
+    cancelButton={<ConfirmDialog.CancelButton onClick={() => setTicketPromptPet(undefined)}>충전 기다리기</ConfirmDialog.CancelButton>}
+    confirmButton={shareAvailable ? <ConfirmDialog.ConfirmButton loading={shareBusy} onClick={() => void inviteFriends()}>공유하고 티켓 받기</ConfirmDialog.ConfirmButton> : undefined}
+  />;
   const uploadDiscardDialog = (
     <ConfirmDialog
       open={uploadDiscardOpen}
@@ -898,8 +1162,15 @@ export default function App() {
     loading={photoLoading}
     loadError={photoLoadError}
     milestoneText={photoMilestone}
+    retryPhotoLabel={photoAccessExpired ? '집에서 다시 만나기' : undefined}
     onClose={closePhotoCard}
     onRetryPhoto={async () => {
+      if (photoAccessExpired) { closePhotoCard(); goHome(); return; }
+      if (photoAccessKind === 'initial') {
+        await handleFed();
+        if (!photoUrlRef.current) throw new Error('사진을 다시 열지 못했어요.');
+        return;
+      }
       if (!photoAccessKind || !(await openDirectPhoto(selected, photoAccessKind, true))) {
         throw new Error('사진을 다시 열지 못했어요.');
       }
@@ -914,7 +1185,11 @@ export default function App() {
     }}
     onSave={photoUrl ? async () => {
       try {
-        const destination = await saveBrandedPetPhoto(photoUrl, selected.name);
+        const expiresAt = Date.parse(photoExpiresAtRef.current ?? '');
+        if (Number.isFinite(expiresAt) && expiresAt <= Date.now() + 5_000) {
+          if (!photoAccessKind || photoAccessKind === 'initial' || !(await openDirectPhoto(selected, photoAccessKind, true))) return;
+        }
+        const destination = await saveBrandedPetPhoto(photoUrlRef.current ?? photoUrl, selected.name);
         setToast(destination === 'device'
           ? `${selected.name || '강아지'} 이름표와 함께 기기에 저장했어요.`
           : `${selected.name || '강아지'} 이름표가 담긴 사진을 저장했어요.`);
@@ -946,6 +1221,7 @@ export default function App() {
     return <>
       {content}
       {adDialog}
+      {ticketDialog}
       {uploadDiscardDialog}
       {photoCard}
       <AppToast
@@ -1014,7 +1290,7 @@ export default function App() {
     if (!selected) return renderWithAppShell(<main className="shared-screen shared-loading"><p>친구를 만나러 가는 중…</p></main>);
     return renderWithAppShell(<Suspense fallback={screenFallback}><SharedPetLanding
       pet={selected}
-      accessDecision={resolvePetAccess(selected, allowance, rewardedAdsEnabled)}
+      accessDecision={resolvePetAccess(selected, allowance, adsAvailable, rechargeClock)}
       onHome={goHome}
       onMeet={() => choosePet(selected)}
     /></Suspense>);
@@ -1037,7 +1313,7 @@ export default function App() {
       </section>
       <section
         className="daily-card daily-card--v2"
-        aria-label={`오늘 만난 친구 ${visibleProgress.metCount}/${visibleProgress.totalCount}, 무료 이용권 ${remaining}/${FREE_ALLOWANCE_DISPLAY_CAPACITY}${rechargeCopy ? `, ${rechargeCopy}` : ', 최대 2개까지 보관'}${uploadBonusAvailable ? ', 내 강아지 무료 1회' : ''}`}
+        aria-label={`오늘 만난 친구 ${visibleProgress.metCount}/${visibleProgress.totalCount}, 무료 이용권 ${remaining}/${FREE_ALLOWANCE_DISPLAY_CAPACITY}, 보너스 ${bonusTickets}장${rechargeCopy ? `, ${rechargeCopy}` : ', 최대 2개까지 보관'}${uploadBonusAvailable ? ', 내 강아지 무료 1회' : ''}`}
       >
         <div className="daily-progress-row">
           <Asset.Icon name="heart-line" color="#ff506f" backgroundColor="#fff0f3" frameShape={Asset.frameShape.CircleLarge} aria-hidden="true" />
@@ -1053,12 +1329,12 @@ export default function App() {
         </div>
         <div className="daily-allowance-row">
           <div>
-            <strong>이용권 {remaining}개</strong>
+            <strong>무료 {remaining}/{FREE_ALLOWANCE_DISPLAY_CAPACITY} · 보너스 {bonusTickets}장</strong>
             <small>{remaining < FREE_ALLOWANCE_DISPLAY_CAPACITY
               ? rechargeCopy ?? '곧 1개 충전'
               : '최대 2개까지 보관해요'}</small>
           </div>
-          {remaining === 0 && rewardedAdsEnabled && rewardedRemaining > 0 && (
+          {remaining === 0 && bonusTickets === 0 && adsAvailable && rewardedRemaining > 0 && (
             <span className="daily-ad-skip">광고로 기다림 건너뛰기 · 오늘 {rewardedRemaining}번 남음</span>
           )}
           {visibleProgress.completed && <span className="daily-complete-label">내일 새 친구들이 와요</span>}
@@ -1075,6 +1351,18 @@ export default function App() {
           }}>테스트 다시 시작</button>
         )}
       </section>
+      {(notificationSettings.enabled || (notificationSettings.available && remaining === 0)) && <div className="home-recharge-notification">
+        <button type="button" disabled={notificationBusy || busy || shareBusy} onClick={() => void toggleRechargeNotification()}>{notificationBusy ? '알림 설정 중…' : notificationSettings.enabled ? '충전 알림 끄기' : '충전되면 알려주세요'}</button>
+        {!notificationSettings.enabled && <small>하루 최대 1회, 밤 9시부터 오전 8시까지는 보내지 않아요.</small>}
+      </div>}
+      {rebindSessionId ? <div className="home-reward-rebind" role="status">
+        <span>남겨둔 광고 보상으로 만날 공개 친구를 골라 주세요.</span>
+        <button type="button" onClick={() => setRebindSessionId(undefined)}>취소</button>
+      </div> : rewardCredits.find((credit) => credit.canRebind) && <button type="button" className="reward-alternative" onClick={() => setRebindSessionId(rewardCredits.find((credit) => credit.canRebind)?.sessionId)}>남겨둔 광고 보상으로 다른 친구 고르기</button>}
+      {shareAvailable && <div className="home-share-reward">
+        <button type="button" onClick={() => void inviteFriends()} disabled={shareBusy || busy}>{shareBusy ? '공유 결과 확인 중…' : '친구에게 공유하고 티켓 받기'}</button>
+        <small>친구 1명에게 초대하면 보너스 티켓 1장을 받아요.</small>
+      </div>}
       <button className="my-pets-link" type="button" onClick={() => void openMyPets()}>내가 소개한 강아지</button>
       {houseError && pets.length === 0 && !ownerBonusPet ? (
         <section className="house-error">

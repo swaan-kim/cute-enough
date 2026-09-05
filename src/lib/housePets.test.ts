@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { OwnedPetSummary, PetSummary } from '../types';
-import { composeHousePets, HOUSE_PET_LIMIT, orderDailyPets, prioritizeRevealedPets } from './housePets';
+import {
+  composeHousePets,
+  HOUSE_PET_LIMIT,
+  HOUSE_VISIBLE_PET_LIMIT,
+  normalizeDailyProgress,
+  orderDailyPets,
+  prioritizeRevealedPets,
+} from './housePets';
 
 const traits = { schemaVersion: 1, earShape: 'floppy', headShape: 'round', baseColor: 'white', secondaryColor: 'cream', markingPattern: 'none', muzzle: 'short', confidence: 1 } as const;
 const owned = (id: string, approvalStatus: OwnedPetSummary['approvalStatus'] = 'pending'): OwnedPetSummary => ({ id, traits, approvalStatus, photoUrl: `/${id}.jpg` });
@@ -9,16 +16,16 @@ const approved = (id: string, revealedToday = false): PetSummary => ({ id, trait
 describe('composeHousePets', () => {
   it('keeps the latest owner pet visible independently of its upload bonus', () => {
     const result = composeHousePets([owned('mine-new'), owned('mine-old')], [approved('a'), approved('b'), approved('c'), approved('d')]);
-    expect(result).toHaveLength(HOUSE_PET_LIMIT);
+    expect(result).toHaveLength(HOUSE_VISIBLE_PET_LIMIT);
     expect(result[0]).toMatchObject({ id: 'mine-new', isMine: true, ownerPinned: true });
     expect(result.some(({ id }) => id === 'mine-old')).toBe(false);
   });
 
-  it('fills five stable slots while retaining the revealed flag for direct revisit', () => {
+  it('fills four public slots plus one owner slot while retaining direct revisit state', () => {
     const result = composeHousePets([owned('mine')], [approved('seen', true), approved('mine'), approved('a'), approved('b'), approved('c'), approved('d')]);
     expect(result.map(({ id }) => id)).toEqual(['mine', 'seen', 'a', 'b', 'c']);
     expect(result.find(({ id }) => id === 'seen')).toMatchObject({ revealedToday: true });
-    expect(new Set(result.map(({ id }) => id)).size).toBe(HOUSE_PET_LIMIT);
+    expect(new Set(result.map(({ id }) => id)).size).toBe(HOUSE_VISIBLE_PET_LIMIT);
   });
 
   it('moves revealed dogs ahead while preserving their relative daily order', () => {
@@ -27,7 +34,7 @@ describe('composeHousePets', () => {
     expect(result.filter(({ revealedToday }) => revealedToday)).toHaveLength(2);
   });
 
-  it('keeps a revealed dog that would otherwise fall out when an owner upload takes one slot', () => {
+  it('keeps a revealed dog within the independent four-public-dog limit', () => {
     const publicPets = [
       approved('new-a'),
       approved('new-b'),
@@ -38,7 +45,7 @@ describe('composeHousePets', () => {
 
     const result = composeHousePets([owned('mine-new')], publicPets);
 
-    expect(result).toHaveLength(HOUSE_PET_LIMIT);
+    expect(result).toHaveLength(HOUSE_VISIBLE_PET_LIMIT);
     expect(result[0]).toMatchObject({ id: 'mine-new', ownerPinned: true });
     expect(result.map(({ id }) => id)).toContain('seen-last');
     expect(result.map(({ id }) => id)).not.toContain('new-d');
@@ -67,7 +74,7 @@ describe('composeHousePets', () => {
     expect(result.map(({ id }) => id)).toEqual(['active', 'legacy', 'new', 'expired']);
   });
 
-  it('keeps only the newest owned pet so a pending upload occupies one of five slots', () => {
+  it('keeps only the newest owned pet without reducing the four public slots', () => {
     const result = composeHousePets([
       owned('newest'),
       { ...owned('older'), revealedToday: true },
@@ -106,5 +113,44 @@ describe('composeHousePets', () => {
 
     expect(composeHousePets([missingOwned, owned('mine-ready')], [missingPublic, approved('public-ready')]).map(({ id }) => id))
       .toEqual(['mine-ready', 'public-ready']);
+  });
+});
+
+describe('normalizeDailyProgress', () => {
+  it('keeps an authoritative completed slot after its viewed dog is replaced', () => {
+    expect(normalizeDailyProgress({
+      date: '2026-09-05', metPetIds: ['paused-old'], metCount: 1, totalCount: 4, completed: false,
+    }, ['replacement', 'b', 'c', 'd'].map((id) => approved(id)), '2026-09-05'))
+      .toMatchObject({ metPetIds: [], metCount: 1, totalCount: 4, completed: false });
+  });
+  it('normalizes a stale five-slot server response to the four visible public dogs', () => {
+    const dailyPets = ['a', 'b', 'c', 'd'].map((id) => approved(id));
+    const result = normalizeDailyProgress({
+      date: '2026-09-05',
+      metPetIds: ['a', 'b', 'c', 'd', 'stale-fifth'],
+      metCount: 5,
+      totalCount: 5,
+      completed: true,
+    }, dailyPets, '2026-09-05');
+
+    expect(result).toEqual({
+      date: '2026-09-05',
+      metPetIds: ['a', 'b', 'c', 'd'],
+      metCount: HOUSE_PET_LIMIT,
+      totalCount: HOUSE_PET_LIMIT,
+      completed: true,
+    });
+  });
+
+  it('does not count met ids that are absent from today\'s visible assignment', () => {
+    const result = normalizeDailyProgress({
+      date: '2026-09-05',
+      metPetIds: ['a', 'not-visible'],
+      metCount: 2,
+      totalCount: 5,
+      completed: false,
+    }, [approved('a'), approved('b'), approved('c'), approved('d')], '2026-09-05');
+
+    expect(result).toMatchObject({ metPetIds: ['a'], metCount: 1, totalCount: 4, completed: false });
   });
 });
