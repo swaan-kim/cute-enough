@@ -6,7 +6,7 @@
 
 ## 바로 체험하기
 
-### [웹 데모 열기 → cute-enough.vercel.app](https://cute-enough.vercel.app)
+### [웹 데모 열기 → cute-enough.vercel.app](https://cute-enough.vercel.app) (구 버전)
 
 웹 데모는 설치 없이 드래그, 간식 주기, 쓰다듬기, 샘플 사진 공개와 업로드 화면을 확인하는 시각 검수용입니다. 운영 Supabase와 광고는 연결하지 않습니다. 실제 토스 광고·사진 권한·사용자 식별키는 앱인토스 QR 테스트에서만 확인합니다.
 
