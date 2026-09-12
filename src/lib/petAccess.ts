@@ -11,9 +11,10 @@ export type PetAccessDecision =
 
 /** 시간 기반 권한을 우선하고, 만료 시각이 없는 구버전 응답만 당일 표시로 호환한다. */
 export function isPetRevisitActive(
-  pet: Pick<PetSummary, 'revisitUntil' | 'revealedToday'>,
+  pet: Pick<PetSummary, 'revisitUntil' | 'revealedToday' | 'albumPhotoId' | 'unlockedPhotoCount'>,
   now = new Date(),
 ): boolean {
+  if (pet.albumPhotoId && (pet.unlockedPhotoCount ?? 0) > 0) return true;
   if (pet.revisitUntil !== undefined) {
     const revisitUntil = new Date(pet.revisitUntil).getTime();
     return Number.isFinite(revisitUntil) && revisitUntil > now.getTime();
@@ -53,4 +54,24 @@ export function resolvePetAccess(
 
   const method = nextUnlockMethod(allowance, pet.id, rewardedAdsEnabled, now);
   return method ? { kind: 'reveal', method } : { kind: 'exhausted' };
+}
+
+/** 입장 시 확정한 의도는 놀이 도중 충전되어도 바꾸지 않는다. */
+export function resolvePetEncounter(
+  pet: PetSummary,
+  allowance: DailyAllowance,
+  options: { source?: 'house' | 'shared'; adsEnabled?: boolean; hasAdCredit?: boolean; now?: Date } = {},
+): PetAccessDecision {
+  const access = resolvePetAccess(pet, allowance, options.adsEnabled ?? false, options.now);
+  if (['unavailable', 'ownerPhoto', 'characterOnly'].includes(access.kind)) return access;
+  if (access.kind === 'reveal' && access.method === 'UPLOAD') return access;
+  const collected = pet.collection?.collectedCount ?? pet.unlockedPhotoCount ?? 0;
+  const canCollect = pet.collection?.canCollectToday ?? !isPetRevisitActive(pet, options.now);
+  if ((collected > 0 && options.source === 'shared') || (!canCollect && (collected > 0 || access.kind === 'revisit'))) return { kind: 'revisit' };
+  // 모은 사진이 있으면 광고를 강제하지 않고 무료 교감으로 이어진다.
+  const method = options.hasAdCredit ? 'REWARDED' : nextUnlockMethod(allowance, pet.id, false, options.now);
+  if (method) return { kind: 'reveal', method };
+  if (collected > 0 || access.kind === 'revisit') return { kind: 'revisit' };
+  return nextUnlockMethod(allowance, pet.id, options.adsEnabled, options.now)
+    ? { kind: 'reveal', method: 'REWARDED' } : { kind: 'exhausted' };
 }

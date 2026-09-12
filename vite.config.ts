@@ -28,7 +28,7 @@ export default defineConfig(({ command, mode }) => {
       setupFiles: './src/test/setup.ts',
       globals: true,
       css: true,
-      exclude: ['work/**', 'node_modules/**', 'dist/**'],
+      exclude: ['work/**', 'node_modules/**', 'dist/**', '.tmp/**', 'AIT/**', 'tests/e2e/**', 'e2e/**', '**/*.deno-test.ts'],
     },
   };
 });

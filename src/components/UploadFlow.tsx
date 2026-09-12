@@ -6,11 +6,12 @@ import { normalizeAndAnalyzePetImage } from '../lib/petImage';
 import { getPetNameError, limitPetName, petNameLength, preparePetName } from '../lib/petName';
 import { normalizePetTraitColors } from '../lib/petTraits';
 import { applyCoatMode, getSoftPointColor } from '../lib/petStyle';
-import { isPhotoPickerUnavailableError, pickOnePhoto, pickOnePhotoFromBrowser } from '../lib/toss';
+import { isPhotoPickerUnavailableError, pickPhotos, pickPhotosFromBrowser } from '../lib/toss';
 import { COAT_COLOR_HEX } from './DogAvatar';
 import { PetAccessoryPicker } from './PetAccessoryPicker';
 import { PetArtwork } from './PetArtwork';
 import { UploadPetPreview } from './UploadPetPreview';
+import './UploadFlowPhotos.css';
 
 const fallbackPreviewTraits: PetTraitsV1 = {
   schemaVersion: 1,
@@ -317,32 +318,61 @@ export function CoatColorPickers({ traits, disabled = false, showBase = true, sh
 type SubmissionPhase = 'editing' | 'submitting' | 'reconciling' | 'uncertain';
 
 const UNKNOWN_SUBMISSION_MESSAGE = '등록됐는지 아직 확인하지 못했어요. 같은 내용으로 다시 확인해 주세요. 같은 강아지가 두 번 등록되지는 않아요.';
+const MAX_UPLOAD_PHOTOS = 5;
+
+type PhotoAnalysis = Awaited<ReturnType<typeof normalizeAndAnalyzePetImage>>;
+type UploadPhoto = {
+  id: string;
+  sourceDataUri: string;
+  dataUri?: string;
+  status: 'queued' | 'processing' | 'ready' | 'error';
+  error?: string;
+  analysis?: PhotoAnalysis;
+};
 
 export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetResult) => void }) {
-  const [dataUri, setDataUri] = useState<string>();
+  const [photos, setPhotos] = useState<UploadPhoto[]>([]);
+  const photosRef = useRef<UploadPhoto[]>([]);
+  const [activePreviewPhotoId, setActivePreviewPhotoId] = useState<string>();
+  const [picking, setPicking] = useState(false);
+  const pickingRef = useRef(false);
+  const processingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const initialTraitsApplied = useRef(false);
   const [traits, setTraits] = useState<PetTraitsV1>();
   const [style, setStyle] = useState<PetStyleV1>();
   const [analysisNotice, setAnalysisNotice] = useState('');
   const [name, setName] = useState('');
+  const [nameTouched, setNameTouched] = useState(false);
   const [accessorySelectionMode, setAccessorySelectionMode] = useState<AccessorySelectionMode>('reviewer');
   const [requestedAccessory, setRequestedAccessory] = useState<PetAccessory>();
   const [customizationOpen, setCustomizationOpen] = useState(false);
-  const [analyzing, setAnalyzing] = useState(false);
   const [submissionPhase, setSubmissionPhase] = useState<SubmissionPhase>('editing');
   const [consented, setConsented] = useState(false);
   const [error, setError] = useState('');
   const [useBrowserPhotoPicker, setUseBrowserPhotoPicker] = useState(false);
   const submissionId = useRef(crypto.randomUUID());
   const frozenSubmission = useRef<SubmitPetInput>();
-  const analysisGeneration = useRef(0);
   const lastPointSelection = useRef<Pick<PetTraitsV1, 'secondaryColor' | 'markingPattern'>>({
     secondaryColor: fallbackPreviewTraits.secondaryColor,
     markingPattern: fallbackPreviewTraits.markingPattern,
   });
   const submissionLocked = submissionPhase !== 'editing';
   const submissionBusy = submissionPhase === 'submitting' || submissionPhase === 'reconciling';
-  const currentNameError = name.trim() ? getPetNameError(name) : undefined;
-  const draftDirty = Boolean(dataUri || name.trim() || traits || consented || accessorySelectionMode === 'owner');
+  const analyzing = photos.some((photo) => photo.status === 'queued' || photo.status === 'processing');
+  const allPhotosReady = photos.length > 0 && photos.every((photo) => photo.status === 'ready' && photo.dataUri);
+  const coverPhoto = photos[0];
+  const activePreviewPhoto = photos.find((photo) => photo.id === activePreviewPhotoId) ?? coverPhoto;
+  const activePreviewIndex = photos.findIndex((photo) => photo.id === activePreviewPhoto?.id);
+  const activePreviewLabel = activePreviewIndex === 0 ? '대표 사진' : `${activePreviewIndex + 1}번 사진`;
+  const nameValidationError = getPetNameError(name);
+  const currentNameError = nameTouched || name ? nameValidationError : undefined;
+  const draftDirty = Boolean(photos.length || name.trim() || traits || consented || accessorySelectionMode === 'owner');
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.uploadDraftDirty = String(draftDirty);
@@ -364,65 +394,103 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
     };
   }, [draftDirty, submissionBusy]);
 
-  async function analyzePhoto(sourceDataUri: string) {
-    const generation = analysisGeneration.current + 1;
-    analysisGeneration.current = generation;
-    setAnalyzing(true);
-    setError('');
+  function updatePhotos(nextPhotos: UploadPhoto[]) {
+    photosRef.current = nextPhotos;
+    setPhotos(nextPhotos);
+    setActivePreviewPhotoId((current) => nextPhotos.some((photo) => photo.id === current) ? current : nextPhotos[0]?.id);
+  }
+
+  function initializePreviewFromCover() {
+    const result = photosRef.current[0]?.analysis;
+    if (!result || initialTraitsApplied.current) return;
+    initialTraitsApplied.current = true;
+    const nextTraits = normalizePetTraitColors({
+      ...result.traits,
+      secondaryColor: getSoftPointColor(result.traits.baseColor),
+    });
+    setTraits(nextTraits);
+    setStyle({ schemaVersion: 1, coatMode: 'point', furStyle: 'neat' });
+    lastPointSelection.current = {
+      secondaryColor: nextTraits.secondaryColor,
+      markingPattern: nextTraits.markingPattern,
+    };
+    setAnalysisNotice(result.notice
+      ? `${result.notice} 강아지 사진인지와 실제 공개 여부는 검수에서 확인해요.`
+      : '대표 사진의 털색을 참고해 모습을 만들었어요. 강아지 사진인지와 실제 공개 여부는 검수에서 확인해요.');
+  }
+
+  async function processPhotos(photoIds: string[]) {
+    if (processingRef.current) return;
+    processingRef.current = true;
     try {
-      const result = await normalizeAndAnalyzePetImage(sourceDataUri);
-      if (generation !== analysisGeneration.current) return;
-      setDataUri(result.dataUri);
-      const nextTraits = normalizePetTraitColors({
-        ...result.traits,
-        secondaryColor: getSoftPointColor(result.traits.baseColor),
-      });
-      setTraits(nextTraits);
-      setStyle({ schemaVersion: 1, coatMode: 'point', furStyle: 'neat' });
-      lastPointSelection.current = {
-        secondaryColor: nextTraits.secondaryColor,
-        markingPattern: nextTraits.markingPattern,
-      };
-      setAnalysisNotice(result.notice
-        ? `${result.notice} 강아지 사진인지와 실제 공개 여부는 검수에서 확인해요.`
-        : '사진의 털색을 참고해 모습을 만들었어요. 강아지 사진인지와 실제 공개 여부는 검수에서 확인해요.');
-    } catch (caught) {
-      if (generation !== analysisGeneration.current) return;
-      setError(caught instanceof Error ? caught.message : '사진을 분석하지 못했어요.');
+      // Process one full-size source at a time to keep device memory bounded.
+      for (const id of photoIds) {
+        if (!mountedRef.current) return;
+        const source = photosRef.current.find((photo) => photo.id === id);
+        if (!source) continue;
+        updatePhotos(photosRef.current.map((photo) => photo.id === id ? { ...photo, status: 'processing', error: undefined } : photo));
+        try {
+          const result = await normalizeAndAnalyzePetImage(source.sourceDataUri);
+          if (!mountedRef.current) return;
+          updatePhotos(photosRef.current.map((photo) => photo.id === id
+            ? { ...photo, sourceDataUri: result.dataUri, dataUri: result.dataUri, analysis: result, status: 'ready' }
+            : photo));
+          initializePreviewFromCover();
+        } catch (caught) {
+          if (!mountedRef.current) return;
+          updatePhotos(photosRef.current.map((photo) => photo.id === id
+            ? { ...photo, dataUri: undefined, status: 'error', error: caught instanceof Error ? caught.message : '사진 준비를 마치지 못했어요.' }
+            : photo));
+        }
+      }
     } finally {
-      if (generation === analysisGeneration.current) setAnalyzing(false);
+      processingRef.current = false;
     }
   }
 
   async function choose() {
-    if (analyzing || submissionLocked || frozenSubmission.current) return;
+    if (pickingRef.current || processingRef.current || submissionLocked || frozenSubmission.current) return;
+    const remaining = MAX_UPLOAD_PHOTOS - photosRef.current.length;
+    if (remaining <= 0) return;
+    pickingRef.current = true;
+    setPicking(true);
     setError('');
-    let selected: string | null;
     try {
-      selected = await (useBrowserPhotoPicker ? pickOnePhotoFromBrowser() : pickOnePhoto());
+      const selected = await (useBrowserPhotoPicker ? pickPhotosFromBrowser(remaining) : pickPhotos(remaining));
+      if (!mountedRef.current || frozenSubmission.current || !selected.length) return;
+      if (selected.length > MAX_UPLOAD_PHOTOS - photosRef.current.length) {
+        setError(`사진은 최대 ${MAX_UPLOAD_PHOTOS}장까지 올릴 수 있어요. 남은 자리만큼 다시 골라주세요.`);
+        return;
+      }
+      const addedPhotos: UploadPhoto[] = selected.map((source) => ({
+        id: crypto.randomUUID(),
+        sourceDataUri: source.startsWith('data:') ? source : `data:image/jpeg;base64,${source}`,
+        status: 'queued',
+      }));
+      updatePhotos([...photosRef.current, ...addedPhotos]);
+      setUseBrowserPhotoPicker(false);
+      await processPhotos(addedPhotos.map((photo) => photo.id));
     } catch (caught) {
+      if (!mountedRef.current) return;
       if (isPhotoPickerUnavailableError(caught)) setUseBrowserPhotoPicker(true);
       setError(caught instanceof Error ? caught.message : '사진을 불러오지 못했어요.');
-      return;
+    } finally {
+      pickingRef.current = false;
+      if (mountedRef.current) setPicking(false);
     }
-    if (!selected) return;
-    const selectedDataUri = selected.startsWith('data:') ? selected : `data:image/jpeg;base64,${selected}`;
-    setDataUri(selectedDataUri);
-    setTraits(undefined);
-    setStyle(undefined);
-    setAccessorySelectionMode('reviewer');
-    setRequestedAccessory(undefined);
-    setCustomizationOpen(false);
-    setAnalysisNotice('');
-    setUseBrowserPhotoPicker(false);
-    submissionId.current = crypto.randomUUID();
-    frozenSubmission.current = undefined;
-    await analyzePhoto(selectedDataUri);
   }
 
-  async function retryAnalysis() {
-    if (!dataUri || analyzing || submissionLocked || frozenSubmission.current) return;
-    await analyzePhoto(dataUri);
+  async function retryAnalysis(id: string) {
+    if (pickingRef.current || processingRef.current || submissionLocked || frozenSubmission.current) return;
+    if (photosRef.current.find((photo) => photo.id === id)?.status !== 'error') return;
+    await processPhotos([id]);
+  }
+
+  function removePhoto(id: string) {
+    if (submissionLocked || frozenSubmission.current) return;
+    updatePhotos(photosRef.current.filter((photo) => photo.id !== id));
+    initializePreviewFromCover();
+    setError('');
   }
 
   async function reconcile(input: SubmitPetInput): Promise<void> {
@@ -462,17 +530,17 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
   }
 
   async function submit() {
-    if (!dataUri || !traits || !style || !consented || submissionPhase !== 'editing') return;
-    const nameError = !preparePetName(name) ? '강아지 이름을 입력해 주세요.' : getPetNameError(name);
-    if (nameError) { setError(nameError); return; }
+    if (!allPhotosReady || pickingRef.current || processingRef.current || !traits || !style || !consented || submissionPhase !== 'editing' || frozenSubmission.current) return;
+    const nameError = getPetNameError(name);
+    if (nameError) { setNameTouched(true); setError(nameError); return; }
     if (accessorySelectionMode === 'owner' && !requestedAccessory) {
       setError('소품을 고르거나 검수자에게 맡겨주세요.');
       return;
     }
     const input = frozenSubmission.current ?? {
       submissionId: submissionId.current,
-      dataUri,
-      name: preparePetName(name) || undefined,
+      dataUris: photosRef.current.map((photo) => photo.dataUri!),
+      name: preparePetName(name),
       traits: { ...traits },
       style: { ...style },
       accessorySelectionMode,
@@ -550,17 +618,73 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
         upperGap={16}
         lowerGap={10}
         title={<Top.TitleParagraph size={28}>우리 집 강아지를<br />소개해 주세요</Top.TitleParagraph>}
-        subtitleBottom={<Top.SubtitleParagraph>사진 한 장이면 닮은 캐릭터가 집에 바로 놀러 와요.</Top.SubtitleParagraph>}
+        subtitleBottom={<Top.SubtitleParagraph>사진 1~5장으로 소개해요. 닮은 캐릭터가 집에 바로 놀러 와요.</Top.SubtitleParagraph>}
       />
       <section className="upload-card">
         <div className="upload-step-heading">
           <span aria-hidden="true">1</span>
-          <div><strong>{dataUri ? '고른 사진을 확인해 주세요' : '사진을 골라주세요'}</strong><small>얼굴과 귀가 잘 보이는 사진이 좋아요.</small></div>
+          <div><strong>{photos.length ? '고른 사진을 확인해 주세요' : '사진을 골라주세요'}</strong><small>한 강아지의 사진을 최대 5장까지 올릴 수 있어요.</small></div>
         </div>
-        <button type="button" className={`photo-picker ${dataUri ? 'has-photo' : ''}`} onClick={choose} disabled={analyzing || submissionLocked}>
-          {dataUri ? <><img src={dataUri} alt="선택한 강아지" /><span className="photo-change-badge">사진 바꾸기</span></> : <><span className="photo-picker-icon"><Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F4F7.png" frameShape={{ width: 64, height: 64 }} alt="카메라" /></span><strong>{useBrowserPhotoPicker ? '기기에서 사진 고르기' : '사진 한 장 고르기'}</strong><small>{useBrowserPhotoPicker ? '한 번 더 누르면 선택창이 열려요' : 'JPG, PNG, WEBP · 최대 1장'}</small></>}
-        </button>
-        {!dataUri && (
+        {coverPhoto ? (
+          <section className="upload-photo-gallery" aria-label="고른 강아지 사진">
+            <div className="photo-picker has-photo upload-cover-photo">
+              {activePreviewPhoto?.dataUri ? <img src={activePreviewPhoto.dataUri} alt={activePreviewIndex === 0 ? '대표 강아지 사진' : `${activePreviewIndex + 1}번 강아지 사진 미리보기`} /> : (
+                <div className="upload-photo-placeholder"><span aria-hidden="true">🐾</span><strong>{activePreviewPhoto?.status === 'error' ? `${activePreviewLabel}을 다시 준비해 주세요` : `${activePreviewLabel}을 준비하고 있어요`}</strong></div>
+              )}
+              <span className="photo-change-badge">{activePreviewLabel}</span>
+            </div>
+            <div className="upload-photo-count"><strong>사진 {photos.length}/5</strong><span>첫 사진이 대표 사진이에요</span></div>
+            <ol className="upload-photo-list" aria-label="사진 목록">
+              {photos.map((photo, index) => (
+                <li key={photo.id} className={`upload-photo-item is-${photo.status}`}>
+                  <button
+                    type="button"
+                    className="upload-photo-thumb"
+                    aria-label={`${index + 1}번 사진 크게 보기`}
+                    aria-pressed={photo.id === activePreviewPhoto?.id}
+                    onClick={() => setActivePreviewPhotoId(photo.id)}
+                  >
+                    {photo.dataUri ? <img src={photo.dataUri} alt={`${index + 1}번 강아지 사진`} /> : <span className="upload-photo-thumb-placeholder" aria-hidden="true">🐾</span>}
+                    <span className="upload-photo-order">{index === 0 ? '대표' : `${index + 1}`}</span>
+                  </button>
+                  <small className="upload-photo-status">{photo.status === 'ready' ? '준비 완료' : photo.status === 'error' ? '다시 확인' : photo.status === 'processing' ? '준비 중…' : '대기 중'}</small>
+                  <button
+                    type="button"
+                    className="upload-photo-remove"
+                    aria-label={`${index + 1}번 사진 삭제`}
+                    disabled={submissionLocked}
+                    onClick={() => removePhoto(photo.id)}
+                  >삭제</button>
+                  {photo.status === 'error' && <button
+                    type="button"
+                    className="upload-photo-retry"
+                    aria-label={`${index + 1}번 사진 다시 시도하기`}
+                    disabled={analyzing || picking || submissionLocked}
+                    onClick={() => void retryAnalysis(photo.id)}
+                  >재시도</button>}
+                </li>
+              ))}
+            </ol>
+            <button
+              type="button"
+              className="upload-photo-add"
+              disabled={photos.length >= MAX_UPLOAD_PHOTOS || analyzing || picking || submissionLocked}
+              onClick={() => void choose()}
+            ><span aria-hidden="true">＋</span>{useBrowserPhotoPicker ? '기기에서 사진 추가하기' : '사진 추가하기'}</button>
+            <p className="upload-photo-help">{photos.length >= MAX_UPLOAD_PHOTOS ? '5장을 모두 골랐어요. 바꾸려면 사진을 먼저 삭제해 주세요.' : '사진을 추가해도 이름과 꾸민 모습은 그대로예요.'}</p>
+            {photos.map((photo, index) => photo.status === 'error' && (
+              <p className="error-message upload-photo-error" role="alert" key={photo.id}>{index + 1}번 사진: {photo.error} 재시도하거나 삭제해 주세요.</p>
+            ))}
+          </section>
+        ) : (
+          <button type="button" className="photo-picker" onClick={() => void choose()} disabled={picking || analyzing || submissionLocked}>
+            <span className="photo-picker-icon"><Asset.Image src="https://static.toss.im/2d-emojis/png/4x/u1F4F7.png" frameShape={{ width: 64, height: 64 }} alt="카메라" /></span>
+            <strong>{useBrowserPhotoPicker ? '기기에서 사진 고르기' : '강아지 사진 고르기'}</strong>
+            <small>{useBrowserPhotoPicker ? '한 번 더 누르면 선택창이 열려요' : 'JPG, PNG, WEBP · 1~5장'}</small>
+          </button>
+        )}
+        <p className="upload-review-promise">운영자가 귀여움을 꼼꼼히 확인한 뒤, 친구들에게 한 장씩 보여드려요 🐾</p>
+        {!photos.length && (
           <div className="upload-flow-guide" aria-label="강아지 소개 과정">
             <strong className="upload-flow-guide-title">등록하면 이렇게 돼요</strong>
             <div><span aria-hidden="true">✓</span><p><strong>내 집에 바로 나타나요</strong><small>검수 중에도 캐릭터와 먼저 놀 수 있어요.</small></p></div>
@@ -568,16 +692,10 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
             <div><span aria-hidden="true">✓</span><p><strong>승인되면 모두가 만나요</strong><small>그때부터 실제 사진도 안전하게 공개돼요.</small></p></div>
           </div>
         )}
-        {dataUri && !traits && analyzing && (
+        {analyzing && (
           <div className="upload-analysis-progress" role="status" aria-live="polite" aria-busy="true">
             <span className="upload-analysis-progress-dot" aria-hidden="true" />
-            <div><strong>사진을 살펴보고 있어요</strong><small>크기를 줄이고 털색을 찾는 중이에요.</small></div>
-          </div>
-        )}
-        {dataUri && !traits && !analyzing && (
-          <div className="upload-analysis-retry-wrap">
-            <p className="upload-analysis-note">분석이 멈췄다면 사진을 바꾸거나 다시 시도해 주세요.</p>
-            <button type="button" className="upload-analysis-retry" onClick={() => void retryAnalysis()} disabled={submissionLocked}>다시 시도하기</button>
+            <div><strong>사진을 살펴보고 있어요</strong><small>사진을 한 장씩 줄이고, 위치 등 촬영 정보를 지워요.</small></div>
           </div>
         )}
         {traits && style && <div className="trait-editor">
@@ -589,7 +707,23 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
             accessory={accessorySelectionMode === 'owner' ? requestedAccessory : undefined}
           />
           {analysisNotice && <p className="input-help" role="status">{analysisNotice}</p>}
-          <label>강아지 이름 <small>필수 · {petNameLength(name)}/4</small><input value={name} disabled={submissionLocked} onChange={(e) => { setName(limitPetName(e.target.value)); setError(''); }} placeholder="예: 보리" aria-describedby="pet-name-help" aria-invalid={Boolean(currentNameError)} /><span className={`input-help${currentNameError ? ' input-help--error' : ''}`} id="pet-name-help" role={currentNameError ? 'alert' : undefined}>{currentNameError ?? '한글, 영문, 숫자로 네 글자까지 입력해 주세요.'}</span></label>
+          <label>
+            강아지 이름 <small>필수 · {petNameLength(name)}/4</small>
+            <input
+              value={name}
+              required
+              aria-label="강아지 이름"
+              disabled={submissionLocked}
+              onChange={(e) => { setName(limitPetName(e.target.value)); setError(''); }}
+              onBlur={() => setNameTouched(true)}
+              placeholder="예: 보리"
+              aria-describedby="pet-name-help"
+              aria-invalid={Boolean(currentNameError)}
+            />
+            <span className={`input-help${currentNameError ? ' input-help--error' : ''}`} id="pet-name-help" role={currentNameError ? 'alert' : undefined}>
+              {currentNameError ?? '이름을 꼭 입력해 주세요. 한글, 영문, 숫자로 1~4자까지 가능해요.'}
+            </span>
+          </label>
           <EarShapePicker traits={traits} value={traits.earShape} disabled={submissionLocked} onChange={(earShape) => update('earShape', earShape)} />
           <CoatModePicker value={style.coatMode} disabled={submissionLocked} onChange={updateCoatMode} />
           <CoatColorPickers
@@ -645,13 +779,13 @@ export function UploadFlow({ onSubmitted }: { onSubmitted: (result: SubmitPetRes
             </div>}
           </section>
           <div className="upload-step-heading upload-submit-heading"><span aria-hidden="true">3</span><div><strong>소개를 마무리해요</strong><small>승인 전에는 다른 사람에게 실제 사진이 보이지 않아요.</small></div></div>
-          <label className="consent"><input type="checkbox" checked={consented} disabled={submissionLocked} onChange={(e) => setConsented(e.target.checked)} /><span>이 사진을 올릴 권리가 있으며, 승인 후 공개와 강아지 이름표가 포함된 사진 저장에 동의해요.</span></label>
+          <label className="consent"><input type="checkbox" checked={consented} disabled={submissionLocked} onChange={(e) => setConsented(e.target.checked)} /><span>고른 모든 사진을 올릴 권리가 있으며, 승인 후 공개와 강아지 이름표가 포함된 사진 저장에 동의해요.</span></label>
           <Button
             className="upload-cta"
             display="full"
             size="large"
             onClick={submissionPhase === 'uncertain' ? recoverSubmission : submit}
-            disabled={submissionPhase === 'uncertain' ? false : !consented || !preparePetName(name) || (accessorySelectionMode === 'owner' && !requestedAccessory) || analyzing || submissionBusy}
+            disabled={submissionPhase === 'uncertain' ? false : !allPhotosReady || picking || !consented || Boolean(nameValidationError) || (accessorySelectionMode === 'owner' && !requestedAccessory) || analyzing || submissionBusy}
             loading={submissionBusy}
           >
             {submissionPhase === 'uncertain' ? '등록 상태 확인하기' : '이 모습으로 소개하기'}

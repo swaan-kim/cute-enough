@@ -25,7 +25,7 @@ describe('SharedPetLanding', () => {
     const onMeet = vi.fn();
     renderLanding(pet('pending'), onMeet);
     expect(screen.getByText(/실제 사진은 승인 후 공개해요/)).toBeInTheDocument();
-    expect(screen.getByText(/이용권은 사용하지 않아요/)).toBeInTheDocument();
+    expect(screen.getByText(/티켓은 사용하지 않아요/)).toBeInTheDocument();
     expect(screen.queryByAltText('하늘의 실제 모습')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '캐릭터와 놀아보기' }));
     expect(onMeet).toHaveBeenCalledOnce();
@@ -63,7 +63,7 @@ describe('SharedPetLanding', () => {
 
   it('labels free and rewarded access without surprising the recipient', () => {
     const { rerender } = renderLanding(pet('approved'), () => undefined, { kind: 'reveal', method: 'FREE' });
-    expect(screen.getByRole('button', { name: '무료 이용권으로 만나기' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '무료 티켓으로 만나기' })).toBeInTheDocument();
 
     rerender(
       <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
@@ -75,6 +75,6 @@ describe('SharedPetLanding', () => {
 
   it('disables the action while every access path is exhausted', () => {
     renderLanding(pet('approved'), () => undefined, { kind: 'exhausted' });
-    expect(screen.getByRole('button', { name: '이용권 충전 중' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '티켓 충전 중' })).toBeDisabled();
   });
 });

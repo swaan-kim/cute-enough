@@ -50,7 +50,7 @@ describe('three-hour free allowance', () => {
     const afterSecond = consumeAllowance(afterFirst, 'FREE', now);
     expect(nextUnlockMethod(afterSecond, undefined, true, now)).toBe('REWARDED');
     expect(regularRemainingCount(afterSecond, now)).toBe(0);
-    expect(() => consumeAllowance(afterSecond, 'FREE', now)).toThrow('이용권은 3시간마다 한 마리씩 충전돼요.');
+    expect(() => consumeAllowance(afterSecond, 'FREE', now)).toThrow('티켓은 3시간마다 한 장씩 충전돼요.');
   });
 
   it('recharges one after three hours and never stores more than two', () => {

@@ -2,7 +2,9 @@ import { ApiError } from './api-error.ts';
 import { requireUuid } from './validation.ts';
 
 export const SHARE_REWARD_MODULE_ID = 'e5de3e72-cbfb-4b50-a050-9fd71fb4368b';
-export const SHARE_REWARD_UNIT = '강아지 티켓';
+export const SHARE_REWARD_UNIT = '티켓';
+// Preserve queued close reports from clients using the former display unit.
+const isTicketRewardUnit = (unit: unknown) => unit === SHARE_REWARD_UNIT || unit === '강아지 티켓';
 
 export interface RewardDatabaseState {
   bonusTickets: number;
@@ -51,9 +53,12 @@ function positiveInteger(value: unknown, maximum: number, label: string): number
 
 export function rewardRpcRequest(action: string, body: Record<string, unknown>, ownerHash: string) {
   const owner = { p_owner_hash: ownerHash };
-  if (action === 'rewardStatus') return { name: 'get_pet_reward_state', args: owner };
+  if (action === 'rewardStatus') return {
+    name: body.albumVersion === 1 || body.albumVersion === 2 ? 'get_pet_album_reward_state' : 'get_pet_reward_state',
+    args: owner,
+  };
   if (action === 'rewardStart') return {
-    name: 'start_pet_ad_reward',
+    name: body.albumVersion === 1 || body.albumVersion === 2 ? 'start_pet_album_ad_reward' : 'start_pet_ad_reward',
     args: { ...owner, p_session_id: requireUuid(body.requestId), p_pet_id: requireUuid(body.petId) },
   };
   if (action === 'shareStart') return {
@@ -63,7 +68,8 @@ export function rewardRpcRequest(action: string, body: Record<string, unknown>, 
   if (action === 'rewardComplete') return { name: 'complete_pet_ad_reward', args: session };
   if (action === 'rewardCancel') return { name: 'cancel_pet_ad_reward', args: session };
   if (action === 'rewardRebind') return {
-    name: 'rebind_pet_ad_reward', args: { ...session, p_pet_id: requireUuid(body.petId) },
+    name: body.albumVersion === 1 || body.albumVersion === 2 ? 'rebind_pet_album_ad_reward' : 'rebind_pet_ad_reward',
+    args: { ...session, p_pet_id: requireUuid(body.petId) },
   };
   if (action === 'shareReward') return {
     name: 'record_pet_share_reward',
@@ -84,7 +90,7 @@ export function rewardRpcRequest(action: string, body: Record<string, unknown>, 
     if (!summary || typeof summary !== 'object' || Array.isArray(summary)
       || !Number.isSafeInteger(summary.sentRewardsCount) || Number(summary.sentRewardsCount) < 0
       || Number(summary.sentRewardsCount) > 1_000_000
-      || (summary.rewardUnit !== undefined && summary.rewardUnit !== SHARE_REWARD_UNIT)
+      || (summary.rewardUnit !== undefined && !isTicketRewardUnit(summary.rewardUnit))
       || (summary.sentRewardAmount !== undefined && (!Number.isSafeInteger(summary.sentRewardAmount)
         || Number(summary.sentRewardAmount) < 0 || Number(summary.sentRewardAmount) > 1_000_000))) {
       throw new ApiError('INVALID_REWARD_INPUT', 400, '공유 결과를 다시 확인해 주세요.');
@@ -105,11 +111,11 @@ export function rewardRpcError(error: { message?: string; code?: string }): ApiE
     ['ADS_DISABLED', 403, '광고 만남은 잠시 준비 중이에요.'],
     ['REWARDED_ADS_DISABLED', 403, '광고 만남은 잠시 준비 중이에요.'],
     ['SHARE_REWARDS_DISABLED', 403, '친구 초대 보상은 잠시 준비 중이에요.'],
-    ['REWARDED_LIMIT_REACHED', 409, '오늘의 광고 보상을 모두 받았어요. 이용권 충전을 기다려 주세요.'],
-    ['FREE_ALLOWANCE_AVAILABLE', 409, '충전된 이용권으로 먼저 만나보세요.'],
+    ['REWARDED_LIMIT_REACHED', 409, '오늘의 광고 보상을 모두 받았어요. 티켓 충전을 기다려 주세요.'],
+    ['FREE_ALLOWANCE_AVAILABLE', 409, '충전된 티켓으로 먼저 만나보세요.'],
     ['BONUS_TICKETS_AVAILABLE', 409, '보너스 티켓으로 먼저 만나보세요.'],
     ['BONUS_ALLOWANCE_AVAILABLE', 409, '보너스 티켓으로 먼저 만나보세요.'],
-    ['FREE_ALLOWANCE_EMPTY', 409, '이용권이 없어요. 공유하거나 충전을 기다려 주세요.'],
+    ['FREE_ALLOWANCE_EMPTY', 409, '티켓이 없어요. 공유하거나 충전을 기다려 주세요.'],
     ['BONUS_TICKETS_EMPTY', 409, '사용할 보너스 티켓이 없어요.'],
     ['REWARD_SESSION_ACTIVE', 409, '진행 중인 보상을 먼저 확인해 주세요.'],
     ['AD_SESSION_ACTIVE', 409, '진행 중인 광고 결과를 먼저 확인해 주세요.'],
@@ -131,7 +137,7 @@ export function rewardRpcError(error: { message?: string; code?: string }): ApiE
     ['AD_SESSION_NOT_FOUND', 404, '광고 보상 기록을 찾지 못했어요.'],
     ['SHARE_SESSION_NOT_FOUND', 404, '친구 초대 기록을 찾지 못했어요.'],
     ['INVALID_REVEAL_DATE', 409, '날짜가 바뀌었어요. 집을 새로 불러와 주세요.'],
-    ['PET_REVISIT_EXPIRED', 403, '다시 만날 수 있는 시간이 지났어요. 이용권으로 다시 만나주세요.'],
+    ['PET_REVISIT_EXPIRED', 403, '다시 만날 수 있는 시간이 지났어요. 티켓으로 다시 만나주세요.'],
   ];
   for (const [code, status, copy] of known) if (message.includes(code)) return new ApiError(code, status, copy);
   if (/INVALID_|MISMATCH|NOT_OWNED|FORBIDDEN/.test(message)) return new ApiError('INVALID_REWARD_INPUT', 400, '보상 요청을 다시 확인해 주세요.');

@@ -1,6 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError } from './api-error.ts';
-import { requireAccessorySubmission, requireAction, requirePetAccessory, requirePetStyle, requirePetTraits } from './validation.ts';
+import { normalizePetName, requireAccessorySubmission, requireAction, requirePetAccessory, requirePetName, requirePetStyle, requirePetTraits } from './validation.ts';
+
+describe('new registration pet name validation', () => {
+  it.each([undefined, null, '', '   ', '\t\r\n', '\u200B\u200C\u200D', '\u2060\uFEFF', '\u3164\uFFA0', '\u115F\u1160\u00AD'])
+    ('requires a visible name for %j', (name) => {
+      expect(() => requirePetName(name)).toThrowError(expect.objectContaining({
+        code: 'PET_NAME_REQUIRED', status: 400, message: '강아지 이름을 입력해 주세요.',
+      }));
+    });
+
+  it.each([
+    ['콩', '콩'],
+    ['  구르미  ', '구르미'],
+    ['구르미', '구르미'],
+    ['\u200B구름\uFEFF', '구름'],
+    ['Milo', 'Milo'],
+    ['1234', '1234'],
+    ['하  루', '하 루'],
+  ])('accepts a normalized one-to-four-character name: %j', (name, expected) => {
+    expect(requirePetName(name)).toBe(expected);
+  });
+
+  it('retains existing length, character, and blocked-name restrictions', () => {
+    expect(() => requirePetName('구르미강아지')).toThrowError(expect.objectContaining({ code: 'PET_NAME_TOO_LONG', status: 400 }));
+    for (const name of [123, {}, '강아지!', '🐶']) {
+      expect(() => requirePetName(name)).toThrowError(expect.objectContaining({ code: 'INVALID_PET_NAME', status: 400 }));
+    }
+    expect(() => requirePetName('관리자')).toThrowError(expect.objectContaining({ code: 'BLOCKED_PET_NAME', status: 400 }));
+  });
+
+  it.each([undefined, null, '', '  ', '\u200B\uFEFF'])('preserves optional normalization for legacy unnamed records: %j', (name) => {
+    expect(normalizePetName(name)).toBe('');
+  });
+});
 
 function traits(overrides: Record<string, unknown> = {}) {
   return {

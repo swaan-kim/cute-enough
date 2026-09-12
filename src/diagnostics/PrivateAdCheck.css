@@ -1,0 +1,10 @@
+.private-ad-check { width:min(100%,480px); min-height:100dvh; margin:0 auto; padding:calc(var(--ait-safe-top) + 16px) 20px calc(var(--ait-safe-bottom) + 24px); display:flex; flex-direction:column; gap:20px; overflow-wrap:anywhere; }
+.private-ad-check .web-top { padding-left:0; padding-right:0; }
+.private-ad-check-badge { align-self:flex-start; border-radius:10px; background:#fff2d9; color:#735300; padding:7px 10px; font-size:14px; font-weight:700; }
+.private-ad-check-ticket { padding:20px; border-radius:20px; background:#fff3f6; }
+.private-ad-check-ticket strong { display:block; font-size:24px; margin-bottom:8px; }
+.private-ad-check-ticket p,.private-ad-check-note { color:#4e5968; line-height:1.6; font-size:14px; }
+.private-ad-check-state { display:grid; gap:14px; line-height:1.6; font-size:16px; }
+.private-ad-check-error { color:#b32e43; }
+.private-ad-check-actions button { min-height:54px; white-space:normal; }
+.private-ad-check-note { margin-top:4px; }

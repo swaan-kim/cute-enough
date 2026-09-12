@@ -64,7 +64,7 @@ describe('MyPetsScreen', () => {
   it('uses the approved sharing copy after review', () => {
     render(
       <MyPetsScreen
-        pets={[{ ...pendingPet, approvalStatus: 'approved' }]}
+        pets={[{ ...pendingPet, approvalStatus: 'approved', favoriteCount: 3 }]}
         loading={false}
         error=""
         onRetry={() => undefined}
@@ -76,6 +76,7 @@ describe('MyPetsScreen', () => {
 
     expect(screen.getByText(/모두가 만날 수 있어요/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '이 귀여움 같이 보기' })).toBeInTheDocument();
+    expect(screen.getByText('♡ 마음에 담은 사람 3명')).toBeInTheDocument();
   });
 
   it('소유자 사진 권한이 있으면 기존 등록 보너스보다 바로 보기를 우선한다', () => {
@@ -130,5 +131,23 @@ describe('MyPetsScreen', () => {
     expect(screen.getByText(/반려 사유 · 얼굴이 잘 보이는/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '다른 사진으로 다시 소개하기' }));
     expect(onUpload).toHaveBeenCalledOnce();
+  });
+
+  it.each(['pending', 'approved'] as const)('%s 강아지에 사진 추가와 새 강아지 소개를 별도로 제공한다', (approvalStatus) => {
+    const pet = { ...pendingPet, approvalStatus };
+    const onAddPhotos = vi.fn();
+    const onUpload = vi.fn();
+    render(<MyPetsScreen pets={[pet]} loading={false} error="" onRetry={vi.fn()} onMeet={vi.fn()} onShare={vi.fn()} onUpload={onUpload} onAddPhotos={onAddPhotos} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '사진 더 올리기' }));
+    expect(onAddPhotos).toHaveBeenCalledWith(pet);
+    expect(onUpload).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '강아지 한 마리 더 소개하기' }));
+    expect(onUpload).toHaveBeenCalledOnce();
+  });
+
+  it.each(['rejected', 'paused', 'deleted'] as const)('%s 강아지는 사진 추가를 열지 않는다', (approvalStatus) => {
+    render(<MyPetsScreen pets={[{ ...pendingPet, approvalStatus }]} loading={false} error="" onRetry={vi.fn()} onMeet={vi.fn()} onShare={vi.fn()} onUpload={vi.fn()} onAddPhotos={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: '사진 더 올리기' })).not.toBeInTheDocument();
   });
 });

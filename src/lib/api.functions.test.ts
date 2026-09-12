@@ -28,6 +28,105 @@ afterEach(() => {
 });
 
 describe('production Edge Function client', () => {
+  it('prepares only through the read-only action and forwards cancellation without a reveal', async () => {
+    vi.stubEnv('VITE_APP_RUNTIME', 'production');
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
+    const photo = { petId: 'pet', photoId: 'photo', photoUrl: 'https://image.test/photo.jpg', signedUrlExpiresAt: '2099-01-01T00:00:00Z' };
+    functionMocks.invoke.mockResolvedValue({ data: photo, error: null });
+    const { preparePetPhoto } = await import('./api');
+    const { SAMPLE_PETS } = await import('../data/samplePets');
+    const controller = new AbortController();
+    await expect(preparePetPhoto({ ...SAMPLE_PETS[0], id: 'pet' }, 'request', 'replay', controller.signal)).resolves.toEqual(photo);
+    expect(functionMocks.invoke).toHaveBeenCalledOnce();
+    expect(functionMocks.invoke.mock.calls[0][1].body).toMatchObject({ action: 'photoPrepare', petId: 'pet', requestId: 'request', accessKind: 'replay', albumVersion: 2 });
+    controller.abort();
+    expect(functionMocks.invoke.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+  it.each(['INVALID_PHOTO_RECEIPT', 'PHOTO_RECEIPT_EXPIRED', 'PET_PHOTO_MISSING'])('reuploads photos after %s instead of reusing broken receipts', async (code) => {
+    vi.stubEnv('VITE_APP_RUNTIME', 'production');
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
+    const { SAMPLE_PETS } = await import('../data/samplePets');
+    let finalizations = 0;
+    functionMocks.invoke.mockImplementation(async (_name, { body }) => {
+      if (body.action === 'submitPhoto') return { data: { photoReceipt: `receipt-${finalizations}` }, error: null };
+      finalizations += 1;
+      if (finalizations === 1) return { data: null, error: {
+        context: new Response(JSON.stringify({ code, error: '사진을 다시 확인해 주세요.' }), { status: code === 'PET_PHOTO_MISSING' ? 503 : 400 }),
+      } };
+      return { data: { pet: { ...SAMPLE_PETS[0], approvalStatus: 'pending', isMine: true }, rewardGranted: true }, error: null };
+    });
+    const { submitPet } = await import('./api');
+    const input = { submissionId: `retry-${code}`, name: '보리', dataUris: ['data:image/jpeg;base64,PHOTO'],
+      traits: SAMPLE_PETS[0].traits!, style: { schemaVersion: 1 as const, coatMode: 'point' as const, furStyle: 'neat' as const },
+      accessorySelectionMode: 'reviewer' as const };
+    await expect(submitPet(input)).rejects.toMatchObject({ code });
+    await submitPet(input);
+    expect(functionMocks.invoke.mock.calls.map(([, options]) => options.body.action)).toEqual(['submitPhoto', 'submit', 'submitPhoto', 'submit']);
+  });
+
+  it('recovers a committed registration instead of duplicating staged photos on retry', async () => {
+    vi.stubEnv('VITE_APP_RUNTIME', 'production');
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
+    const { SAMPLE_PETS } = await import('../data/samplePets');
+    const result = { pet: { ...SAMPLE_PETS[0], approvalStatus: 'pending', isMine: true }, rewardGranted: true };
+    functionMocks.invoke.mockResolvedValueOnce({ data: null, error: {
+      context: new Response(JSON.stringify({ code: 'SUBMISSION_ALREADY_REGISTERED', error: '이미 등록한 강아지예요.' }), { status: 409 }),
+    } }).mockResolvedValueOnce({ data: { found: true, result }, error: null });
+    const { submitPet } = await import('./api');
+    await expect(submitPet({ submissionId: 'completed-upload', name: '보리', dataUris: ['data:image/jpeg;base64,PHOTO'], traits: SAMPLE_PETS[0].traits!,
+      style: { schemaVersion: 1, coatMode: 'point', furStyle: 'neat' }, accessorySelectionMode: 'reviewer' })).resolves.toMatchObject({ pet: { id: result.pet.id } });
+    expect(functionMocks.invoke.mock.calls.map(([, options]) => options.body.action)).toEqual(['submitPhoto', 'submissionStatus']);
+  });
+
+  it('uploads five photos sequentially then confirms one registration using receipts only', async () => {
+    vi.stubEnv('VITE_APP_RUNTIME', 'production');
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
+    const { SAMPLE_PETS } = await import('../data/samplePets');
+    functionMocks.invoke.mockImplementation(async (_name, { body }) => ({ data: body.action === 'submitPhoto'
+      ? { photoReceipt: `receipt-${body.photoIndex}` }
+      : { pet: { ...SAMPLE_PETS[0], approvalStatus: 'pending', isMine: true }, rewardGranted: true }, error: null }));
+    const { submitPet } = await import('./api');
+    const dataUris = Array.from({ length: 5 }, (_, index) => `data:image/jpeg;base64,PHOTO${index}`);
+    await submitPet({ submissionId: 'test-submission', name: '보리', dataUris, traits: SAMPLE_PETS[0].traits!,
+      style: { schemaVersion: 1, coatMode: 'point', furStyle: 'neat' }, accessorySelectionMode: 'reviewer' });
+    expect(functionMocks.invoke).toHaveBeenCalledTimes(6);
+    for (let photoIndex = 0; photoIndex < 5; photoIndex += 1) {
+      expect(functionMocks.invoke.mock.calls[photoIndex][1].body).toMatchObject({ action: 'submitPhoto', submissionId: 'test-submission', photoIndex, dataUri: dataUris[photoIndex] });
+    }
+    const registration = functionMocks.invoke.mock.calls[5][1].body;
+    expect(registration).toMatchObject({ action: 'submit', submissionId: 'test-submission', photoReceipts: Array.from({ length: 5 }, (_, index) => `receipt-${index}`) });
+    expect(registration).not.toHaveProperty('dataUri');
+    expect(registration).not.toHaveProperty('dataUris');
+  });
+
+  it('preserves published SVG through every list normalizer and reloads without a photo/ticket request', async () => {
+    vi.stubEnv('VITE_APP_RUNTIME', 'production');
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
+    const { SAMPLE_PETS } = await import('../data/samplePets');
+    const artwork = { publishedDesign: { ...SAMPLE_PETS[0].publishedDesign!, designVersion: 2 }, designStatus: 'ready' };
+    const pet = { ...SAMPLE_PETS[0], ...artwork, photoAvailable: true, designVersion: 2, approvalStatus: 'approved' };
+    functionMocks.invoke
+      .mockResolvedValueOnce({ data: { pets: [pet], dailyPets: [pet], ownerBonusPet: { ...pet, id: 'owner' }, allowance: { date: '2026-09-06' } } })
+      .mockResolvedValueOnce({ data: { pet } })
+      .mockResolvedValueOnce({ data: { pets: [pet] } })
+      .mockResolvedValueOnce({ data: { pets: [{ ...pet, unlockedPhotos: [] }], legacyGiftCount: 0 } })
+      .mockResolvedValueOnce({ data: { pet: { id: pet.id, ...artwork, designVersion: 2 } } });
+    const api = await import('./api');
+    const house = await api.fetchHouse();
+    expect(house.dailyPets?.[0]).toMatchObject(artwork);
+    expect(house.ownerBonusPet).toMatchObject(artwork);
+    expect((await api.fetchSharedPet(pet.id)).pet).toMatchObject(artwork);
+    expect((await api.fetchMyPets())[0]).toMatchObject(artwork);
+    expect((await api.fetchAlbum()).pets[0]).toMatchObject(artwork);
+    expect(await api.fetchPetDesign(pet.id)).toMatchObject(artwork);
+    expect(functionMocks.invoke.mock.calls.at(-1)?.[1].body).toEqual({ action: 'design', petId: pet.id, userHash: 'anonymous-user-key', designFormat: 'svg-scene-v1' });
+  });
+
   it('uses the standalone functions client and normalizes a stale five-slot payload to four', async () => {
     vi.stubEnv('VITE_APP_RUNTIME', 'production');
     vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co/');
@@ -69,7 +168,7 @@ describe('production Edge Function client', () => {
       { headers: { apikey: 'public-anon-key' } },
     ]]);
     expect(functionMocks.invoke).toHaveBeenCalledWith('pet-api', expect.objectContaining({
-      body: { action: 'house', apiVersion: 2, userHash: 'anonymous-user-key' },
+      body: { action: 'house', apiVersion: 2, albumVersion: 2, userHash: 'anonymous-user-key', designFormat: 'svg-scene-v1' },
       signal: expect.any(AbortSignal),
     }));
     expect(result.dailyPets?.map(({ id }) => id)).toEqual(['a', 'b', 'c', 'd']);
@@ -140,8 +239,30 @@ describe('production Edge Function client', () => {
     await revealPet(SAMPLE_PETS[0], 'SHARE', undefined, 'same-request');
     const bodies = functionMocks.invoke.mock.calls.map(([, options]) => options.body);
     expect(bodies[0]).toEqual(bodies[1]);
-    expect(bodies[1]).toMatchObject({ action: 'reveal', unlockMethod: 'SHARE', requestId: 'same-request' });
+    expect(bodies[1]).toMatchObject({ action: 'reveal', albumVersion: 2, photoIntent: 'collect', unlockMethod: 'SHARE', requestId: 'same-request' });
     expect(bodies[1].revisit).not.toBe(true);
+  });
+
+  it('sends replay intent independently from payment and preserves photo-specific collection metadata', async () => {
+    vi.stubEnv('VITE_APP_RUNTIME', 'production');
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
+    const collection = { collectedCount: 2, totalCount: 3, collectedToday: false, canCollectToday: true };
+    functionMocks.invoke.mockResolvedValueOnce({ data: {
+      photoId: 'second-photo', photoUrl: 'https://photo.test/second', photoCaption: '졸린 오후',
+      collection, allowance: { remaining: 0 },
+    }, error: null }).mockResolvedValueOnce({ data: {
+      photoId: 'first-photo', photoUrl: 'https://photo.test/first', collection, allowance: { remaining: 0 },
+    }, error: null });
+    const { revealPet, openAlbumPhoto, albumPhotoMetadata } = await import('./api');
+    const { SAMPLE_PETS } = await import('../data/samplePets');
+    const replay = await revealPet(SAMPLE_PETS[0], 'FREE', undefined, 'replay-request', 'replay');
+    expect(functionMocks.invoke.mock.calls[0][1].body).toMatchObject({ albumVersion: 2, photoIntent: 'replay', requestId: 'replay-request' });
+    expect(replay).toMatchObject({ photoId: 'second-photo', photoCaption: '졸린 오후', collection });
+    const firstPhoto = await openAlbumPhoto('first-photo');
+    expect(firstPhoto.photoCaption).toBeUndefined();
+    expect(functionMocks.invoke.mock.calls[1][1].body).toMatchObject({ action: 'albumPhoto', albumVersion: 2, photoId: 'first-photo' });
+    expect(albumPhotoMetadata({ collection })).toMatchObject({ collection });
   });
 
   it('passes caller cancellation through mine and shared function requests', async () => {

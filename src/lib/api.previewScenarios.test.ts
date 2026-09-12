@@ -12,6 +12,24 @@ afterEach(() => {
 });
 
 describe('preview scenario API flows', () => {
+  it('replays for free with an empty ticket bucket and never collects a second photo on the same day', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-04T01:00:00Z'));
+    openScenario('first-user');
+    const house = await fetchHouse();
+    const pet = house.dailyPets!.find((item) => (item.photoUrls?.length ?? 0) > 1)!;
+    const first = await revealPet(pet, 'FREE', undefined, 'first');
+    const other = house.dailyPets!.find((item) => item.id !== pet.id)!;
+    await revealPet(other, 'FREE', undefined, 'other');
+    const beforeReplay = await fetchHouse();
+    expect(beforeReplay.allowance?.remaining).toBe(0);
+    const replay = await revealPet(pet, 'FREE', undefined, 'replay', 'replay');
+    const duplicate = await revealPet(pet, 'FREE', undefined, 'duplicate');
+    expect(replay).toMatchObject({ photoId: first.photoId, allowance: { remaining: 0 }, collection: { collectedCount: 1, collectedToday: true } });
+    expect(duplicate).toMatchObject({ photoId: first.photoId, allowance: { remaining: 0 }, collection: { collectedCount: 1 } });
+    expect(replay.photoCaption).toBeUndefined();
+  });
+
   it('keeps the ordinary preview behavior unchanged without a scenario', async () => {
     openScenario();
     const result = await fetchHouse();
@@ -53,7 +71,7 @@ describe('preview scenario API flows', () => {
 
     await expect(reopenPet(firstPet)).resolves.toMatchObject({
       photoUrl: revealed.photoUrl,
-      revisitUntil: revealed.revisitUntil,
+      photoId: revealed.photoId,
     });
     expect(localStorage.getItem('cute-enough:allowance')).toBeNull();
   });

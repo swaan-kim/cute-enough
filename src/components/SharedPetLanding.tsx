@@ -22,13 +22,13 @@ export function SharedPetLanding({ pet, accessDecision, onMeet, onHome }: {
       : accessDecision?.kind === 'revisit' || canRevisit
         ? '사진 다시 보기'
         : accessDecision?.kind === 'reveal' && accessDecision.method === 'FREE'
-          ? '무료 이용권으로 만나기'
+          ? '무료 티켓으로 만나기'
           : accessDecision?.kind === 'reveal' && accessDecision.method === 'REWARDED'
             ? '광고 보고 지금 만나기'
             : accessDecision?.kind === 'unavailable'
               ? '지금은 만날 수 없어요'
               : accessDecision?.kind === 'exhausted'
-                ? '이용권 충전 중'
+                ? '티켓 충전 중'
                 : '간식 주고 만나기';
   const primaryDisabled = accessDecision?.kind === 'unavailable' || accessDecision?.kind === 'exhausted';
   return (
@@ -50,8 +50,8 @@ export function SharedPetLanding({ pet, accessDecision, onMeet, onHome }: {
         <PetArtwork pet={pet} size={255} panting />
       </section>
       {pending && (ownerPhotoAccess
-        ? <p className="shared-pending-boundary" role="status"><strong>사진은 올린 사람에게만 보여요</strong><span>승인되면 같은 링크에서 다른 사람도 만날 수 있어요. 이용권은 사용하지 않아요.</span></p>
-        : <p className="shared-pending-boundary" role="status"><strong>오늘은 캐릭터와만 놀아요</strong><span>실제 사진은 승인 후 이 링크에서 볼 수 있어요. 이용권은 사용하지 않아요.</span></p>)}
+        ? <p className="shared-pending-boundary" role="status"><strong>사진은 올린 사람에게만 보여요</strong><span>승인되면 같은 링크에서 다른 사람도 만날 수 있어요. 티켓은 사용하지 않아요.</span></p>
+        : <p className="shared-pending-boundary" role="status"><strong>오늘은 캐릭터와만 놀아요</strong><span>실제 사진은 승인 후 이 링크에서 볼 수 있어요. 티켓은 사용하지 않아요.</span></p>)}
       <div className="shared-actions">
         <Button display="full" size="large" disabled={primaryDisabled} onClick={onMeet}>{primaryAction}</Button>
         <Button display="full" size="large" color="dark" variant="weak" onClick={onHome}>다른 친구도 보기</Button>

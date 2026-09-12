@@ -153,7 +153,9 @@ describe('DogAvatar expressions', () => {
     const { container } = render(<DogAvatar traits={{ ...traits, earShape: 'rounded', markingPattern: 'blaze' }} size={114} />);
     const markings = container.querySelector('[data-head-markings]');
 
-    expect(markings).toHaveAttribute('clip-path', expect.stringMatching(/^url\(#dog-head-/));
+    const clipId = container.querySelector('clipPath')?.id;
+    expect(clipId).toBeTruthy();
+    expect(markings).toHaveAttribute('clip-path', `url(#${clipId})`);
     const blaze = markings?.querySelector('[data-marking-pattern="blaze"]');
     expect(blaze).toHaveAttribute('d', 'M90 16 C82 23 82 31 84.5 36 C86 39 88 41 90 43 C92 41 94 39 95.5 36 C98 31 98 23 90 16Z');
     expect(blaze?.getAttribute('d')).not.toContain('70');

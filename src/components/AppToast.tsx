@@ -3,7 +3,7 @@ import { Toast } from '@toss/tds-mobile';
 
 export const DAILY_LIMIT_TOAST_DURATION = 2_800;
 export const APP_TOAST_DURATION = 3_000;
-export const DAILY_LIMIT_TOAST = '이용권이 다시 차고 있어요\n3시간마다 한 마리씩 충전돼요';
+export const DAILY_LIMIT_TOAST = '티켓이 다시 차고 있어요\n3시간마다 한 장씩 충전돼요';
 export const DAILY_COMPLETE_TOAST = '오늘의 네 친구를 모두 만났어요\n내일 다시 만나요';
 
 export function isDailyLimitToast(text: string) {

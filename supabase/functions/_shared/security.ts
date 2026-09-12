@@ -1,5 +1,6 @@
 import { ApiError } from './api-error.ts';
 import jpegJs from 'npm:jpeg-js@0.4.4';
+import { MAX_SOURCE_IMAGE_BYTES } from './submission-photos.ts';
 
 export async function hashUser(raw: string): Promise<string> {
   const salt = Deno.env.get('USER_HASH_SALT');
@@ -44,7 +45,7 @@ export function decodeDataUri(dataUri: unknown): { bytes: Uint8Array; mime: 'ima
   let binary: string;
   try { binary = atob(match[2]); }
   catch { throw new ApiError('INVALID_IMAGE', 400, '올바른 사진 파일이 아니에요.'); }
-  if (binary.length > 4 * 1024 * 1024) throw new ApiError('IMAGE_TOO_LARGE', 413, '사진 용량이 너무 커요. 다른 사진을 골라주세요.');
+  if (binary.length > MAX_SOURCE_IMAGE_BYTES) throw new ApiError('IMAGE_TOO_LARGE', 413, '사진 용량이 너무 커요. 다른 사진을 골라주세요.');
   const sourceBytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
   const dimensions = jpegDimensions(sourceBytes);
   if (!dimensions || dimensions.width < 1 || dimensions.height < 1) throw new ApiError('INVALID_IMAGE', 400, '올바른 사진 파일이 아니에요.');

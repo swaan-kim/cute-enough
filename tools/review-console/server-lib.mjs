@@ -1,8 +1,10 @@
+import { isDeepStrictEqual } from 'node:util';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { validatePetDesign, hashPetDesign, canonicalPetDesign } from '../../supabase/functions/_shared/pet-design.ts';
 
 export const REVIEW_HOST = '127.0.0.1';
 export const SIGNED_PHOTO_TTL_SECONDS = 180;
-export const DEFAULT_BODY_LIMIT_BYTES = 16 * 1024;
+export const DEFAULT_BODY_LIMIT_BYTES = 3 * 1024 * 1024;
 export const DEFAULT_PHOTO_LIMIT_BYTES = 8 * 1024 * 1024;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -10,11 +12,15 @@ const PET_NAME_PATTERN = /^[가-힣A-Za-z0-9]{1,4}$/u;
 const SAFE_RPC_CONFLICTS = new Set([
   'PET_NOT_PENDING',
   'PET_PHOTO_MISSING',
-  'OWNER_ACCESSORY_IMMUTABLE',
   'ACCESSORY_REVIEW_REQUIRED',
   'INVALID_PET_DESIGN',
   'SIMILARITY_REVIEW_NOTE_REQUIRED',
   'INVALID_FINAL_PET_NAME',
+  'REVIEW_DESIGN_CHANGED',
+  'INVALID_PET_DESIGN_DOCUMENT', 'INVALID_PET_DESIGN_EDITOR', 'REVIEW_DRAFT_CHANGED',
+  'REVIEW_DESIGN_REQUIRED', 'PET_NOT_MANAGEABLE', 'REVIEW_ACTOR_REQUIRED',
+  'PHOTO_REVIEW_NOT_ALLOWED', 'REVIEW_PHOTOS_CHANGED', 'INVALID_REVIEW_PHOTOS',
+  'PHOTO_ADDITION_ALREADY_REVIEWED', 'PHOTO_ADDITION_CAPACITY_REACHED', 'PHOTO_ADDITION_NOT_FOUND', 'INVALID_PHOTO_ADDITION_REVIEW',
 ]);
 const ACCESSORY_KINDS = new Set(['ribbon', 'scarf', 'vest', 'ball']);
 const ACCESSORY_COLORS = new Set(['pink', 'sky', 'yellow', 'mint']);
@@ -77,7 +83,98 @@ export function createSupabaseReviewGateway({ client, supabaseUrl, actor }) {
   if (!client) throw new TypeError('A Supabase client is required.');
   const expectedStorageOrigin = parseHttpUrl(supabaseUrl, 'supabaseUrl').origin;
 
+  async function rpc(name, args) {
+    const { data, error } = await client.rpc(name, args);
+    if (error) {
+      if (['get_pet_photo_review', 'save_pet_photo_review'].includes(name) && error.code === 'PGRST202') {
+        throw new PublicHttpError(503, 'REVIEW_PHOTOS_SETUP_REQUIRED');
+      }
+      const conflict = findSafeRpcConflict(error);
+      if (conflict) throw new PublicHttpError(409, conflict);
+      throw new UpstreamError('DESIGN_RPC_FAILED', error);
+    }
+    if (!isPlainRecord(data)) throw new UpstreamError('INVALID_DESIGN_RPC_RESPONSE');
+    return data;
+  }
+  async function readDrafts(ids) {
+    if (!ids.length) return new Map();
+    const { data, error } = await client.from('pet_design_drafts')
+      .select('pet_id,revision,expected_design_version,sha256,document,editor_state').in('pet_id', ids);
+    if (error) throw new UpstreamError('DRAFT_QUERY_FAILED', error);
+    return new Map(await Promise.all((data ?? []).map(async (row) => {
+      const document = validatePetDesign(row.document);
+      if (await hashPetDesign(document) !== row.sha256) throw new UpstreamError('DESIGN_HASH_MISMATCH');
+      return [row.pet_id, { petId: row.pet_id, draftRevision: row.revision, expectedDesignVersion: row.expected_design_version,
+        sha256: row.sha256, document, editorState: row.editor_state }];
+    })));
+  }
+  async function readPhotoSet(petId) {
+    const snapshot = await rpc('get_pet_photo_review', { p_pet_id: petId });
+    if (snapshot.petId !== petId || !/^[a-f0-9]{64}$/.test(snapshot.revision) || !Array.isArray(snapshot.photos)) {
+      throw new UpstreamError('INVALID_PHOTO_REVIEW_RESPONSE');
+    }
+    const ids = new Set();
+    for (const photo of snapshot.photos) {
+      if (!isPlainRecord(photo) || !UUID_PATTERN.test(photo.photoId) || ids.has(photo.photoId)
+        || typeof photo.storagePath !== 'string' || typeof photo.isActive !== 'boolean'
+        || typeof photo.available !== 'boolean' || !(photo.caption === null || typeof photo.caption === 'string')
+        || !(photo.sortOrder === null || (Number.isInteger(photo.sortOrder) && photo.sortOrder >= 0 && photo.sortOrder < 16))) {
+        throw new UpstreamError('INVALID_PHOTO_REVIEW_RESPONSE');
+      }
+      ids.add(photo.photoId);
+    }
+    return snapshot;
+  }
+  async function signPhotoSet(snapshot) {
+    const photos = await Promise.all(snapshot.photos.map(async (photo) => {
+      let signedUrl = null;
+      if (photo.available) {
+        const { data, error } = await client.storage.from('pet-photos').createSignedUrl(photo.storagePath, SIGNED_PHOTO_TTL_SECONDS);
+        if (!error && typeof data?.signedUrl === 'string') signedUrl = validateSignedPhotoUrl(data.signedUrl, expectedStorageOrigin);
+      }
+      return { photoId: photo.photoId, caption: photo.caption, sortOrder: photo.sortOrder,
+        isActive: photo.isActive, available: photo.available, signedUrl };
+    }));
+    return { petId: snapshot.petId, revision: snapshot.revision, photos };
+  }
   return Object.freeze({
+    async listPhotoAdditions() {
+      const snapshot = await rpc('get_pet_photo_addition_review_queue', {});
+      if (!Array.isArray(snapshot.items)) throw new UpstreamError('INVALID_PHOTO_ADDITION_RESPONSE');
+      return Promise.all(snapshot.items.map(async (batch) => {
+        if (!UUID_PATTERN.test(batch.batchId) || !UUID_PATTERN.test(batch.petId)
+          || !/^[a-f0-9]{64}$/.test(batch.expectedRevision) || !Array.isArray(batch.photos)
+          || batch.photos.length < 1 || batch.photos.length > 5) throw new UpstreamError('INVALID_PHOTO_ADDITION_RESPONSE');
+        const photos = await Promise.all(batch.photos.map(async (photo) => {
+          if (!UUID_PATTERN.test(photo.photoId) || typeof photo.storagePath !== 'string') throw new UpstreamError('INVALID_PHOTO_ADDITION_RESPONSE');
+          let signedUrl = null;
+          if (photo.available) {
+            const { data, error } = await client.storage.from('pet-photos').createSignedUrl(photo.storagePath, SIGNED_PHOTO_TTL_SECONDS);
+            if (!error && data?.signedUrl) signedUrl = validateSignedPhotoUrl(data.signedUrl, expectedStorageOrigin);
+          }
+          return { photoId: photo.photoId, signedUrl };
+        }));
+        return { batchId: batch.batchId, petId: batch.petId, name: batch.name, petStatus: batch.petStatus,
+          createdAt: batch.createdAt, expectedRevision: batch.expectedRevision, photos };
+      }));
+    },
+    async reviewPhotoAddition({ batchId, expectedRevision, decision, note }) {
+      return rpc('review_pet_photo_addition', { p_batch_id: batchId, p_expected_revision: expectedRevision,
+        p_decision: decision, p_note: note, p_actor: actor });
+    },
+    async getPhotos(petId) { return signPhotoSet(await readPhotoSet(petId)); },
+    async savePhotos({ petId, expectedRevision, photos }) {
+      const saved = await rpc('save_pet_photo_review', {
+        p_pet_id: petId, p_expected_revision: expectedRevision, p_photos: photos, p_actor: actor,
+      });
+      const reread = await readPhotoSet(petId);
+      const retained = reread.photos.filter((photo) => photo.isActive).sort((a, b) => a.sortOrder - b.sortOrder)
+        .map(({ photoId, caption }) => ({ photoId, caption }));
+      if (reread.revision !== saved.revision || !isDeepStrictEqual(retained, photos)) {
+        throw new PublicHttpError(409, 'REVIEW_PHOTOS_CHANGED');
+      }
+      return signPhotoSet(reread);
+    },
     async listPending() {
       const { data, error } = await client
         .from('pending_pet_review_queue')
@@ -86,6 +183,7 @@ export function createSupabaseReviewGateway({ client, supabaseUrl, actor }) {
 
       if (error) throw new UpstreamError('QUEUE_QUERY_FAILED', error);
 
+      const drafts = await readDrafts((data ?? []).map((row) => row.pet_id));
       return Promise.all((Array.isArray(data) ? data : []).map(async (row) => {
         const storagePaths = Array.isArray(row.storage_paths)
           ? row.storage_paths.filter((path) => typeof path === 'string' && path.length > 0)
@@ -139,6 +237,7 @@ export function createSupabaseReviewGateway({ client, supabaseUrl, actor }) {
             : inferStyle(row.traits),
           createdAt: row.created_at,
           photoPresent: row.photo_present === true && signedPhotoUrls.length > 0,
+          photoCount: storagePaths.length,
           signedPhotoUrls,
           accessorySelectionMode,
           accessoryRequired: row.accessory_required === true,
@@ -146,43 +245,33 @@ export function createSupabaseReviewGateway({ client, supabaseUrl, actor }) {
           publishedAccessory,
           designVersion: Number.isInteger(row.design_version) ? row.design_version : 1,
           similarPets: exactMatches,
+          draftDesign: drafts.get(row.pet_id) ?? null,
         };
       }));
     },
 
-    async review({ petId, decision, reason, finalName, finalTraits, finalStyle, publishedAccessory, reviewNote }) {
-      const reviewArguments = {
-        p_pet_id: petId,
-        p_decision: decision,
-        p_actor: actor,
-        p_reason: reason,
-        p_final_name: finalName,
-        p_final_traits: finalTraits,
-        p_final_style: finalStyle,
-        p_published_accessory: publishedAccessory,
-        p_review_note: reviewNote,
-      };
-      let { data, error } = await client.rpc('review_pet_submission_v5', reviewArguments);
-
-      // The only compatibility fallback is the short deployment window where
-      // PostgREST has not discovered v5 yet. Domain conflicts and every other
-      // upstream error must stay on v5 and must never be retried through v4.
-      if (error && isMissingReviewV5Rpc(error)) {
-        ({ data, error } = await client.rpc('review_pet_submission_v4', reviewArguments));
+    async saveDraft({ petId, document, editorState, expectedDraftRevision, expectedDesignVersion }) {
+      const saved = await rpc('save_pet_design_draft', {
+        p_pet_id: petId, p_actor: actor, p_document: document, p_editor_state: editorState,
+        p_expected_draft_revision: expectedDraftRevision, p_expected_design_version: expectedDesignVersion,
+      });
+      const reread = (await readDrafts([petId])).get(petId);
+      if (!reread || reread.draftRevision !== saved.draftRevision || reread.sha256 !== await hashPetDesign(document)) {
+        throw new PublicHttpError(409, 'REVIEW_DRAFT_CHANGED');
       }
-
-      if (error) {
-        const safeConflict = findSafeRpcConflict(error);
-        if (safeConflict) throw new PublicHttpError(409, safeConflict);
-        throw new UpstreamError('REVIEW_RPC_FAILED', error);
-      }
-
-      return typeof data === 'string' ? data : decision;
+      return reread;
+    },
+    async review({ petId, decision, reason, finalName, reviewNote, expectedDraftRevision, expectedDesignVersion }) {
+      return rpc('review_pet_submission_with_design', {
+        p_pet_id: petId, p_decision: decision, p_actor: actor, p_reason: reason ?? null,
+        p_final_name: finalName ?? null, p_review_note: reviewNote ?? null,
+        p_expected_draft_revision: expectedDraftRevision ?? null, p_expected_design_version: expectedDesignVersion ?? null,
+      });
     },
 
     async listCatalog(search = '') {
       let query = client.from('pet_review_catalog')
-        .select('pet_id,name,status,traits,published_style,published_accessory,design_version,reviewed_at,review_note')
+        .select('pet_id,name,status,traits,published_style,published_accessory,design_version,reviewed_at,review_note,published_design_id')
         .order('reviewed_at', { ascending: false })
         .limit(30);
       const normalized = typeof search === 'string' ? search.trim() : '';
@@ -193,31 +282,48 @@ export function createSupabaseReviewGateway({ client, supabaseUrl, actor }) {
       }
       const { data, error } = await query;
       if (error) throw new UpstreamError('CATALOG_QUERY_FAILED', error);
-      return (Array.isArray(data) ? data : []).map((row) => ({
+      const rows = Array.isArray(data) ? data : [];
+      const drafts = await readDrafts(rows.map((row) => row.pet_id));
+      const ids = rows.map((row) => row.published_design_id).filter(Boolean);
+      const versions = ids.length ? await client.from('pet_design_versions')
+        .select('id,pet_id,design_version,sha256,document,editor_state').in('id', ids) : { data: [] };
+      if (versions.error) throw new UpstreamError('DESIGN_QUERY_FAILED', versions.error);
+      const byId = new Map((versions.data ?? []).map((row) => [row.id, row]));
+      return Promise.all(rows.map(async (row) => {
+        const designVersion = Number.isInteger(row.design_version) ? row.design_version : 1;
+        const saved = byId.get(row.published_design_id);
+        let publishedDesign = null;
+        let designStatus = row.published_design_id ? 'unavailable' : 'missing';
+        if (saved && saved.pet_id === row.pet_id && saved.design_version === designVersion) {
+          try {
+            const document = validatePetDesign(saved.document);
+            if (await hashPetDesign(document) === saved.sha256) {
+              publishedDesign = { id: saved.id, designVersion, sha256: saved.sha256, document };
+              designStatus = 'ready';
+            }
+          } catch { /* Keep corrupt/unsupported data visible as a retry state. */ }
+        }
+        return {
         petId: row.pet_id,
         name: typeof row.name === 'string' ? row.name : null,
         status: row.status === 'paused' ? 'paused' : 'approved',
         traits: isValidTraits(row.traits) ? row.traits : FALLBACK_TRAITS,
         publishedStyle: isValidStyle(row.published_style, row.traits) ? row.published_style : inferStyle(row.traits),
         publishedAccessory: isValidAccessory(row.published_accessory) ? row.published_accessory : null,
-        designVersion: Number.isInteger(row.design_version) ? row.design_version : 1,
+        designVersion,
         reviewedAt: typeof row.reviewed_at === 'string' ? row.reviewed_at : null,
         reviewNote: typeof row.review_note === 'string' ? row.review_note : null,
-      }));
+        publishedDesign, designStatus,
+        draftDesign: drafts.get(row.pet_id) ?? null,
+        publishedEditorState: publishedDesign ? saved.editor_state : null,
+      }; }));
     },
 
-    async manage({ petId, action, finalTraits, finalStyle, publishedAccessory, reviewNote }) {
-      const { data, error } = await client.rpc('manage_pet_publication_v3', {
-        p_pet_id: petId,
-        p_action: action,
-        p_actor: actor,
-        p_final_traits: finalTraits,
-        p_final_style: finalStyle,
-        p_published_accessory: publishedAccessory,
-        p_review_note: reviewNote,
+    async manage({ petId, action, reviewNote, expectedDraftRevision, expectedDesignVersion }) {
+      return rpc('manage_pet_publication_with_design', {
+        p_pet_id: petId, p_action: action, p_actor: actor, p_review_note: reviewNote,
+        p_expected_draft_revision: expectedDraftRevision ?? null, p_expected_design_version: expectedDesignVersion,
       });
-      if (error) throw new UpstreamError('PUBLICATION_RPC_FAILED', error);
-      return data === 'paused' ? 'paused' : 'approved';
     },
   });
 }
@@ -298,13 +404,45 @@ export function createReviewApiHandler({
     const isReviewRoute = url.pathname === '/api/review';
     const isCatalogRoute = url.pathname === '/api/review-catalog';
     const isPublicationRoute = url.pathname === '/api/review-publication';
+    const isDraftRoute = url.pathname === '/api/review-design-draft';
+    const isPhotosRoute = url.pathname === '/api/review-photos';
+    const isAdditionsRoute = url.pathname === '/api/review-photo-additions';
     const photoToken = parsePhotoToken(url.pathname);
 
-    if (!isQueueRoute && !isReviewRoute && !isCatalogRoute && !isPublicationRoute && !photoToken) return false;
+    if (!isQueueRoute && !isReviewRoute && !isCatalogRoute && !isPublicationRoute && !isDraftRoute && !isPhotosRoute && !isAdditionsRoute && !photoToken) return false;
 
     const requestId = randomUUID();
     try {
-      enforceSameOrigin(request, allowedOrigin, allowedHost, isReviewRoute || isPublicationRoute);
+      enforceSameOrigin(request, allowedOrigin, allowedHost, isReviewRoute || isPublicationRoute || isDraftRoute || ((isPhotosRoute || isAdditionsRoute) && request.method !== 'GET'));
+
+      if (isAdditionsRoute) {
+        if (request.method === 'GET') {
+          const items = await gateway.listPhotoAdditions();
+          writeJson(response, 200, { items: items.map((batch) => ({ ...batch, photos: batch.photos.map((photo) => ({
+            photoId: photo.photoId, url: photo.signedUrl ? `/api/review-photo/${tokenStore.issue(photo.signedUrl, SIGNED_PHOTO_TTL_SECONDS)}` : null,
+          })) })) });
+        } else if (request.method === 'POST') {
+          enforceJsonContentType(request);
+          writeJson(response, 200, await gateway.reviewPhotoAddition(validatePhotoAdditionReviewInput(await readJsonBody(request, bodyLimitBytes))));
+        } else throw new PublicHttpError(405, 'METHOD_NOT_ALLOWED');
+        return true;
+      }
+
+      if (isPhotosRoute) {
+        let snapshot;
+        if (request.method === 'GET') {
+          const petId = requestRecord({ petId: url.searchParams.get('petId') }, ['petId'], 'INVALID_REVIEW_PHOTOS');
+          snapshot = await gateway.getPhotos(petId);
+        } else if (request.method === 'POST') {
+          enforceJsonContentType(request);
+          snapshot = await gateway.savePhotos(validatePhotoReviewInput(await readJsonBody(request, bodyLimitBytes)));
+        } else throw new PublicHttpError(405, 'METHOD_NOT_ALLOWED');
+        writeJson(response, 200, { petId: snapshot.petId, revision: snapshot.revision, photos: snapshot.photos.map((photo) => ({
+          photoId: photo.photoId, caption: photo.caption, sortOrder: photo.sortOrder, isActive: photo.isActive,
+          available: photo.available, url: photo.signedUrl ? `/api/review-photo/${tokenStore.issue(photo.signedUrl, SIGNED_PHOTO_TTL_SECONDS)}` : null,
+        })) });
+        return true;
+      }
 
       if (isQueueRoute) {
         if (request.method !== 'GET') throw new PublicHttpError(405, 'METHOD_NOT_ALLOWED');
@@ -318,6 +456,7 @@ export function createReviewApiHandler({
           publishedStyle: row.publishedStyle,
           createdAt: row.createdAt,
           photoPresent: row.photoPresent,
+          photoCount: row.photoCount ?? row.signedPhotoUrls.length,
           photoUrls: row.signedPhotoUrls.map((signedUrl) => {
             const token = tokenStore.issue(signedUrl, SIGNED_PHOTO_TTL_SECONDS);
             return `/api/review-photo/${token}`;
@@ -328,18 +467,25 @@ export function createReviewApiHandler({
           publishedAccessory: row.publishedAccessory,
           designVersion: row.designVersion,
           similarPets: row.similarPets,
+          draftDesign: row.draftDesign ?? null,
         }));
         writeJson(response, 200, { items });
         return true;
       }
 
+      if (isDraftRoute) {
+        if (request.method !== 'POST') throw new PublicHttpError(405, 'METHOD_NOT_ALLOWED');
+        enforceJsonContentType(request);
+        const input = validateDraftInput(await readJsonBody(request, bodyLimitBytes));
+        writeJson(response, 200, await gateway.saveDraft(input));
+        return true;
+      }
       if (isReviewRoute) {
         if (request.method !== 'POST') throw new PublicHttpError(405, 'METHOD_NOT_ALLOWED');
         enforceJsonContentType(request);
         const body = await readJsonBody(request, bodyLimitBytes);
         const input = validateReviewInput(body);
-        const status = await gateway.review(input);
-        writeJson(response, 200, { petId: input.petId, status });
+        writeJson(response, 200, await gateway.review(input));
         return true;
       }
 
@@ -347,7 +493,8 @@ export function createReviewApiHandler({
         if (request.method !== 'GET') throw new PublicHttpError(405, 'METHOD_NOT_ALLOWED');
         const search = (url.searchParams.get('q') ?? '').trim();
         if (search.length > 50) throw new PublicHttpError(400, 'INVALID_CATALOG_QUERY');
-        writeJson(response, 200, { items: await gateway.listCatalog(search) });
+        const rows = await gateway.listCatalog(search);
+        writeJson(response, 200, { items: rows });
         return true;
       }
 
@@ -355,8 +502,7 @@ export function createReviewApiHandler({
         if (request.method !== 'POST') throw new PublicHttpError(405, 'METHOD_NOT_ALLOWED');
         enforceJsonContentType(request);
         const input = validatePublicationInput(await readJsonBody(request, bodyLimitBytes));
-        const status = await gateway.manage(input);
-        writeJson(response, 200, { petId: input.petId, status });
+        writeJson(response, 200, await gateway.manage(input));
         return true;
       }
 
@@ -385,94 +531,101 @@ export function createReviewApiHandler({
   };
 }
 
-export function validatePublicationInput(value) {
-  if (!isPlainRecord(value)) throw new PublicHttpError(400, 'INVALID_PUBLICATION_REQUEST');
-  const allowedKeys = new Set(['petId','action','finalTraits','finalStyle','publishedAccessory','reviewNote']);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) throw new PublicHttpError(400, 'INVALID_PUBLICATION_REQUEST');
+function requestRecord(value, keys, code) {
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !keys.includes(key))) throw new PublicHttpError(400, code);
   const petId = typeof value.petId === 'string' ? value.petId.trim().toLowerCase() : '';
   if (!UUID_PATTERN.test(petId)) throw new PublicHttpError(400, 'INVALID_PET_ID');
+  return petId;
+}
+export function validatePhotoAdditionReviewInput(value) {
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !['batchId','expectedRevision','decision','note'].includes(key))
+    || typeof value.batchId !== 'string' || !UUID_PATTERN.test(value.batchId)
+    || typeof value.expectedRevision !== 'string' || !/^[a-f0-9]{64}$/.test(value.expectedRevision)
+    || !['approved','rejected'].includes(value.decision) || typeof value.note !== 'string'
+    || [...value.note].length > 500 || /[<>\u0000-\u001f]/u.test(value.note)
+    || (value.decision === 'rejected' && !value.note.trim())) throw new PublicHttpError(400, 'INVALID_PHOTO_ADDITION_REVIEW');
+  return { batchId: value.batchId, expectedRevision: value.expectedRevision, decision: value.decision, note: value.note.trim() };
+}
+
+export function validatePhotoReviewInput(value) {
+  const petId = requestRecord(value, ['petId', 'expectedRevision', 'photos'], 'INVALID_REVIEW_PHOTOS');
+  if (typeof value.expectedRevision !== 'string' || !/^[a-f0-9]{64}$/.test(value.expectedRevision)
+    || !Array.isArray(value.photos) || value.photos.length < 1 || value.photos.length > 16) {
+    throw new PublicHttpError(400, 'INVALID_REVIEW_PHOTOS');
+  }
+  const ids = new Set();
+  const photos = value.photos.map((photo) => {
+    if (!isPlainRecord(photo) || Object.keys(photo).length !== 2 || !Object.hasOwn(photo, 'photoId') || !Object.hasOwn(photo, 'caption')
+      || typeof photo.photoId !== 'string' || !UUID_PATTERN.test(photo.photoId)
+      || !(photo.caption === null || typeof photo.caption === 'string')
+      || (typeof photo.caption === 'string' && ([...photo.caption].length > 30 || /[<>\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u.test(photo.caption)))) {
+      throw new PublicHttpError(400, 'INVALID_REVIEW_PHOTOS');
+    }
+    const photoId = photo.photoId.toLowerCase();
+    if (ids.has(photoId)) throw new PublicHttpError(400, 'INVALID_REVIEW_PHOTOS');
+    ids.add(photoId);
+    return { photoId, caption: photo.caption?.trim() || null };
+  });
+  return { petId, expectedRevision: value.expectedRevision, photos };
+}
+function validateVersions(value, needsDraft = true, allowZero = false) {
+  if (!Number.isSafeInteger(value.expectedDesignVersion) || value.expectedDesignVersion < 1) throw new PublicHttpError(400, 'REVIEW_DESIGN_VERSION_REQUIRED');
+  if (needsDraft && (!Number.isSafeInteger(value.expectedDraftRevision) || value.expectedDraftRevision < (allowZero ? 0 : 1))) throw new PublicHttpError(400, 'REVIEW_DRAFT_VERSION_REQUIRED');
+}
+export function validateDraftInput(value) {
+  const petId = requestRecord(value, ['petId','document','editorState','expectedDraftRevision','expectedDesignVersion'], 'INVALID_DRAFT_REQUEST');
+  validateVersions(value, true, true);
+  let document;
+  try { document = validatePetDesign(value.document); } catch { throw new PublicHttpError(400, 'INVALID_PET_DESIGN_DOCUMENT'); }
+  const state = value.editorState;
+  if (!isPlainRecord(state) || Object.keys(state).some((key) => !['finalTraits','finalStyle','publishedAccessory','editor'].includes(key))
+    || !isValidTraits(state.finalTraits) || !isValidStyle(state.finalStyle, state.finalTraits)
+    || (state.publishedAccessory !== null && !isValidAccessory(state.publishedAccessory))
+    || !isPlainRecord(state.editor) || state.editor.schemaVersion !== 1
+    || !isPlainRecord(state.editor.input)
+    || !isDeepStrictEqual(state.editor.input.traits, state.finalTraits)
+    || !isDeepStrictEqual(state.editor.input.style, state.finalStyle)
+    || !isDeepStrictEqual(state.editor.input.accessory ?? null, state.publishedAccessory)
+    || Object.keys(state.editor.input).some((key) => !['traits','style','accessory','expression','signature','earVariant'].includes(key))
+    || Object.keys(state.editor).some((key) => !['schemaVersion','input','baseDocument','document'].includes(key))
+    || (state.editor.input.earVariant !== undefined && !['high-floppy','soft-upright'].includes(state.editor.input.earVariant))
+    || (state.editor.input.signature !== undefined && !['sky-bandana','peach-hairpin','mint-collar','lemon-star','milk-carton','gray-backpack','birthday-star','chocolate-cookie','black-sunglasses','strawberry-milk','chive-bundle','chew-bone','cheese-wedge','cloud-cotton-candy'].includes(state.editor.input.signature))
+    || (state.editor.input.expression !== undefined && !isValidStyle({ ...state.finalStyle, expression: state.editor.input.expression }, state.finalTraits))
+    || JSON.stringify(state).length > 700000) {
+    throw new PublicHttpError(400, 'INVALID_PET_DESIGN_EDITOR');
+  }
+  try {
+    if (canonicalPetDesign(state.editor.document) !== canonicalPetDesign(document)) throw new Error('mismatch');
+    validatePetDesign(state.editor.baseDocument);
+  } catch { throw new PublicHttpError(400, 'INVALID_PET_DESIGN_EDITOR'); }
+  return { petId, document, editorState: state, expectedDraftRevision: value.expectedDraftRevision, expectedDesignVersion: value.expectedDesignVersion };
+}
+export function validatePublicationInput(value) {
+  const petId = requestRecord(value, ['petId','action','reviewNote','expectedDesignVersion','expectedDraftRevision'], 'INVALID_PUBLICATION_REQUEST');
   if (!['revise','pause','republish'].includes(value.action)) throw new PublicHttpError(400, 'INVALID_PUBLICATION_ACTION');
   const reviewNote = typeof value.reviewNote === 'string' ? value.reviewNote.trim() : '';
   if (!reviewNote || reviewNote.length > 500) throw new PublicHttpError(400, 'REVIEW_NOTE_REQUIRED');
-  const needsDesign = value.action !== 'pause';
-  if (needsDesign && (!isValidTraits(value.finalTraits) || !isValidStyle(value.finalStyle, value.finalTraits))) {
-    throw new PublicHttpError(400, 'INVALID_PET_DESIGN');
-  }
-  const accessory = value.publishedAccessory == null ? null : value.publishedAccessory;
-  if (accessory && !isValidAccessory(accessory)) throw new PublicHttpError(400, 'INVALID_PET_ACCESSORY');
-  return {
-    petId,
-    action: value.action,
-    finalTraits: needsDesign ? value.finalTraits : null,
-    finalStyle: needsDesign ? value.finalStyle : null,
-    publishedAccessory: needsDesign ? accessory : null,
-    reviewNote,
-  };
+  validateVersions(value, value.action !== 'pause');
+  return { petId, action: value.action, reviewNote, expectedDesignVersion: value.expectedDesignVersion,
+    ...(value.action !== 'pause' ? { expectedDraftRevision: value.expectedDraftRevision } : {}) };
 }
-
 export function validateReviewInput(value) {
-  if (!isPlainRecord(value)) throw new PublicHttpError(400, 'INVALID_REVIEW_REQUEST');
-  const allowedKeys = new Set(['petId', 'decision', 'reason', 'finalName', 'finalTraits', 'finalStyle', 'publishedAccessory', 'reviewNote']);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    throw new PublicHttpError(400, 'INVALID_REVIEW_REQUEST');
-  }
-
-  const petId = typeof value.petId === 'string' ? value.petId.trim().toLowerCase() : '';
-  if (!UUID_PATTERN.test(petId)) throw new PublicHttpError(400, 'INVALID_PET_ID');
-  if (value.decision !== 'approved' && value.decision !== 'rejected') {
-    throw new PublicHttpError(400, 'INVALID_REVIEW_DECISION');
-  }
-
-  const rawReason = value.reason;
-  if (rawReason !== undefined && rawReason !== null && typeof rawReason !== 'string') {
-    throw new PublicHttpError(400, 'INVALID_REVIEW_REASON');
-  }
-  const trimmedReason = typeof rawReason === 'string' ? rawReason.trim() : '';
-  if (trimmedReason.length > 500) throw new PublicHttpError(400, 'INVALID_REVIEW_REASON');
-  if (value.decision === 'rejected' && !trimmedReason) {
-    throw new PublicHttpError(400, 'REJECTION_REASON_REQUIRED');
-  }
-  if (value.decision === 'approved' && trimmedReason) {
-    throw new PublicHttpError(400, 'APPROVAL_REASON_NOT_ALLOWED');
-  }
-
-  const rawReviewNote = value.reviewNote;
-  if (rawReviewNote !== undefined && rawReviewNote !== null && typeof rawReviewNote !== 'string') {
-    throw new PublicHttpError(400, 'INVALID_REVIEW_NOTE');
-  }
-  const reviewNote = typeof rawReviewNote === 'string' ? rawReviewNote.trim() : '';
+  const petId = requestRecord(value, ['petId','decision','reason','finalName','reviewNote','expectedDraftRevision','expectedDesignVersion'], 'INVALID_REVIEW_REQUEST');
+  if (!['approved','rejected'].includes(value.decision)) throw new PublicHttpError(400, 'INVALID_REVIEW_DECISION');
+  const approved = value.decision === 'approved';
+  if (approved) validateVersions(value);
+  if (value.reason != null && typeof value.reason !== 'string') throw new PublicHttpError(400, 'INVALID_REVIEW_REASON');
+  const reason = value.reason?.trim() ?? '';
+  if (reason.length > 500) throw new PublicHttpError(400, 'INVALID_REVIEW_REASON');
+  if (!approved && !reason) throw new PublicHttpError(400, 'REJECTION_REASON_REQUIRED');
+  if (approved && reason) throw new PublicHttpError(400, 'APPROVAL_REASON_NOT_ALLOWED');
+  if (value.reviewNote != null && typeof value.reviewNote !== 'string') throw new PublicHttpError(400, 'INVALID_REVIEW_NOTE');
+  const reviewNote = value.reviewNote?.trim() ?? '';
   if (reviewNote.length > 500) throw new PublicHttpError(400, 'INVALID_REVIEW_NOTE');
-
-  let publishedAccessory = null;
-  if (value.publishedAccessory !== undefined && value.publishedAccessory !== null) {
-    if (!isValidAccessory(value.publishedAccessory)) {
-      throw new PublicHttpError(400, 'INVALID_PET_ACCESSORY');
-    }
-    publishedAccessory = value.publishedAccessory;
-  }
-
-  let finalTraits = null;
-  let finalStyle = null;
-  let finalName = null;
-  if (value.decision === 'approved') {
-    finalName = typeof value.finalName === 'string' ? value.finalName.normalize('NFKC').trim() : '';
-    if (!PET_NAME_PATTERN.test(finalName)) throw new PublicHttpError(400, 'INVALID_FINAL_PET_NAME');
-    if (!isValidTraits(value.finalTraits)) throw new PublicHttpError(400, 'INVALID_PET_TRAITS');
-    if (!isValidStyle(value.finalStyle, value.finalTraits)) throw new PublicHttpError(400, 'INVALID_PET_STYLE');
-    finalTraits = value.finalTraits;
-    finalStyle = value.finalStyle;
-  }
-
-  return {
-    petId,
-    decision: value.decision,
-    reason: value.decision === 'rejected' ? trimmedReason : null,
-    finalName,
-    finalTraits,
-    finalStyle,
-    publishedAccessory: value.decision === 'approved' ? publishedAccessory : null,
-    reviewNote: reviewNote || null,
-  };
+  const finalName = approved && typeof value.finalName === 'string' ? value.finalName.normalize('NFKC').trim() : null;
+  if (approved && !PET_NAME_PATTERN.test(finalName ?? '')) throw new PublicHttpError(400, 'INVALID_FINAL_PET_NAME');
+  return { petId, decision: value.decision, reason: approved ? null : reason, finalName, reviewNote: reviewNote || null,
+    ...(approved ? { expectedDraftRevision: value.expectedDraftRevision, expectedDesignVersion: value.expectedDesignVersion } : {}) };
 }
 
 function inferStyle(traits) {
@@ -552,9 +705,9 @@ function enforceSecureSupabaseUrl(parsed) {
   }
 }
 
-function validateSignedPhotoUrl(value, expectedOrigin) {
+function validateSignedPhotoUrl(value, expectedOrigin, bucket = 'pet-photos') {
   const parsed = parseHttpUrl(value, 'signed photo URL');
-  const expectedPrefix = '/storage/v1/object/sign/pet-photos/';
+  const expectedPrefix = `/storage/v1/object/sign/${bucket}/`;
   if (parsed.origin !== expectedOrigin || !parsed.pathname.startsWith(expectedPrefix)) {
     throw new UpstreamError('INVALID_SIGNED_PHOTO_URL');
   }

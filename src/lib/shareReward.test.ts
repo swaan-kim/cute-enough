@@ -1,4 +1,4 @@
-import { openShareReward, SHARE_REWARD_MODULE_ID, type ShareRewardBridge } from './shareReward';
+import { openShareReward, SHARE_REWARD_MODULE_ID, SHARE_REWARD_UNIT, type ShareRewardBridge } from './shareReward';
 
 function bridge() {
   let params: Parameters<ShareRewardBridge['open']>[0] | undefined;
@@ -11,6 +11,32 @@ function bridge() {
 }
 
 describe('contact invite rewards', () => {
+  it('accepts the live console ticket unit and preserves its successful close', async () => {
+    const native = bridge();
+    const onReward = vi.fn();
+    const onClose = vi.fn();
+    expect(SHARE_REWARD_UNIT).toBe('티켓');
+    const pending = openShareReward({ onReward, onClose }, native.value);
+    native.event({ type: 'sendViral', data: { rewardAmount: 1, rewardUnit: '티켓' } });
+    expect(onReward).toHaveBeenCalledExactlyOnceWith(1, 1, '티켓');
+    const summary = { sentRewardsCount: 1, sentRewardAmount: 1, rewardUnit: '티켓' };
+    native.event({ type: 'close', data: summary });
+    await pending;
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(summary);
+    expect(native.cleanup).toHaveBeenCalledOnce();
+    native.event({ type: 'sendViral', data: { rewardAmount: 1, rewardUnit: '티켓' } });
+    expect(onReward).toHaveBeenCalledOnce();
+  });
+
+  it.each(['', '포인트', '티켓 ', 'ticket', '강아지티켓'])('still rejects an unrelated or malformed unit %j', async (rewardUnit) => {
+    const native = bridge();
+    const onReward = vi.fn();
+    const pending = openShareReward({ onReward, onClose: vi.fn() }, native.value);
+    native.event({ type: 'sendViral', data: { rewardAmount: 1, rewardUnit } });
+    await expect(pending).rejects.toThrow('설정');
+    expect(onReward).not.toHaveBeenCalled();
+  });
+
   it('records every earned amount immediately with a stable sequence before close', async () => {
     const native = bridge();
     const onReward = vi.fn();

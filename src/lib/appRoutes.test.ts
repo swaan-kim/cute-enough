@@ -30,4 +30,11 @@ describe('app route stack', () => {
   it('resets any route stack to home', () => {
     expect(homeRouteStack()).toEqual([{ screen: 'home' }]);
   });
+
+  it('keeps the existing dog identity and returns photo additions to my dogs', () => {
+    const mine = pushRoute(createInitialRouteStack(), { screen: 'mine' });
+    const adding = pushRoute(mine, { screen: 'add-photos', petId: 'existing-dog' });
+    expect(getCurrentRoute(adding)).toEqual({ screen: 'add-photos', petId: 'existing-dog' });
+    expect(getCurrentRoute(popRoute(adding))).toEqual({ screen: 'mine' });
+  });
 });

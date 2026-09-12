@@ -41,11 +41,23 @@ export type ValidPetStyle = {
 };
 
 export const PET_API_ACTIONS = [
-  'house', 'shared', 'mine', 'reveal', 'ownerPhoto', 'submit', 'submissionStatus', 'report',
+  'house', 'shared', 'mine', 'artwork', 'design', 'reveal', 'ownerPhoto', 'photoPrepare', 'album', 'albumPhoto', 'setFavorite', 'submit', 'submitPhoto', 'submissionStatus', 'report',
+  'photoAdditionStatus', 'photoAdditionUpload', 'photoAdditionSubmit',
   'rewardStart', 'rewardComplete', 'rewardCancel', 'rewardStatus', 'rewardRebind',
   'shareStart', 'shareReward', 'shareClose', 'notificationSettings', 'setNotificationSettings',
 ] as const;
 export type PetApiAction = typeof PET_API_ACTIONS[number];
+
+/** Owner registration never accepts reviewer-controlled publication inputs. */
+export function rejectCreatorDesignFields(body: Record<string, unknown>): void {
+  const reserved = ['publishedDesign', 'publishedDesignId', 'published_design_id', 'publishedAccessory', 'publishedStyle',
+    'designVersion', 'expectedDraftRevision', 'draftDesign', 'sha256',
+    'document', 'editorState', 'designDraft', 'draftRevision', 'expectedDesignVersion', 'reviewedArtwork',
+    'reviewed_artwork', 'artwork', 'illustrationUrl', 'finalTraits', 'finalStyle'];
+  if (reserved.some((key) => Object.hasOwn(body, key))) {
+    throw new ApiError('CREATOR_DESIGN_FIELDS_FORBIDDEN', 400, '검수 디자인은 제작자만 저장할 수 있어요.');
+  }
+}
 
 function graphemeLength(value: string): number {
   if (typeof Intl.Segmenter === 'function') {
@@ -82,6 +94,15 @@ export function normalizePetName(value: unknown): string {
   const comparable = normalized.toLocaleLowerCase('ko').replaceAll(' ', '');
   if (BLOCKED_NAMES.some((blocked) => comparable.includes(blocked))) throw new ApiError('BLOCKED_PET_NAME', 400, '다른 이름을 입력해 주세요.');
   return normalized;
+}
+
+/** New submissions require a visible name; legacy unnamed records remain readable. */
+export function requirePetName(value: unknown): string {
+  if (value === undefined || value === null
+    || (typeof value === 'string' && !value.replace(UNSAFE_NAME, '').replace(/\p{Default_Ignorable_Code_Point}/gu, '').trim())) {
+    throw new ApiError('PET_NAME_REQUIRED', 400, '강아지 이름을 입력해 주세요.');
+  }
+  return normalizePetName(value);
 }
 
 export function requirePetTraits(value: unknown): Record<string, unknown> {

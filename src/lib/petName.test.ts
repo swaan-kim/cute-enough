@@ -11,8 +11,17 @@ describe('pet name helpers', () => {
     expect(preparePetName('  보리  ')).toBe('보리');
   });
 
-  it('supports an empty optional name', () => {
-    expect(preparePetName('   ')).toBe('');
+  it.each(['', '   ', '\t\n', '\u200B\uFEFF'])('requires a visible name: %j', (value) => {
+    expect(preparePetName(value)).toBe('');
+    expect(getPetNameError(value)).toBe('강아지 이름을 입력해 주세요.');
+  });
+
+  it.each(['콩', '보리', 'Bori', '보리12'])('accepts a one-to-four-character name: %s', (value) => {
+    expect(getPetNameError(value)).toBeUndefined();
+  });
+
+  it.each(['\u3164\uFFA0', '\u115F\u1160\u00AD'])('rejects invisible filler-only names: %j', (value) => {
+    expect(getPetNameError(value)).toBe('강아지 이름을 입력해 주세요.');
   });
 
   it('counts user-visible graphemes instead of UTF-16 units', () => {

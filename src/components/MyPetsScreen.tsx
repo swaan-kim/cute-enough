@@ -1,6 +1,7 @@
 import { Button, Top } from '@toss/tds-mobile';
 import type { OwnedPetSummary, PetStatus } from '../types';
 import { PetArtwork } from './PetArtwork';
+import '../album.css';
 
 const STATUS_COPY: Record<PetStatus, { label: string; description: string }> = {
   pending: { label: '검수 중', description: '사진은 나만 볼 수 있어요' },
@@ -21,7 +22,7 @@ function getStatusCopy(status: PetStatus) {
   return STATUS_UX_COPY[status];
 }
 
-export function MyPetsScreen({ pets, loading, error, uploadRewardPetId, onRetry, onUpload, onMeet, onShare }: {
+export function MyPetsScreen({ pets, loading, error, uploadRewardPetId, onRetry, onUpload, onMeet, onShare, onAddPhotos }: {
   pets: OwnedPetSummary[];
   loading: boolean;
   error: string;
@@ -30,6 +31,7 @@ export function MyPetsScreen({ pets, loading, error, uploadRewardPetId, onRetry,
   onUpload: () => void;
   onMeet: (pet: OwnedPetSummary) => void;
   onShare: (pet: OwnedPetSummary) => void;
+  onAddPhotos?: (pet: OwnedPetSummary) => void;
 }) {
   return (
     <main className="my-pets-screen">
@@ -54,16 +56,18 @@ export function MyPetsScreen({ pets, loading, error, uploadRewardPetId, onRetry,
                   ? '사진 바로 보기'
                   : hasUploadReward ? '간식 주고 사진 보기' : '사진 확인 중';
                 return <article className="my-pet-card" key={`${pet.id}-${pet.designVersion ?? 1}`}>
-                  <span className="my-pet-artwork" aria-hidden="true"><PetArtwork pet={pet} size={78} /></span>
+                  <span className="my-pet-artwork"><PetArtwork pet={pet} size={78} /></span>
                   <div className="my-pet-info">
                     <strong>{pet.name ?? '이름 없는 귀요미'}</strong>
                     <p><span className={`pet-status status-${pet.approvalStatus}`}>{copy.label}</span><span aria-hidden="true"> · </span>{copy.description}</p>
+                    {pet.approvalStatus === 'approved' && <p className="my-pet-favorite-count">♡ 마음에 담은 사람 {pet.favoriteCount ?? 0}명</p>}
                     {pet.rejectionReason && <small>반려 사유 · {pet.rejectionReason}</small>}
                     {pet.approvalStatus === 'paused' && <small className="my-pet-guidance">오른쪽 위 ⋯ &gt; 문의하기에서 확인해 주세요.</small>}
                   </div>
                   {publishable && <div className="my-pet-actions">
                     <Button size="small" disabled={!canMeet} onClick={() => onMeet(pet)}>{meetLabel}</Button>
                     <Button size="small" color="dark" variant="weak" onClick={() => onShare(pet)}>{pet.approvalStatus === 'pending' ? '캐릭터 같이 보기' : '이 귀여움 같이 보기'}</Button>
+                    {onAddPhotos && <Button size="small" color="dark" variant="weak" onClick={() => onAddPhotos(pet)}>사진 더 올리기</Button>}
                   </div>}
                   {pet.approvalStatus === 'rejected' && <div className="my-pet-actions"><Button size="small" onClick={onUpload}>다른 사진으로 다시 소개하기</Button></div>}
                 </article>;

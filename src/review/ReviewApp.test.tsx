@@ -42,6 +42,9 @@ const item: ReviewQueueItem = {
 function makeApi(overrides: Partial<ReviewApi> = {}): ReviewApi {
   return {
     getQueue: vi.fn().mockResolvedValue([item]),
+    saveDraft: vi.fn().mockImplementation(async ({ petId, document, editorState, expectedDraftRevision, expectedDesignVersion }) => ({
+      petId, document, editorState, draftRevision: expectedDraftRevision + 1, expectedDesignVersion, sha256: 'a'.repeat(64),
+    })),
     review: vi.fn().mockImplementation(async ({ petId, decision }) => ({ petId, status: decision })),
     getCatalog: vi.fn().mockResolvedValue([]),
     manage: vi.fn().mockImplementation(async ({ petId, action }) => ({ petId, status: action === 'pause' ? 'paused' : 'approved' })),
@@ -50,6 +53,70 @@ function makeApi(overrides: Partial<ReviewApi> = {}): ReviewApi {
 }
 
 describe('ReviewApp', () => {
+  it('distinguishes a catalog connection failure from an empty search and preserves server errors', async () => {
+    const api = makeApi({ getCatalog: vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new Error('검수 권한을 확인해 주세요.'))
+      .mockResolvedValueOnce([]) });
+    render(<ReviewApp api={api} />);
+    await screen.findByRole('heading', { name: '테스트견' });
+    fireEvent.click(screen.getByRole('button', { name: '검색' }));
+    expect(await screen.findByText('검수 서버에 연결하지 못했어요. 서버 실행 상태를 확인해 주세요.')).toBeInTheDocument();
+    expect(screen.queryByText('조건에 맞는 승인 강아지가 없어요.')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '검색' }));
+    expect(await screen.findByText('검수 권한을 확인해 주세요.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '검색' }));
+    expect(await screen.findByText('조건에 맞는 승인 강아지가 없어요.')).toBeInTheDocument();
+  });
+  it('requires all five full photos to be viewed before opening approval', async () => {
+    const photoUrls = Array.from({ length: 5 }, (_, index) => `/api/review-photo/photo-${index}`);
+    const api = makeApi({ getQueue: vi.fn().mockResolvedValue([{ ...item, photoUrls, photoCount: 5 }]) });
+    render(<ReviewApp api={api} />);
+    const approve = await screen.findByRole('button', { name: '테스트견 승인' });
+    expect(approve).toBeDisabled();
+    for (let index = 0; index < 5; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: `테스트견 사진 ${index + 1} 보기` }));
+      const photo = screen.getByRole('img', { name: `테스트견 실사 사진 ${index + 1}` });
+      expect(photo).toHaveAttribute('src', photoUrls[index]);
+      expect(approve).toBeDisabled();
+      fireEvent.load(photo);
+      if (index < 4) expect(approve).toBeDisabled();
+    }
+    expect(approve).toBeEnabled();
+    expect(api.review).not.toHaveBeenCalled();
+  });
+
+  it('does not approve a batch when one photo failed to load or sign', async () => {
+    const api = makeApi({ getQueue: vi.fn().mockResolvedValue([{ ...item, photoCount: 2 }]) });
+    render(<ReviewApp api={api} />);
+    const approve = await screen.findByRole('button', { name: '테스트견 승인' });
+    fireEvent.load(screen.getByRole('img', { name: '테스트견 실사 사진 1' }));
+    expect(approve).toBeDisabled();
+    expect(screen.getByText(/일부 사진을 불러오지 못했어요/)).toBeInTheDocument();
+    expect(api.review).not.toHaveBeenCalled();
+  });
+
+  it('keeps approval disabled if a second full photo fails to load', async () => {
+    const api = makeApi({ getQueue: vi.fn().mockResolvedValue([{ ...item, photoUrls: [...item.photoUrls, '/api/review-photo/broken'], photoCount: 2 }]) });
+    render(<ReviewApp api={api} />);
+    const approve = await screen.findByRole('button', { name: '테스트견 승인' });
+    fireEvent.load(screen.getByRole('img', { name: '테스트견 실사 사진 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '테스트견 사진 2 보기' }));
+    fireEvent.error(screen.getByRole('img', { name: '테스트견 실사 사진 2' }));
+    expect(approve).toBeDisabled();
+    expect(screen.getByText('사진을 불러올 수 없어요')).toBeInTheDocument();
+  });
+
+  it('does not approve when saving the SVG draft fails', async () => {
+    const api = makeApi({ saveDraft: vi.fn().mockRejectedValueOnce(new Error('SVG 저장 실패')) });
+    render(<ReviewApp api={api} />);
+    await screen.findByRole('heading', { name: '테스트견' });
+    fireEvent.load(screen.getByRole('img', { name: '테스트견 실사 사진 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '테스트견 승인' }));
+    fireEvent.click(screen.getByRole('button', { name: '승인 확정' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('SVG 저장 실패');
+    expect(api.review).not.toHaveBeenCalled();
+  });
   it('scores an identical reviewed design at 100', () => {
     expect(reviewSimilarityScore(item.traits, item.publishedStyle, item.traits, item.publishedStyle)).toBe(100);
   });
@@ -101,11 +168,9 @@ describe('ReviewApp', () => {
     await waitFor(() => {
       expect(api.review).toHaveBeenCalledWith({
         petId: item.petId,
-        decision: 'approved',
+        decision: 'approved', expectedDraftRevision: 1, expectedDesignVersion: 1,
         finalName: '테스트견',
-        finalTraits: item.submittedTraits,
-        finalStyle: item.submittedStyle,
-        publishedAccessory: null,
+        reviewNote: '',
       });
     });
     expect(await screen.findByText('검수할 강아지가 없어요')).toBeInTheDocument();
@@ -151,10 +216,10 @@ describe('ReviewApp', () => {
       expect(api.review).toHaveBeenCalledWith({
         petId: item.petId,
         decision: 'rejected',
-        reason: '얼굴이 잘 보이는 사진이 필요해요.',
+        reason: '얼굴이 잘 보이는 사진이 필요해요.', reviewNote: '',
       });
     });
-    expect(screen.getByRole('status')).toHaveTextContent('테스트견 등록을 반려했어요.');
+    expect(screen.getByRole('status')).toHaveTextContent('등록을 반려했어요.');
   });
 
   it('lets the reviewer choose a delegated accessory and stores only the final choice and note', async () => {
@@ -171,16 +236,15 @@ describe('ReviewApp', () => {
 
     await waitFor(() => expect(api.review).toHaveBeenCalledWith({
       petId: item.petId,
-      decision: 'approved',
+      decision: 'approved', expectedDraftRevision: 1, expectedDesignVersion: 1,
       finalName: '테스트견',
-      finalTraits: item.submittedTraits,
-      finalStyle: item.submittedStyle,
-      publishedAccessory: { kind: 'scarf', color: 'mint', assetKey: 'builtin:scarf' },
+
       reviewNote: '흰 털에서 대비 확인',
     }));
+    expect(api.saveDraft).toHaveBeenCalledWith(expect.objectContaining({ editorState: expect.objectContaining({ publishedAccessory: { kind: 'scarf', color: 'mint', assetKey: 'builtin:scarf' } }) }));
   });
 
-  it('keeps an owner-selected accessory locked throughout approval', async () => {
+  it('preserves the original request while letting the creator replace its final accessory', async () => {
     const lockedAccessory = { kind: 'ball', color: 'yellow', assetKey: 'builtin:ball' } as const;
     const api = makeApi({
       getQueue: vi.fn().mockResolvedValue([{
@@ -196,19 +260,20 @@ describe('ReviewApp', () => {
     fireEvent.click(screen.getByRole('button', { name: '테스트견 승인' }));
 
     expect(screen.getByRole('button', { name: '애착 공' })).toHaveClass('is-selected');
-    expect(screen.getByRole('button', { name: '애착 공' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '스카프' })).toBeDisabled();
-    expect(screen.getByText(/사용자가 직접 고른 소품/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '애착 공' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '스카프' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: '스카프' }));
+    expect(screen.getByText(/사용자가 고른 원래 소품/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '승인 확정' }));
 
     await waitFor(() => expect(api.review).toHaveBeenCalledWith({
       petId: item.petId,
-      decision: 'approved',
+      decision: 'approved', expectedDraftRevision: 1, expectedDesignVersion: 1,
       finalName: '테스트견',
-      finalTraits: item.submittedTraits,
-      finalStyle: item.submittedStyle,
-      publishedAccessory: lockedAccessory,
+      reviewNote: '',
     }));
+    expect(api.saveDraft).toHaveBeenCalledWith(expect.objectContaining({ editorState: expect.objectContaining({ publishedAccessory: { kind: 'scarf', color: 'yellow', assetKey: 'builtin:scarf' } }) }));
+    expect(lockedAccessory.kind).toBe('ball');
   });
 
   it('keeps the submitted photo and 64/114/190 final previews together in the approval editor', async () => {
@@ -281,12 +346,12 @@ describe('ReviewApp', () => {
     expect(await screen.findByText('우유', { selector: 'strong' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '공개 중지' }));
     fireEvent.change(screen.getByRole('textbox', { name: /변경 메모/ }), { target: { value: '원본 재확인' } });
-    fireEvent.click(screen.getByRole('button', { name: '변경 저장' }));
+    fireEvent.click(screen.getByRole('button', { name: '공개 중지 확정' }));
 
     await waitFor(() => expect(api.manage).toHaveBeenCalledWith({
       petId: item.petId,
       action: 'pause',
-      reviewNote: '원본 재확인',
+      reviewNote: '원본 재확인', expectedDesignVersion: 2, expectedDraftRevision: undefined,
     }));
   });
 
@@ -303,4 +368,19 @@ describe('ReviewApp', () => {
     const approve = screen.getByRole('button', { name: '승인 확정' });
     expect(approve).toBeEnabled();
   });
+  it('saves a private draft without approval and uses its new revision on the next save', async () => {
+    const api = makeApi();
+    render(<ReviewApp api={api} />);
+    await screen.findByRole('heading', { name: '테스트견' });
+    fireEvent.load(screen.getByRole('img', { name: '테스트견 실사 사진 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '테스트견 승인' }));
+    fireEvent.click(screen.getByRole('button', { name: '초안 저장' }));
+    await screen.findByText('SVG 초안을 저장하고 DB 저장본을 다시 불러왔어요.');
+    expect(api.review).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '승인 확정' }));
+    await waitFor(() => expect(api.review).toHaveBeenCalledWith(expect.objectContaining({ expectedDraftRevision: 2 })));
+    expect(api.saveDraft).toHaveBeenLastCalledWith(expect.objectContaining({ expectedDraftRevision: 1 }));
+  });
+
 });

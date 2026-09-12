@@ -2,6 +2,9 @@ import { Promotion } from '@apps-in-toss/web-framework';
 import type { ShareCloseSummary } from '../types';
 
 export const SHARE_REWARD_MODULE_ID = 'e5de3e72-cbfb-4b50-a050-9fd71fb4368b';
+// The console's bridge unit is not the longer display label on the home card.
+export const SHARE_REWARD_UNIT = '티켓';
+const isTicketRewardUnit = (unit: unknown) => unit === SHARE_REWARD_UNIT || unit === '강아지 티켓';
 
 type ShareEvent =
   | { type: 'sendViral'; data: { rewardAmount: number; rewardUnit: string } }
@@ -60,7 +63,7 @@ export function openShareReward(
           try {
             if (event.type === 'sendViral') {
               const { rewardAmount, rewardUnit } = event.data;
-              if (!Number.isSafeInteger(rewardAmount) || rewardAmount <= 0 || rewardUnit !== '강아지 티켓') {
+              if (!Number.isSafeInteger(rewardAmount) || rewardAmount <= 0 || !isTicketRewardUnit(rewardUnit)) {
                 throw new Error('공유 보상 설정을 확인하고 있어요. 잠시 뒤 다시 시도해 주세요.');
               }
               callbacks.onReward(rewardAmount, ++sequence, rewardUnit);

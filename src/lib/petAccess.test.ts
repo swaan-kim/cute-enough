@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DailyAllowance, PetSummary } from '../types';
-import { isPetRevisitActive, resolvePetAccess } from './petAccess';
+import { isPetRevisitActive, resolvePetAccess, resolvePetEncounter } from './petAccess';
 
 const allowance: DailyAllowance = {
   date: '2026-08-25', freeUsed: 0, rewardedUsed: 0,
@@ -10,6 +10,27 @@ const pet = (overrides: Partial<PetSummary>): PetSummary => ({
   id: 'pet',
   traits: { schemaVersion: 1, earShape: 'floppy', headShape: 'round', baseColor: 'white', secondaryColor: 'cream', markingPattern: 'none', muzzle: 'short', confidence: 1 },
   ...overrides,
+});
+
+describe('house daily collection intent', () => {
+  const now = new Date('2026-08-25T02:00:00Z');
+  const current = { ...allowance, remaining: 2 };
+  const returning = pet({ approvalStatus: 'approved', unlockedPhotoCount: 1, albumPhotoId: 'old',
+    collection: { collectedCount: 1, totalCount: 3, collectedToday: false, canCollectToday: true } });
+  it('collects a new photo after play only when the assigned friend can collect today', () => {
+    expect(resolvePetEncounter(returning, current, { now })).toEqual({ kind: 'reveal', method: 'FREE' });
+  });
+  it('replays today’s photo despite natural recharge and never collects through a returning share link', () => {
+    expect(resolvePetEncounter({ ...returning, collection: { ...returning.collection!, collectedToday: true, canCollectToday: false } }, current, { now })).toEqual({ kind: 'revisit' });
+    expect(resolvePetEncounter(returning, current, { now, source: 'shared' })).toEqual({ kind: 'revisit' });
+  });
+  it('replays collected photos without forcing an advertisement when tickets are empty', () => {
+    expect(resolvePetEncounter(returning, { ...current, remaining: 0, freeUsed: 2 }, { now, adsEnabled: true })).toEqual({ kind: 'revisit' });
+  });
+  it('keeps full collections free and uses an earned ad credit before a free ticket for new collection', () => {
+    expect(resolvePetEncounter({ ...returning, collection: { collectedCount: 3, totalCount: 3, collectedToday: false, canCollectToday: false } }, current, { now, hasAdCredit: true })).toEqual({ kind: 'revisit' });
+    expect(resolvePetEncounter(returning, current, { now, hasAdCredit: true })).toEqual({ kind: 'reveal', method: 'REWARDED' });
+  });
 });
 
 describe('resolvePetAccess', () => {

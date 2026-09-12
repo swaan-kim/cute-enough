@@ -1,4 +1,5 @@
 import type { DailyAllowance, OwnedPetSummary, PetSummary } from '../types';
+import { PREVIEW_PET_DESIGNS as previewDesigns } from './previewPetDesigns';
 import { FREE_RECHARGE_INTERVAL_MS } from '../lib/allowance';
 
 export type PreviewScenario = 'first-user' | 'four' | 'five' | 'owner' | 'complete' | 'ads-off';
@@ -18,30 +19,35 @@ export function getPreviewScenario(search = typeof window === 'undefined' ? '' :
 export const PREVIEW_SCENARIO_PETS: PetSummary[] = [
   {
     id: 'preview-fixture-1', name: '샘플1', houseSlot: 1,
+    publishedDesign: previewDesigns['preview-fixture-1'], designVersion: 1, designStatus: 'ready',
     photoUrl: '/sample-pets/haneul-01.jpg',
     photoUrls: ['/sample-pets/haneul-01.jpg', '/sample-pets/haneul-02.jpg'],
     traits: { schemaVersion: 1, earShape: 'upright', headShape: 'oval', baseColor: 'cream', secondaryColor: 'white', markingPattern: 'blaze', muzzle: 'short', confidence: 1 },
   },
   {
     id: 'preview-fixture-2', name: '샘플2', houseSlot: 2,
+    publishedDesign: previewDesigns['preview-fixture-2'], designVersion: 1, designStatus: 'ready',
     photoUrl: '/sample-pets/gureumi-01.jpg',
     photoUrls: ['/sample-pets/gureumi-01.jpg', '/sample-pets/gureumi-02.jpg'],
     traits: { schemaVersion: 1, earShape: 'floppy', headShape: 'round', baseColor: 'white', secondaryColor: 'cream', markingPattern: 'none', muzzle: 'medium', confidence: 1 },
   },
   {
     id: 'preview-fixture-3', name: '샘플3', houseSlot: 3,
+    publishedDesign: previewDesigns['preview-fixture-3'], designVersion: 1, designStatus: 'ready',
     photoUrl: '/sample-pets/byeori.jpg',
     traits: { schemaVersion: 1, earShape: 'semi', headShape: 'round', baseColor: 'caramel', secondaryColor: 'white', markingPattern: 'spots', muzzle: 'short', confidence: 1 },
     publishedStyle: { schemaVersion: 1, coatMode: 'point', furStyle: 'fluffy' },
   },
   {
     id: 'preview-fixture-4', name: '샘플4', houseSlot: 4,
+    publishedDesign: previewDesigns['preview-fixture-4'], designVersion: 1, designStatus: 'ready',
     photoUrl: '/sample-pets/mongsil.jpg',
     traits: { schemaVersion: 1, earShape: 'rounded', headShape: 'oval', baseColor: 'gray', secondaryColor: 'white', markingPattern: 'mask', muzzle: 'medium', confidence: 1 },
     publishedStyle: { schemaVersion: 1, coatMode: 'point', furStyle: 'cloud' },
   },
   {
     id: 'preview-fixture-5', name: '샘플5', houseSlot: 5,
+    publishedDesign: previewDesigns['preview-fixture-5'], designVersion: 1, designStatus: 'ready',
     photoUrl: '/sample-pets/gureumi-03.jpg',
     traits: { schemaVersion: 1, earShape: 'upright', headShape: 'long', baseColor: 'chocolate', secondaryColor: 'cream', markingPattern: 'brow', muzzle: 'long', confidence: 1 },
     publishedStyle: { schemaVersion: 1, coatMode: 'point', furStyle: 'neat' },

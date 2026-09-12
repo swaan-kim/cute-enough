@@ -15,6 +15,8 @@ const excludedSubmissionAssets = [
   resolve(generatedDist, 'brand', 'app-icon-polaroid-v1-512.png'),
   resolve(generatedDist, 'brand', 'favicon-polaroid-v1-192.png'),
   resolve(generatedDist, 'pet-artwork', 'README.md'),
+  // 티켓 UI는 기울어진 v1을 사용한다. 정면형 시안은 원본 저장소에 남긴다.
+  resolve(generatedDist, 'ui', 'dog-ticket-pass-v2.png'),
   // 실제 강아지 ID 통합 전의 임시 별칭 파일은 preview에도 싣지 않는다.
   resolve(generatedDist, 'sample-pets', 'haneul.jpg'),
   resolve(generatedDist, 'sample-pets', 'mongsil.jpg'),

@@ -9,7 +9,8 @@ const hapticMocks = vi.hoisted(() => ({
 
 vi.mock('../lib/haptics', () => hapticMocks);
 
-import { getNearestHouseSlot, House, HOUSE_DAILY_SLOTS } from './House';
+import { House } from './House';
+import { absoluteHousePoint, chooseHouseRoamPoint, clampHousePoint, HOUSE_DROP_PAUSE_MS, normalizedHousePoint } from '../lib/housePositions';
 
 function makePets(count: number): PetSummary[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -21,7 +22,7 @@ function makePets(count: number): PetSummary[] {
 
 function firePointer(
   target: Element,
-  type: 'pointerdown' | 'pointermove' | 'pointerup',
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
   init: { pointerId: number; clientX: number; clientY: number; button?: number },
 ) {
   const event = new MouseEvent(type, {
@@ -124,7 +125,7 @@ describe('House daily and owner slots', () => {
     expect(emptySlots[0]).toHaveClass('house-slot--daily-b');
   });
 
-  it('shows revisit and met state beside the dog name', () => {
+  it('keeps revisit and met data without adding badges beside public dog names', () => {
     const [revisit, met] = makePets(2);
     render(
       <House
@@ -137,11 +138,12 @@ describe('House daily and owner slots', () => {
         onSound={() => undefined}
       />,
     );
-    expect(screen.getByText('사진 보기')).toBeInTheDocument();
-    expect(screen.getByText('♥')).toBeInTheDocument();
+    expect(screen.queryByText('사진 보기')).not.toBeInTheDocument();
+    expect(screen.queryByText('♥')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '강아지1 옮기기 또는 선택' })).toHaveAttribute('data-pet-state', 'revisit');
   });
 
-  it('swaps occupied anchors when a dog is dropped onto another dog', () => {
+  it('keeps a free drop position without swapping another dog’s initial slot', () => {
     const dailyPets = makePets(4);
     render(<House dailyPets={dailyPets} onSelect={() => undefined} onSound={() => undefined} />);
     const room = screen.getByRole('region', { name: '강아지들이 있는 집' });
@@ -162,10 +164,15 @@ describe('House daily and owner slots', () => {
 
     firePointer(first, 'pointerdown', { pointerId: 1, clientX: 60, clientY: 226 });
     firePointer(first, 'pointermove', { pointerId: 1, clientX: 256, clientY: 228 });
+    const droppedLeft = first.style.left;
+    const droppedTop = first.style.top;
     firePointer(first, 'pointerup', { pointerId: 1, clientX: 256, clientY: 228 });
 
-    expect(first).toHaveAttribute('data-house-slot', 'daily-b');
-    expect(screen.getByRole('button', { name: '강아지2 옮기기 또는 선택' })).toHaveAttribute('data-house-slot', 'daily-a');
+    expect(first).toHaveAttribute('data-house-slot', 'daily-a');
+    expect(first.style.left).toBe(droppedLeft);
+    expect(first.style.top).toBe(droppedTop);
+    expect(first).toHaveClass('is-positioned');
+    expect(screen.getByRole('button', { name: '강아지2 옮기기 또는 선택' })).toHaveAttribute('data-house-slot', 'daily-b');
   });
 });
 
@@ -192,16 +199,8 @@ describe('House first-use hint', () => {
   });
 });
 
-describe('getNearestHouseSlot', () => {
-  it('maps pointer coordinates to one of the four stable public anchors', () => {
-    expect(getNearestHouseSlot({ x: 256, y: 228 }, { width: 320, height: 400 })).toBe('daily-b');
-    expect(getNearestHouseSlot({ x: 237, y: 344 }, { width: 320, height: 400 })).toBe('daily-d');
-    expect(HOUSE_DAILY_SLOTS).toHaveLength(4);
-  });
-});
-
 describe('House idle motion', () => {
-  it('gives every daily and owner dog a staggered multi-point roaming path', () => {
+  it('keeps every daily and owner dog eligible for roaming', () => {
     const dailyPets = makePets(4);
     const ownerBonusPet = {
       ...makePets(1)[0],
@@ -223,11 +222,171 @@ describe('House idle motion', () => {
     const dogs = screen.getAllByRole('button', { name: /옮기기 또는 선택/ });
     expect(dogs).toHaveLength(5);
     expect(dogs.every((dog) => dog.classList.contains('is-idle-active'))).toBe(true);
-    expect(new Set(dogs.map((dog) => dog.style.getPropertyValue('--idle-duration'))).size).toBeGreaterThan(2);
-    expect(dogs.every((dog) => ['--roam-x1', '--roam-y1', '--roam-x2', '--roam-y2', '--roam-x3', '--roam-y3']
-      .every((variable) => dog.style.getPropertyValue(variable)))).toBe(true);
-    expect(dogs.slice(0, 4).every((dog) => [1, 2, 3]
-      .some((step) => Math.abs(Number.parseFloat(dog.style.getPropertyValue(`--roam-x${step}`))) >= 20))).toBe(true);
+  });
+});
+
+function setRoomLayout(room: HTMLElement, dogs: HTMLElement[], initial = { width: 320, height: 400 }) {
+  const roomSize = { ...initial };
+  const asRect = (left: number, top: number, width: number, height: number) => ({ x: left, y: top, left, top, width, height, right: left + width, bottom: top + height, toJSON: () => ({}) });
+  vi.spyOn(room, 'getBoundingClientRect').mockImplementation(() => asRect(0, 0, roomSize.width, roomSize.height));
+  dogs.forEach((dog, index) => {
+    Object.defineProperties(dog, {
+      setPointerCapture: { configurable: true, value: vi.fn() }, hasPointerCapture: { configurable: true, value: vi.fn(() => true) }, releasePointerCapture: { configurable: true, value: vi.fn() },
+    });
+    vi.spyOn(dog, 'getBoundingClientRect').mockImplementation(() => asRect(Number.parseFloat(dog.style.left) || 30 + index * 120, Number.parseFloat(dog.style.top) || 40, 100, 118));
+  });
+  act(() => window.dispatchEvent(new Event('resize')));
+  return roomSize;
+}
+
+describe('House free positioning', () => {
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it('holds the exact lifted drop for 1.5 seconds, then slowly walks from it', () => {
+    vi.useFakeTimers();
+    const onPositionsChange = vi.fn();
+    render(<House dailyPets={makePets(1)} onSelect={() => undefined} onSound={() => undefined} onPositionsChange={onPositionsChange} />);
+    const room = screen.getByRole('region', { name: '강아지들이 있는 집' });
+    const dog = screen.getByRole('button', { name: /옮기기 또는 선택/ });
+    setRoomLayout(room, [dog]);
+    const box = dog.getBoundingClientRect();
+    firePointer(dog, 'pointerdown', { pointerId: 1, clientX: box.left + 30, clientY: box.top + 30 });
+    firePointer(dog, 'pointermove', { pointerId: 1, clientX: 160, clientY: 200 });
+    const dropped = { left: dog.style.left, top: dog.style.top };
+    firePointer(dog, 'pointerup', { pointerId: 1, clientX: 160, clientY: 200 });
+    expect(dog.style.left).toBe(dropped.left);
+    expect(dog.style.top).toBe(dropped.top);
+    expect(onPositionsChange).toHaveBeenLastCalledWith(expect.objectContaining({ 'dog-1': expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }) }));
+    act(() => vi.advanceTimersByTime(HOUSE_DROP_PAUSE_MS - 1));
+    expect(dog.style.left).toBe(dropped.left);
+    expect(dog).not.toHaveClass('is-walking');
+    act(() => vi.advanceTimersByTime(1));
+    expect(dog).toHaveClass('is-walking');
+    expect(Number.parseFloat(dog.style.transitionDuration)).toBeGreaterThanOrEqual(3_800);
+    expect(dog.style.left).not.toBe(dropped.left);
+  });
+
+  it('keeps cancel at its last safe coordinate and includes the name tag in bounds', () => {
+    vi.useFakeTimers();
+    const onSelect = vi.fn();
+    render(<House dailyPets={makePets(1)} onSelect={onSelect} onSound={() => undefined} />);
+    const room = screen.getByRole('region', { name: '강아지들이 있는 집' });
+    const dog = screen.getByRole('button', { name: /옮기기 또는 선택/ });
+    setRoomLayout(room, [dog]);
+    const box = dog.getBoundingClientRect();
+    firePointer(dog, 'pointerdown', { pointerId: 1, clientX: box.left + 30, clientY: box.top + 30 });
+    firePointer(dog, 'pointermove', { pointerId: 1, clientX: 700, clientY: 800 });
+    expect(dog.style.left).toBe('212px');
+    expect(dog.style.top).toBe('274px');
+    firePointer(dog, 'pointercancel', { pointerId: 1, clientX: 0, clientY: 0 });
+    expect(dog.style.left).toBe('212px');
+    expect(dog.style.top).toBe('274px');
+    fireEvent.click(dog);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('restores a saved owner location and clamps normalized positions on resize', () => {
+    const owner = { ...makePets(1)[0], id: 'owner', name: '우유', isMine: true };
+    render(<House dailyPets={[]} ownerBonusPet={owner} positions={{ owner: { x: 1, y: 1 } }} dateKey="2026-09-05" onSelect={() => undefined} onSound={() => undefined} />);
+    const room = screen.getByRole('region', { name: '강아지들이 있는 집' });
+    const dog = screen.getByRole('button', { name: /옮기기 또는 선택/ });
+    const size = setRoomLayout(room, [dog]);
+    expect(dog.style.left).toBe('212px');
+    expect(dog.style.top).toBe('274px');
+    size.width = 260; size.height = 340;
+    act(() => window.dispatchEvent(new Event('resize')));
+    expect(dog.style.left).toBe('152px');
+    expect(dog.style.top).toBe('214px');
+    expect(screen.getByText('내 강아지')).toBeInTheDocument();
+  });
+
+  it('saves every visible position before a click selects a dog while its neighbours are walking', () => {
+    vi.useFakeTimers();
+    const onPositionsChange = vi.fn();
+    const onSelect = vi.fn();
+    render(<House dailyPets={makePets(2)} onSelect={onSelect} onSound={() => undefined} onPositionsChange={onPositionsChange} />);
+    const room = screen.getByRole('region', { name: '강아지들이 있는 집' });
+    const dogs = screen.getAllByRole('button', { name: /옮기기 또는 선택/ });
+    setRoomLayout(room, dogs);
+    act(() => vi.advanceTimersByTime(HOUSE_DROP_PAUSE_MS + 240));
+    dogs.forEach((dog, index) => {
+      vi.mocked(dog.getBoundingClientRect).mockReturnValue({ x: 40 + index * 130, y: 90, left: 40 + index * 130, top: 90, width: 100, height: 118, right: 140 + index * 130, bottom: 208, toJSON: () => ({}) });
+    });
+    fireEvent.click(dogs[0]);
+    const saved = onPositionsChange.mock.calls.at(-1)?.[0];
+    expect(saved).toEqual({
+      'dog-1': normalizedHousePoint({ left: 40, top: 90 }, { width: 320, height: 400 }, { width: 100, height: 118 }),
+      'dog-2': normalizedHousePoint({ left: 170, top: 90 }, { width: 320, height: 400 }, { width: 100, height: 118 }),
+    });
+    expect(onPositionsChange.mock.invocationCallOrder.at(-1)).toBeLessThan(onSelect.mock.invocationCallOrder[0]);
+    expect(dogs.every((dog) => !dog.classList.contains('is-walking'))).toBe(true);
+  });
+
+  it('resizes from a visible in-between animation position instead of its future target', () => {
+    vi.useFakeTimers();
+    render(<House dailyPets={makePets(1)} onSelect={() => undefined} onSound={() => undefined} />);
+    const room = screen.getByRole('region', { name: '강아지들이 있는 집' });
+    const dog = screen.getByRole('button', { name: /옮기기 또는 선택/ });
+    const roomSize = setRoomLayout(room, [dog]);
+    act(() => vi.advanceTimersByTime(HOUSE_DROP_PAUSE_MS));
+    expect(dog).toHaveClass('is-walking');
+    vi.mocked(dog.getBoundingClientRect).mockReturnValue({ x: 51, y: 101, left: 51, top: 101, width: 100, height: 118, right: 151, bottom: 219, toJSON: () => ({}) });
+    roomSize.width = 280;
+    act(() => window.dispatchEvent(new Event('resize')));
+    expect(dog.style.left).toBe('51px');
+    expect(dog.style.top).toBe('101px');
+    expect(dog).not.toHaveClass('is-walking');
+  });
+
+  it('stops scheduled motion when hidden and resumes from the same location after return', () => {
+    vi.useFakeTimers();
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    render(<House dailyPets={makePets(1)} onSelect={() => undefined} onSound={() => undefined} />);
+    const room = screen.getByRole('region', { name: '강아지들이 있는 집' });
+    const dog = screen.getByRole('button', { name: /옮기기 또는 선택/ });
+    setRoomLayout(room, [dog]);
+    const before = dog.style.left;
+    hidden.mockReturnValue(true);
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    act(() => vi.advanceTimersByTime(20_000));
+    expect(dog.style.left).toBe(before);
+    expect(dog).not.toHaveClass('is-walking');
+    hidden.mockReturnValue(false);
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    act(() => vi.advanceTimersByTime(HOUSE_DROP_PAUSE_MS));
+    expect(dog).toHaveClass('is-walking');
+  });
+
+  it('does not schedule automatic motion with reduced motion enabled', () => {
+    vi.useFakeTimers();
+    vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() } as unknown as MediaQueryList);
+    render(<House dailyPets={makePets(1)} onSelect={() => undefined} onSound={() => undefined} />);
+    const room = screen.getByRole('region', { name: '강아지들이 있는 집' });
+    const dog = screen.getByRole('button', { name: /옮기기 또는 선택/ });
+    setRoomLayout(room, [dog]);
+    const before = dog.style.left;
+    act(() => vi.advanceTimersByTime(20_000));
+    expect(dog.style.left).toBe(before);
+    expect(dog).not.toHaveClass('is-walking');
+  });
+});
+
+describe('House coordinate and roaming boundaries', () => {
+  it('round-trips coordinates and handles a viewport smaller than the character', () => {
+    const room = { width: 320, height: 400 };
+    const size = { width: 100, height: 118 };
+    const point = { left: 150, top: 190 };
+    expect(absoluteHousePoint(normalizedHousePoint(point, room, size), room, size)).toEqual(point);
+    expect(clampHousePoint({ left: -5, top: 600 }, room, size)).toEqual({ left: 8, top: 274 });
+    expect(clampHousePoint(point, { width: 80, height: 80 }, size)).toEqual({ left: 0, top: 0 });
+  });
+  it('avoids a blocked direction and waits when every direction is occupied', () => {
+    const origin = { left: 100, top: 100 };
+    const room = { width: 400, height: 400 };
+    const size = { width: 60, height: 70 };
+    const desired = { left: 130, top: 100 };
+    expect(chooseHouseRoamPoint(origin, desired, room, size, [{ left: 165, top: 100, ...size }])?.left).toBeLessThan(origin.left);
+    expect(chooseHouseRoamPoint(origin, desired, room, size, [{ left: 0, top: 0, width: 400, height: 400 }])).toBeUndefined();
   });
 });
 

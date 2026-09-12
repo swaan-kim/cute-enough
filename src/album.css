@@ -1,0 +1,54 @@
+.album-screen { width:min(100%,680px); min-height:100dvh; margin:0 auto; padding:0 var(--ait-safe-right,0px) max(24px,calc(var(--ait-safe-bottom,0px) + 12px)) var(--ait-safe-left,0px); background:#fff; }
+.album-filters { display:flex; gap:8px; margin:0 20px 18px; }
+.album-filters button { flex:1; min-width:0; min-height:44px; border:0; border-radius:14px; padding:10px 12px; background:#f2f4f6; color:#4e5968; font-family:inherit; font-size:.875rem; font-weight:700; line-height:1.45; cursor:pointer; overflow-wrap:anywhere; }
+.album-filters button[aria-pressed="true"] { background:#fff0f3; color:#b52d4f; }
+.album-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:0 20px; }
+.album-pet { position:relative; min-width:0; display:flex; flex-direction:column; align-items:center; gap:5px; padding:14px 8px; border:1px solid #e5e8eb; border-radius:22px; background:#fff; color:#333d4b; font:inherit; cursor:pointer; touch-action:manipulation; }
+.album-pet:active { background:#fafbfc; }
+.album-pet-artwork { display:grid; place-items:center; width:114px; height:112px; max-width:100%; margin-bottom:5px; pointer-events:none; }
+.album-pet-artwork .dog-name,.album-pet-artwork figcaption { display:none; }
+.album-pet-artwork .dog-tail { animation:none; }
+.album-pet-artwork .dog-avatar,.album-pet-artwork .pet-artwork-image { max-width:100%; }
+.album-pet strong { max-width:100%; color:#333d4b; font-size:1rem; line-height:1.45; overflow-wrap:anywhere; }
+.album-pet-count { max-width:100%; padding:4px 9px; border-radius:999px; background:#f2f4f6; color:#4e5968; font-size:.8125rem; font-weight:600; line-height:1.45; text-align:center; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.album-pet-count.is-complete { background:#fff0f3; color:#b52d4f; }
+.album-pet-collection-copy { max-width:100%; color:#6b7684; font-size:.75rem; line-height:1.5; text-align:center; overflow-wrap:anywhere; }
+.album-pet-favorite { display:flex; align-items:center; gap:4px; color:#b52d4f; font-size:.75rem; line-height:1.45; }
+.album-message { min-height:280px; margin:0 20px; padding:28px 16px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; border-radius:22px; background:#f7f8fa; text-align:center; color:#6b7684; }
+.album-message > span { color:#d94167; font-size:40px; line-height:1; }
+.album-message strong { color:#333d4b; font-size:17px; line-height:1.45; word-break:keep-all; }
+.album-message p { max-width:100%; font-size:14px; line-height:1.55; overflow-wrap:anywhere; }
+.album-refresh-error { margin:0 20px 16px; padding:12px 14px; display:flex; align-items:center; flex-wrap:wrap; gap:10px; border-radius:14px; background:#f7f8fa; color:#4e5968; font-size:13px; line-height:1.45; }
+.album-refresh-error p { flex:1; min-width:140px; }
+.album-load-more { margin:20px; }
+.album-filters button:focus-visible,.album-pet:focus-visible,.photo-favorite:focus-visible,.photo-album-navigation button:focus-visible { outline:3px solid #3182f6; outline-offset:3px; }
+.photo-favorite { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:44px; max-width:100%; margin:10px auto 0; padding:8px 14px; border:1px solid #e5e8eb; border-radius:999px; background:#fff; color:#4e5968; font-family:inherit; font-size:.875rem; font-weight:700; line-height:1.45; cursor:pointer; touch-action:manipulation; overflow-wrap:anywhere; }
+.photo-favorite > span:first-child { color:#c63155; font-size:20px; line-height:1; }
+.photo-favorite[aria-pressed="true"] { border-color:#ffd6df; background:#fff5f7; color:#b52d4f; }
+.photo-favorite:disabled { opacity:.65; cursor:default; }
+.photo-meta--with-favorite { padding:12px 8px; }
+.photo-meta-heading { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; min-width:0; }
+.photo-meta .photo-meta-heading h2 { min-width:0; margin:0; font-size:1.625rem; overflow-wrap:anywhere; }
+.photo-meta-heading .photo-favorite { margin:0; }
+.photo-card-header.photo-card-header--close-only { justify-content:flex-end; padding-left:2px; }
+.photo-card-header--close-only > button { margin-left:auto; }
+.photo-meta .photo-caption-row { display:flex; align-items:baseline; justify-content:center; gap:5px; max-width:100%; min-width:0; margin:7px 0 0; color:#4e5968; font-size:.8125rem; line-height:1.5; }
+.photo-collection-count { flex:0 0 auto; font-variant-numeric:tabular-nums; }
+.photo-caption-divider { flex:0 0 auto; }
+.photo-caption { min-width:0; max-width:30em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.photo-meta .photo-collection-hint { margin:5px 0 0; color:#6b7684; font-size:.75rem; line-height:1.5; overflow-wrap:anywhere; }
+.play-photo-hint { position:relative; z-index:2; max-width:100%; margin:6px 24px 0; color:#6b7684; font-size:.8125rem; line-height:1.5; overflow-wrap:anywhere; }
+.photo-album-navigation { display:flex; justify-content:center; align-items:center; gap:12px; min-height:44px; margin-top:6px; color:#4e5968; }
+.photo-album-navigation > span { min-width:48px; text-align:center; font-size:.8125rem; font-variant-numeric:tabular-nums; }
+.photo-album-navigation button { flex:0 0 44px; width:44px; height:44px; padding:0; border:0; border-radius:14px; background:#f2f4f6; color:#333d4b; font-size:24px; line-height:1; cursor:pointer; }
+.photo-album-navigation button:disabled { color:#b0b8c1; background:#fafbfc; cursor:default; }
+.my-pet-info .my-pet-favorite-count { color:#b52d4f; font-size:.75rem; line-height:1.45; }
+@media(max-width:380px) { .album-grid { gap:10px; margin-left:16px; margin-right:16px; } .album-pet { padding-left:6px; padding-right:6px; } }
+@media(max-height:680px) { .photo-meta.photo-meta--with-favorite { padding:6px 8px; } .photo-meta--with-favorite .photo-meta-heading h2 { margin:0; font-size:1.375rem; } }
+@media(max-width:22rem) {
+  .photo-meta .photo-caption-row { flex-wrap:wrap; }
+  .photo-caption { overflow:visible; text-overflow:clip; white-space:normal; overflow-wrap:anywhere; }
+}
+[data-large-text="true"] .photo-meta .photo-caption-row { flex-wrap:wrap; }
+[data-large-text="true"] .photo-collection-count { flex-shrink:1; min-width:0; overflow-wrap:anywhere; }
+[data-large-text="true"] .photo-caption { overflow:visible; text-overflow:clip; white-space:normal; overflow-wrap:anywhere; }

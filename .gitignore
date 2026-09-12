@@ -9,6 +9,8 @@ dist/
 !.env.review.example
 .DS_Store
 coverage/
+playwright-report/
+test-results/
 *.tsbuildinfo
 .vite/
 .idea/
@@ -16,6 +18,7 @@ coverage/
 supabase/.temp/
 .tmp/
 TO_UPLOAD/
+AIT/
 tools/console-preview/
 홍보용/
 

@@ -1,0 +1,66 @@
+.photo-addition-boundary {
+  margin: 0 0 18px;
+  color: #6b7684;
+  font-size: 13px;
+  line-height: 1.7;
+  word-break: keep-all;
+}
+
+.photo-addition-capacity {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 18px;
+  padding: 16px;
+  border-radius: 16px;
+  background: #fff5f8;
+  color: #4e3d46;
+  font-size: 14px;
+}
+
+.photo-addition-capacity > span {
+  color: #8a5368;
+  font-size: 13px;
+}
+
+.photo-addition-message,
+.photo-addition-feedback {
+  margin: 18px 0;
+  color: #4e5968;
+  font-size: 14px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.photo-addition-feedback {
+  padding: 18px;
+  border-radius: 16px;
+  background: #f2f4f6;
+}
+
+.photo-addition-feedback p {
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+
+.photo-addition-feedback small {
+  color: #6b7684;
+}
+
+.photo-addition-feedback.is-rejected {
+  background: #fff8f0;
+}
+
+.photo-addition-camera {
+  font-size: 48px;
+  line-height: 1.4;
+}
+
+.photo-addition-screen .consent {
+  margin: 22px 0 16px;
+  min-height: 44px;
+}
+
+.photo-addition-screen .photo-addition-cancel {
+  margin-top: 16px;
+  min-height: 44px;
+}

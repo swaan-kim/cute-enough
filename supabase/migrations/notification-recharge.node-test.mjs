@@ -7,6 +7,9 @@ import { readFile, readdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { after, before, beforeEach, test } from 'node:test';
+import { processRechargeNotifications } from '../functions/recharge-notifications/worker.ts';
+import { encryptNotificationKey } from '../functions/_shared/notification-crypto.ts';
+import { sendRechargeNotification } from '../functions/_shared/notification-sender.ts';
 
 const moduleUrl = process.env.PGLITE_MODULE_PATH
   ? pathToFileURL(resolve(process.env.PGLITE_MODULE_PATH)).href
@@ -247,4 +250,68 @@ test('the cron dispatcher requires an explicit enable switch and a Vault secret'
   await rpc('dispatch_recharge_notification_worker');
   assert.equal((await db.query('select count(*)::int as count from net.test_requests')).rows[0].count, 1);
   await assert.rejects(db.exec("update public.recharge_notification_worker_config set function_url='https://example.com/collect'"), /check constraint/);
+});
+
+// Compose the actual worker, encryption, sender/parser and SQL. Only the final
+// Toss HTTP boundary is a fixture: these tests cannot deliver a real push.
+const workerDatabase = {
+  async rpc(name, params) {
+    const order = {
+      claim_recharge_notification_jobs: ['p_limit'],
+      prepare_recharge_notification_send: ['p_job_id', 'p_claim_token'],
+      finish_recharge_notification_send: ['p_job_id', 'p_claim_token', 'p_outcome', 'p_reason'],
+    }[name];
+    assert.ok(order, `Unexpected worker RPC: ${name}`);
+    const args = order.map((key) => params[key]);
+    if (name === 'claim_recharge_notification_jobs') {
+      return { data: (await db.query('select * from public.claim_recharge_notification_jobs($1)', args)).rows, error: null };
+    }
+    return { data: await rpc(name, ...args), error: null };
+  },
+};
+const testEncryptionKey = Buffer.alloc(32, 7).toString('base64');
+const setupWorker = async () => {
+  await clock(baseTime);
+  const owner = randomUUID();
+  const envelope = await encryptNotificationKey('local-push-recipient', owner, testEncryptionKey);
+  await rpc('set_recharge_notification_settings', owner, true, envelope, 'template-code');
+  await db.query('insert into public.pet_free_allowances(owner_hash,balance,last_refill_at) values ($1,0,$2)', [owner, baseTime]);
+  await clock('2026-09-05T15:01:00+09:00');
+  return owner;
+};
+
+test('worker journey decrypts only the consenting recipient and persists a confirmed push once', async () => {
+  const owner = await setupWorker();
+  let transports = 0;
+  const send = (recipient, template) => sendRechargeNotification(recipient, template, 'local-mtls-stub', async (_url, options) => {
+    transports++;
+    assert.equal(options.headers['x-anon-key'], 'local-push-recipient');
+    assert.deepEqual(JSON.parse(options.body), { templateSetCode: 'template-code', context: {} });
+    return new Response(JSON.stringify({ resultType: 'SUCCESS', success: {
+      sentPushCount: 1, detail: { sentPush: [{ contentId: 'local-confirmation' }] }, fail: { sentPush: [] },
+    } }), { status: 200 });
+  });
+  const options = { database: workerDatabase, encryptionKey: testEncryptionKey, templateCode: 'template-code', send };
+  assert.equal((await processRechargeNotifications(options)).sent, 1);
+  assert.equal((await jobs(owner))[0].state, 'sent');
+  assert.equal((await processRechargeNotifications(options)).claimed, 0);
+  assert.equal(transports, 1);
+});
+
+test('worker journey cannot deliver after opt-out and never retries an uncertain transport', async () => {
+  const optedOut = await setupWorker();
+  await rpc('set_recharge_notification_settings', optedOut, false, null, null);
+  let transports = 0;
+  const send = (recipient, template) => sendRechargeNotification(recipient, template, null, async () => {
+    transports++; throw new Error('local response lost');
+  });
+  const options = { database: workerDatabase, encryptionKey: testEncryptionKey, templateCode: 'template-code', send };
+  assert.equal((await processRechargeNotifications(options)).claimed, 0);
+  assert.equal(transports, 0);
+  const owner = await setupWorker();
+  assert.equal((await processRechargeNotifications(options)).unknown, 1);
+  assert.equal((await jobs(owner))[0].outcome_reason, 'network_outcome_unknown');
+  await clock('2026-09-05T15:30:00+09:00');
+  assert.equal((await processRechargeNotifications(options)).claimed, 0);
+  assert.equal(transports, 1);
 });

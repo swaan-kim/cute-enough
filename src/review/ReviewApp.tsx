@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PetArtwork } from '../components/PetArtwork';
+import { ReviewPetArtwork as PetArtwork } from './ReviewPetArtwork';
+import { ReviewPhotoAdditions } from './ReviewPhotoAdditions';
+import { validatePetDesign } from '../../supabase/functions/_shared/pet-design';
+import { updateDesignEditor, type PetDesignEditorState } from '../design/designEditor';
+import { createReviewEditor } from './reviewDesign';
+import type { ReviewEditorState, ReviewDesignDraft, ReviewPhotoSet } from './types';
+import { activeReviewPhotos, legacyReviewPhotos, ReviewPhotoGallery, ReviewPhotoManager, ReviewPhotoReference } from './ReviewPhotos';
+import { normalizePetStyle } from '../lib/petStyle';
+import { CATALOG_ARTWORK_LABELS, catalogArtworkStatus, ReviewCatalogArtwork } from './ReviewCatalogArtwork';
 import {
   PET_ACCESSORY_COLORS,
   PET_ACCESSORY_COLOR_HEX,
@@ -9,7 +17,6 @@ import {
   createPetAccessory,
   petAccessoryLabel,
 } from '../lib/petAccessory';
-import { getPetExpression } from '../lib/petExpression';
 import { applyCoatMode, getSoftPointColor } from '../lib/petStyle';
 import type { BrowStyle, CoatColor, EarShape, FurStyle, HeadShape, MarkingPattern, PetAccessory, PetStyleV1, PetTraitsV1, TongueShape } from '../types';
 import { reviewApi as defaultReviewApi } from './api';
@@ -24,6 +31,8 @@ type PendingReview = {
 };
 
 type ReviewDialogResult = {
+  editorState: ReviewEditorState;
+  draftOnly?: boolean;
   reason: string;
   finalName: string;
   finalTraits: PetTraitsV1;
@@ -142,97 +151,36 @@ function EmptyState() {
   );
 }
 
-function PhotoPanel({ item, onPhotoLoaded, onNotice }: { item: ReviewQueueItem; onPhotoLoaded: () => void; onNotice: (message: string) => void }) {
-  const [selectedPhoto, setSelectedPhoto] = useState(0);
-  const [failedPhotos, setFailedPhotos] = useState<ReadonlySet<number>>(() => new Set());
-  const hasPhoto = item.photoPresent && item.photoUrls.length > 0;
-  const selectedUrl = item.photoUrls[selectedPhoto];
-  const selectedFailed = failedPhotos.has(selectedPhoto);
+function PhotoPanel({ item, onPhotoLoaded, onPhotoFailed, onNotice, onManage, disabled }: { item: ReviewQueueItem; onPhotoLoaded: (url: string) => void; onPhotoFailed: (url: string) => void; onNotice: (message: string) => void; onManage: () => void; disabled: boolean }) {
   const displayName = getPetDisplayName(item);
-
-  useEffect(() => {
-    setSelectedPhoto(0);
-    setFailedPhotos(new Set());
-  }, [item.photoUrls]);
-
-  const markPhotoFailed = () => {
-    setFailedPhotos((current) => new Set(current).add(selectedPhoto));
-  };
-
-  return (
-    <div className="review-photo-panel">
-      <div className="review-section-heading">
-        <span>등록 실사</span>
-        <span className={`review-photo-status ${item.photoPresent ? 'is-present' : 'is-missing'}`}>
-          {item.photoPresent ? '사진 있음' : '사진 없음'}
-        </span>
-      </div>
-
-      <div className="review-photo-frame">
-        {hasPhoto && !selectedFailed ? (
-          <img
-            src={selectedUrl}
-            alt={`${displayName} 실사 사진 ${selectedPhoto + 1}`}
-            onLoad={onPhotoLoaded}
-            onError={markPhotoFailed}
-          />
-        ) : (
-          <div className="review-photo-placeholder" role="img" aria-label={`${displayName} 실사 사진 없음`}>
-            <span aria-hidden="true">사진</span>
-            <strong>{selectedFailed || item.photoPresent ? '사진을 불러올 수 없어요' : '저장된 사진이 없어요'}</strong>
-            <small>{selectedFailed || item.photoPresent ? '다른 사진을 선택하거나 새로고침해 주세요.' : '사진이 확인되어야 승인할 수 있습니다.'}</small>
-          </div>
-        )}
-      </div>
-
-      {item.photoUrls.length > 1 && (
-        <div className="review-photo-thumbnails" aria-label={`${displayName} 사진 목록`}>
-          {item.photoUrls.map((url, index) => (
-            <button
-              className={index === selectedPhoto ? 'is-selected' : ''}
-              type="button"
-              key={`${item.petId}-${index}`}
-              aria-label={`${displayName} 사진 ${index + 1} 보기`}
-              aria-pressed={index === selectedPhoto}
-              onClick={() => setSelectedPhoto(index)}
-            >
-              {failedPhotos.has(index) ? (
-                <span aria-hidden="true">!</span>
-              ) : (
-                <img src={url} alt="" onError={() => setFailedPhotos((current) => new Set(current).add(index))} />
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-      {hasPhoto && !selectedFailed && (
-        <button
-          className="review-button review-button--secondary review-photo-download"
-          type="button"
-          onClick={() => void saveReviewPhoto(selectedUrl, displayName)
-            .then(() => onNotice('768px 이하 검수용 사진을 저장했어요.'))
-            .catch(() => onNotice('검수용 사진을 저장하지 못했어요.'))}
-        >
-          검수용 사진 저장
-        </button>
-      )}
-    </div>
-  );
+  return <div className="review-photo-panel">
+    <div className="review-section-heading"><span>등록 실사</span><span className={`review-photo-status ${item.photoPresent ? 'is-present' : 'is-missing'}`}>{item.photoPresent ? '사진 있음' : '사진 없음'}</span></div>
+    <ReviewPhotoGallery name={displayName} photos={legacyReviewPhotos(item.photoUrls)} onPhotoLoaded={onPhotoLoaded} onPhotoFailed={onPhotoFailed}
+      onDownload={(url) => void saveReviewPhoto(url, displayName).then(() => onNotice('768px 이하 검수용 사진을 저장했어요.')).catch(() => onNotice('검수용 사진을 저장하지 못했어요.'))} />
+    <button className="review-button review-button--secondary review-photo-manage" type="button" disabled={disabled} onClick={onManage}>사진 관리</button>
+  </div>;
 }
 
 function ReviewCard({
   item,
   disabled,
   onOpenReview,
+  onManagePhotos,
   onNotice,
 }: {
   item: ReviewQueueItem;
   disabled: boolean;
   onOpenReview: (item: ReviewQueueItem, decision: ReviewDecision) => void;
+  onManagePhotos: (item: ReviewQueueItem) => void;
   onNotice: (message: string) => void;
 }) {
   const displayName = getPetDisplayName(item);
-  const [photoSeen, setPhotoSeen] = useState(false);
+  const [seenPhotos, setSeenPhotos] = useState<ReadonlySet<string>>(() => new Set());
+  const photoCount = item.photoCount ?? item.photoUrls.length;
+  const photosMissing = photoCount > item.photoUrls.length;
+  const seenCount = item.photoUrls.filter((url) => seenPhotos.has(url)).length;
+  const photoSeen = photoCount > 0 && !photosMissing && seenCount === photoCount;
+  useEffect(() => { setSeenPhotos(new Set()); }, [item.photoUrls]);
   const curatedDraft = useMemo(() => getCuratedReviewDraft(item), [item]);
   const pet = useMemo(() => ({
     id: item.petId,
@@ -261,13 +209,16 @@ function ReviewCard({
       </div>
 
       <div className="review-visuals">
-        <PhotoPanel item={item} onPhotoLoaded={() => setPhotoSeen(true)} onNotice={onNotice} />
+        <PhotoPanel item={item}
+          onPhotoLoaded={(url) => setSeenPhotos((current) => new Set(current).add(url))}
+          onPhotoFailed={(url) => setSeenPhotos((current) => { const next = new Set(current); next.delete(url); return next; })}
+          onNotice={onNotice} onManage={() => onManagePhotos(item)} disabled={disabled} />
         <div className="review-character-panel">
           <div className="review-section-heading">
-            <span>{curatedDraft ? '캐릭터 비교' : '생성 캐릭터'}</span>
-            <span className="review-character-status">{curatedDraft ? '검수 제안 있음' : '미리보기'}</span>
+            <span>{item.draftDesign ? '저장된 SVG 초안' : curatedDraft ? '캐릭터 비교' : '생성 캐릭터'}</span>
+            <span className="review-character-status">{item.draftDesign ? 'DB 저장본 · 미공개' : curatedDraft ? '검수 제안 있음' : '미리보기'}</span>
           </div>
-          {curatedDraft && suggestedPet ? (
+          {!item.draftDesign && curatedDraft && suggestedPet ? (
             <div className="review-character-frame review-curated-compare">
               <figure><PetArtwork pet={pet} size={114} /><figcaption>사용자 초안</figcaption></figure>
               <span className="review-curated-arrow" aria-hidden="true">→</span>
@@ -278,7 +229,7 @@ function ReviewCard({
             <div className="review-character-frame review-character-sizes">
               {[64, 114, 190].map((size) => (
                 <figure key={size}>
-                  <PetArtwork pet={pet} size={size} />
+                  <PetArtwork pet={pet} document={item.draftDesign?.document} size={size} />
                   <figcaption>{size}px</figcaption>
                 </figure>
               ))}
@@ -322,7 +273,10 @@ function ReviewCard({
           <p className="review-card-warning" role="note">사진이 없어 승인할 수 없습니다.</p>
         )}
         {item.photoPresent && item.photoUrls.length > 0 && !photoSeen && (
-          <p className="review-card-warning" role="note">실사 사진을 확인하면 승인할 수 있습니다.</p>
+          <p className="review-card-warning" role="note">{photosMissing
+            ? '일부 사진을 불러오지 못했어요. 새로고침 후 모든 사진을 확인해 주세요.'
+            : photoCount > 1 ? `사진 ${seenCount}/${photoCount}장 확인 · 모든 사진을 확인하면 승인할 수 있습니다.`
+              : '실사 사진을 확인하면 승인할 수 있습니다.'}</p>
         )}
         <div className="review-card-actions">
           <button
@@ -382,20 +336,41 @@ export function reviewSimilarityScore(
   return traitsMatch && styleMatch ? 100 : 0;
 }
 
-function ReviewDesignEditor({ item, name, traits, style, accessory, photoUrl, accessoryLocked = false, disabled, onTraits, onStyle, onAccessory }: {
+function useReviewDesign(item: ReviewQueueItem | ReviewCatalogItem) {
+  const [editor, setEditor] = useState(() => createReviewEditor(item));
+  const savedRevision = item.draftDesign?.draftRevision;
+  useEffect(() => {
+    if (item.draftDesign) setEditor(createReviewEditor(item));
+  }, [savedRevision]); // A successful save displays the document read back from DB.
+  const traits = editor.input.traits;
+  const style = normalizePetStyle(traits, editor.input.style);
+  const accessory = editor.input.accessory ?? null;
+  const setTraits = (value: PetTraitsV1) => setEditor((current) => updateDesignEditor(current, { traits: value }));
+  const setStyle = (value: PetStyleV1) => setEditor((current) => updateDesignEditor(current, { style: value, expression: value.expression ?? current.input.expression }));
+  const setAccessory = (value: PetAccessory | null) => setEditor((current) => updateDesignEditor(current, { accessory: value ?? undefined }));
+  const editorState: ReviewEditorState = { finalTraits: traits, finalStyle: style, publishedAccessory: accessory, editor };
+  return { editor, setEditor, traits, style, accessory, setTraits, setStyle, setAccessory, editorState };
+}
+
+function ReviewDesignEditor({ item, name, traits, style, accessory, api, photoUrls, editor, onEditor, disabled, onTraits, onStyle, onAccessory }: {
   item: Pick<ReviewQueueItem, 'petId' | 'name' | 'designVersion'>;
   name?: string;
   traits: PetTraitsV1;
   style: PetStyleV1;
   accessory: PetAccessory | null;
-  photoUrl?: string;
-  accessoryLocked?: boolean;
+  api: ReviewApi;
+  photoUrls?: string[];
+  editor: PetDesignEditorState;
+  onEditor: (editor: PetDesignEditorState) => void;
   disabled: boolean;
   onTraits: (traits: PetTraitsV1) => void;
   onStyle: (style: PetStyleV1) => void;
   onAccessory: (accessory: PetAccessory | null) => void;
 }) {
-  const expression = style.expression ?? getPetExpression(item.petId);
+  const expression = style.expression ?? editor.input.expression ?? { browStyle: 'none', tongueShape: 'drop' };
+  const [importError, setImportError] = useState('');
+  const [animate, setAnimate] = useState(false);
+  const hasCustomParts = Boolean(editor.input.signature) || JSON.stringify(editor.document) !== JSON.stringify(editor.baseDocument);
   const previewPet = {
     id: item.petId,
     name: name ?? getPetDisplayName(item),
@@ -421,9 +396,9 @@ function ReviewDesignEditor({ item, name, traits, style, accessory, photoUrl, ac
       <div className="review-section-heading"><span>최종 캐릭터 보정</span><span className="review-character-status">실사 기준</span></div>
       <div className="review-design-workspace">
         <aside className="review-design-reference" aria-label="검수 기준 미리보기">
-          {photoUrl && <figure className="review-design-photo"><img src={photoUrl} alt={`${name ?? getPetDisplayName(item)} 검수 실사`} /><figcaption>등록 실사</figcaption></figure>}
+          <ReviewPhotoReference api={api} petId={item.petId} name={name ?? getPetDisplayName(item)} fallbackUrls={photoUrls} />
           <div className="review-design-size-previews" aria-label="최종 크기 미리보기">
-            {[64, 114, 190].map((size) => <figure key={size}><PetArtwork pet={previewPet} size={size} /><figcaption>{size}px</figcaption></figure>)}
+            {[64, 114, 190].map((size) => <figure key={size}><PetArtwork pet={previewPet} document={editor.document} size={size} active={animate} eating={animate} panting={animate} /><figcaption>{size}px</figcaption></figure>)}
           </div>
         </aside>
         <div className="review-design-controls">
@@ -439,12 +414,28 @@ function ReviewDesignEditor({ item, name, traits, style, accessory, photoUrl, ac
         <label>눈썹<select disabled={disabled} value={expression.browStyle} onChange={(event) => onStyle({ ...style, expression: { ...expression, browStyle: event.target.value as BrowStyle } })}>{REVIEW_OPTIONS.brow.map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label>혀<select disabled={disabled} value={expression.tongueShape} onChange={(event) => onStyle({ ...style, expression: { ...expression, tongueShape: event.target.value as TongueShape } })}>{REVIEW_OPTIONS.tongue.map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           </div>
+          {hasCustomParts && <p className="review-accessory-lock-note">전용 소품·특수 도형은 SVG 미리보기에 포함되어 있어요. 아래에서 기본 소품을 더할 수 있어요.</p>}
           <div className="review-accessory-kind-options">
-            <button type="button" className={!accessory ? 'is-selected' : ''} onClick={() => onAccessory(null)} disabled={disabled || accessoryLocked}>소품 없음</button>
-            {PET_ACCESSORY_KINDS.map((kind) => <button type="button" key={kind} className={accessory?.kind === kind ? 'is-selected' : ''} onClick={() => onAccessory(createPetAccessory(kind, accessory?.color ?? 'pink'))} disabled={disabled || accessoryLocked}>{PET_ACCESSORY_KIND_LABELS[kind]}</button>)}
+            <button type="button" className={!accessory ? 'is-selected' : ''} onClick={() => onAccessory(null)} disabled={disabled}>{hasCustomParts ? '추가 소품 없음' : '소품 없음'}</button>
+            {PET_ACCESSORY_KINDS.map((kind) => <button type="button" key={kind} className={accessory?.kind === kind ? 'is-selected' : ''} onClick={() => onAccessory(createPetAccessory(kind, accessory?.color ?? 'pink'))} disabled={disabled}>{PET_ACCESSORY_KIND_LABELS[kind]}</button>)}
           </div>
-          {accessory && <div className="review-accessory-color-options" aria-label="소품 색상">{PET_ACCESSORY_COLORS.map((color) => <button type="button" key={color} className={accessory.color === color ? 'is-selected' : ''} aria-pressed={accessory.color === color} onClick={() => onAccessory(createPetAccessory(accessory.kind, color))} disabled={disabled || accessoryLocked}><span style={{ background: PET_ACCESSORY_COLOR_HEX[color] }} />{PET_ACCESSORY_COLOR_LABELS[color]}</button>)}</div>}
-          {accessoryLocked && <p className="review-accessory-lock-note">사용자가 직접 고른 소품이라 검수에서 바꾸지 않아요.</p>}
+          {accessory && <div className="review-accessory-color-options" aria-label="소품 색상">{PET_ACCESSORY_COLORS.map((color) => <button type="button" key={color} className={accessory.color === color ? 'is-selected' : ''} aria-pressed={accessory.color === color} onClick={() => onAccessory(createPetAccessory(accessory.kind, color))} disabled={disabled}><span style={{ background: PET_ACCESSORY_COLOR_HEX[color] }} />{PET_ACCESSORY_COLOR_LABELS[color]}</button>)}</div>}
+          <p className="review-accessory-lock-note">사용자가 고른 원래 소품은 보관하고, 최종 소품은 제작자가 결정합니다.</p>
+          <label><input type="checkbox" checked={animate} onChange={(event) => setAnimate(event.target.checked)} /> 기존 동작 확인</label>
+          <details><summary>제작자 SVG 도형 가져오기</summary>
+            <p>새 소품이 포함된 디자인 JSON을 불러와 검수합니다. 확정 저장하면 같은 도형이 앱에 표시됩니다.</p>
+            <input type="file" accept="application/json,.json" disabled={disabled} aria-label="SVG 디자인 JSON 불러오기" onChange={async (event) => {
+              const file = event.target.files?.[0];
+              if (!file) return;
+              try {
+                if (file.size > 200000) throw new Error('디자인 파일은 200KB 이하여야 해요.');
+                const document = validatePetDesign(JSON.parse(await file.text()));
+                onEditor({ ...editor, document }); setImportError('');
+              } catch (error) { setImportError(error instanceof Error ? error.message : '도형을 확인해 주세요.'); }
+              event.target.value = '';
+            }} />
+            {importError && <p role="alert">{importError}</p>}
+          </details>
         </div>
       </div>
     </section>
@@ -452,12 +443,14 @@ function ReviewDesignEditor({ item, name, traits, style, accessory, photoUrl, ac
 }
 
 function ReviewDialog({
+  api,
   pending,
   submitting,
   error,
   onCancel,
   onSubmit,
 }: {
+  api: ReviewApi;
   pending: PendingReview;
   submitting: boolean;
   error: string;
@@ -468,9 +461,8 @@ function ReviewDialog({
   const curatedDraft = useMemo(() => getCuratedReviewDraft(pending.item), [pending.item]);
   const [reviewNote, setReviewNote] = useState(() => curatedDraft?.reviewNote ?? '');
   const [finalName, setFinalName] = useState(() => curatedDraft?.displayName ?? getPetDisplayName(pending.item));
-  const [finalTraits, setFinalTraits] = useState<PetTraitsV1>(() => ({ ...(curatedDraft?.traits ?? pending.item.submittedTraits) }));
-  const [finalStyle, setFinalStyle] = useState<PetStyleV1>(() => ({ ...(curatedDraft?.style ?? pending.item.submittedStyle) }));
-  const [publishedAccessory, setPublishedAccessory] = useState<PetAccessory | null>(() => pending.item.requestedAccessory ?? pending.item.publishedAccessory);
+  const { editor, setEditor, traits: finalTraits, style: finalStyle, accessory: publishedAccessory,
+    setTraits: setFinalTraits, setStyle: setFinalStyle, setAccessory: setPublishedAccessory, editorState } = useReviewDesign(pending.item);
   const dialogRef = useRef<HTMLDivElement>(null);
   const isReject = pending.decision === 'rejected';
   const trimmedReason = reason.trim();
@@ -519,7 +511,7 @@ function ReviewDialog({
         <p id="review-dialog-description">
           {isReject
             ? '등록자에게 안내할 사유를 입력해 주세요.'
-            : '승인 즉시 공유 링크에 반영되고, 다른 사용자의 집에는 다음날부터 등장합니다.'}
+            : '지금 보이는 SVG 도형과 소품을 확정하고 승인합니다. 앱에서도 같은 디자인으로 기존 동작을 보여줍니다.'}
         </p>
 
         {isReject && (
@@ -551,8 +543,10 @@ function ReviewDialog({
               traits={finalTraits}
               style={finalStyle}
               accessory={publishedAccessory}
-              photoUrl={pending.item.photoUrls[0]}
-              accessoryLocked={pending.item.accessorySelectionMode === 'owner'}
+              api={api}
+              photoUrls={pending.item.photoUrls}
+              editor={editor}
+              onEditor={setEditor}
               disabled={submitting}
               onTraits={setFinalTraits}
               onStyle={setFinalStyle}
@@ -591,6 +585,8 @@ function ReviewDialog({
           >
             취소
           </button>
+          {!isReject && <button className="review-button review-button--secondary" type="button" disabled={submitting}
+            onClick={() => onSubmit({ reason: '', finalName: trimmedFinalName, finalTraits, finalStyle, publishedAccessory, reviewNote: reviewNote.trim(), editorState, draftOnly: true })}>초안 저장</button>}
           <button
             className={`review-button ${isReject ? 'review-button--reject-confirm' : 'review-button--approve'}`}
             type="button"
@@ -599,11 +595,8 @@ function ReviewDialog({
               finalName: trimmedFinalName,
               finalTraits,
               finalStyle,
-              publishedAccessory: isReject
-                ? null
-                : pending.item.accessorySelectionMode === 'owner'
-                  ? pending.item.requestedAccessory
-                  : publishedAccessory,
+              publishedAccessory: isReject ? null : publishedAccessory,
+              editorState,
               reviewNote: reviewNote.trim(),
             })}
             disabled={submitting || (isReject && !trimmedReason) || (!isReject && !finalNameValid) || reason.length > 300 || reviewNote.length > 500}
@@ -616,7 +609,7 @@ function ReviewDialog({
   );
 }
 
-function CatalogPanel({ items, query, loading, disabled, onQuery, onSearch, onManage }: {
+function CatalogPanel({ items, query, loading, disabled, onQuery, onSearch, onManage, onManagePhotos }: {
   items: ReviewCatalogItem[];
   query: string;
   loading: boolean;
@@ -624,6 +617,7 @@ function CatalogPanel({ items, query, loading, disabled, onQuery, onSearch, onMa
   onQuery: (query: string) => void;
   onSearch: () => void;
   onManage: (item: ReviewCatalogItem, action: PublicationAction) => void;
+  onManagePhotos: (item: ReviewCatalogItem) => void;
 }) {
   return (
     <section className="review-catalog" aria-label="승인 강아지 관리">
@@ -632,12 +626,14 @@ function CatalogPanel({ items, query, loading, disabled, onQuery, onSearch, onMa
         <input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="예: 우유 또는 강아지 ID" maxLength={50} disabled={loading || disabled} />
         <button className="review-button review-button--secondary" type="submit" disabled={loading || disabled}>{loading ? '찾는 중…' : '검색'}</button>
       </form>
+      {items.length > 0 && <p className="review-catalog-summary" role="note">조회 {items.length}마리 · 확정 SVG {items.filter((item) => catalogArtworkStatus(item) === 'ready').length}마리 · 확인 필요 {items.filter((item) => catalogArtworkStatus(item) !== 'ready').length}마리</p>}
       {items.length > 0 && <div className="review-catalog-list">{items.map((item) => (
         <article key={`${item.petId}-${item.designVersion}`}>
-          <PetArtwork pet={{ id:item.petId, name:item.name ?? undefined, traits:item.traits, publishedStyle:item.publishedStyle, publishedAccessory:item.publishedAccessory ?? undefined, designVersion:item.designVersion }} size={78} />
-          <div><strong>{item.name || '이름 없음'}</strong><small>{item.petId}</small><span className={item.status === 'paused' ? 'is-paused' : ''}>{item.status === 'paused' ? '공개 중지' : '공개 중'}</span></div>
+          <ReviewCatalogArtwork item={item} loading={loading || disabled} onReload={onSearch} />
+          <div><strong>{item.name || '이름 없음'}</strong><small>{item.petId}</small><span className={item.status === 'paused' ? 'is-paused' : ''}>{item.status === 'paused' ? '공개 중지' : '공개 중'}</span><small>{CATALOG_ARTWORK_LABELS[catalogArtworkStatus(item)]}</small></div>
           <div className="review-catalog-actions">
-            <button type="button" onClick={() => onManage(item, item.status === 'paused' ? 'republish' : 'revise')} disabled={disabled}>{item.status === 'paused' ? '보정 후 재공개' : '디자인 보정'}</button>
+            <button type="button" onClick={() => onManagePhotos(item)} disabled={disabled}>사진 관리</button>
+            <button type="button" onClick={() => onManage(item, item.status === 'paused' ? 'republish' : 'revise')} disabled={disabled}>{item.status === 'paused' ? '보정 후 재공개' : item.publishedDesign ? '디자인 보정' : '확정 SVG 저장'}</button>
             {item.status === 'approved' && <button type="button" onClick={() => onManage(item, 'pause')} disabled={disabled}>공개 중지</button>}
           </div>
         </article>
@@ -646,28 +642,28 @@ function CatalogPanel({ items, query, loading, disabled, onQuery, onSearch, onMa
   );
 }
 
-function PublicationDialog({ item, action, submitting, error, onCancel, onSubmit }: {
+function PublicationDialog({ api, item, action, submitting, error, onCancel, onSubmit }: {
+  api: ReviewApi;
   item: ReviewCatalogItem;
   action: PublicationAction;
   submitting: boolean;
   error: string;
   onCancel: () => void;
-  onSubmit: (value: { traits: PetTraitsV1; style: PetStyleV1; accessory: PetAccessory | null; note: string }) => void;
+  onSubmit: (value: { editorState: ReviewEditorState; note: string; draftOnly?: boolean }) => void;
 }) {
-  const [traits, setTraits] = useState(() => ({ ...item.traits }));
-  const [style, setStyle] = useState(() => ({ ...item.publishedStyle }));
-  const [accessory, setAccessory] = useState<PetAccessory | null>(item.publishedAccessory);
+  const { editor, setEditor, traits, style, accessory, setTraits, setStyle, setAccessory, editorState } = useReviewDesign(item);
   const [note, setNote] = useState('');
   const isPause = action === 'pause';
   return (
     <div className="review-dialog-backdrop">
       <div className="review-dialog" role="dialog" aria-modal="true" aria-labelledby="publication-dialog-title">
         <p className={`review-dialog-kicker ${isPause ? 'is-reject' : 'is-approve'}`}>승인 강아지 관리</p>
-        <h2 id="publication-dialog-title">{item.name || '이름 없는 강아지'} · {isPause ? '공개 중지' : action === 'republish' ? '재공개' : '디자인 보정'}</h2>
-        {!isPause && <ReviewDesignEditor item={{ petId:item.petId, name:item.name, designVersion:item.designVersion }} traits={traits} style={style} accessory={accessory} disabled={submitting} onTraits={setTraits} onStyle={setStyle} onAccessory={setAccessory} />}
+        <h2 id="publication-dialog-title">{item.name || '이름 없는 강아지'} · {isPause ? '공개 중지' : action === 'republish' ? '재공개' : item.publishedDesign ? '디자인 보정' : '확정 SVG 저장'}</h2>
+        {!isPause && <p>아래 SVG 도형을 확인한 뒤 공개 확정합니다. 초안 저장은 공개 모습을 바꾸지 않습니다.</p>}
+        {!isPause && <ReviewDesignEditor api={api} item={{ petId:item.petId, name:item.name, designVersion:item.designVersion }} traits={traits} style={style} accessory={accessory} editor={editor} onEditor={setEditor} disabled={submitting} onTraits={setTraits} onStyle={setStyle} onAccessory={setAccessory} />}
         <label className="review-reason-field"><span>변경 메모 <strong>필수</strong></span><textarea value={note} onChange={(event) => setNote(event.target.value)} rows={3} maxLength={500} placeholder={isPause ? '예: 원본 사진 재확인이 필요해 임시 중지' : '예: 실사에 맞춰 복슬한 털로 보정'} disabled={submitting} /><small>{note.length}/500</small></label>
         {error && <p className="review-dialog-error" role="alert">{error}</p>}
-        <div className="review-dialog-actions"><button className="review-button review-button--secondary" type="button" onClick={onCancel} disabled={submitting}>취소</button><button className={`review-button ${isPause ? 'review-button--reject-confirm' : 'review-button--approve'}`} type="button" disabled={submitting || !note.trim()} onClick={() => onSubmit({ traits, style, accessory, note:note.trim() })}>{submitting ? '저장 중…' : '변경 저장'}</button></div>
+        <div className="review-dialog-actions"><button className="review-button review-button--secondary" type="button" onClick={onCancel} disabled={submitting}>취소</button>{!isPause && <button className="review-button review-button--secondary" type="button" disabled={submitting} onClick={() => onSubmit({ editorState, note: note.trim(), draftOnly: true })}>초안 저장</button>}<button className={`review-button ${isPause ? 'review-button--reject-confirm' : 'review-button--approve'}`} type="button" disabled={submitting || !note.trim()} onClick={() => onSubmit({ editorState, note:note.trim() })}>{submitting ? '저장 중…' : isPause ? '공개 중지 확정' : 'SVG 공개 확정'}</button></div>
       </div>
     </div>
   );
@@ -700,6 +696,7 @@ export default function ReviewApp({ api = defaultReviewApi }: ReviewAppProps) {
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [managing, setManaging] = useState<{ item: ReviewCatalogItem; action: PublicationAction } | null>(null);
   const [manageError, setManageError] = useState('');
+  const [photoItem, setPhotoItem] = useState<ReviewQueueItem | ReviewCatalogItem | null>(null);
   const [toast, setToast] = useState<ToastNotice | null>(null);
   const toastId = useRef(0);
 
@@ -749,57 +746,55 @@ export default function ReviewApp({ api = defaultReviewApi }: ReviewAppProps) {
       const results = await api.getCatalog(catalogQuery);
       setCatalogItems(results);
       if (!results.length) showToast('조건에 맞는 승인 강아지가 없어요.');
-    } catch {
-      showToast('승인 강아지를 찾지 못했어요.');
+    } catch (error) {
+      showToast(error instanceof TypeError
+        ? '검수 서버에 연결하지 못했어요. 서버 실행 상태를 확인해 주세요.'
+        : error instanceof Error ? error.message : '승인 강아지 목록을 불러오지 못했어요. 다시 시도해 주세요.');
     } finally {
       setCatalogLoading(false);
     }
   }, [api, catalogQuery, showToast]);
 
-  const submitPublication = async ({ traits, style, accessory, note }: { traits: PetTraitsV1; style: PetStyleV1; accessory: PetAccessory | null; note: string }) => {
-    if (!managing) return;
-    setSubmitting(true);
-    setManageError('');
-    try {
-      const result = await api.manage({
-        petId: managing.item.petId,
-        action: managing.action,
-        ...(managing.action !== 'pause' ? { finalTraits: traits, finalStyle: style, publishedAccessory: accessory } : {}),
-        reviewNote: note,
-      });
-      setCatalogItems((current) => current.map((item) => item.petId === managing.item.petId
-        ? { ...item, status: result.status, traits, publishedStyle: style, publishedAccessory: accessory, designVersion:item.designVersion + 1 }
-        : item));
-      showToast(`${managing.item.name || '강아지'}의 ${managing.action === 'pause' ? '공개를 중지했어요.' : '디자인을 저장했어요.'}`);
-      setManaging(null);
-    } catch {
-      setManageError('변경을 저장하지 못했어요. 잠시 후 다시 시도해 주세요.');
-    } finally {
-      setSubmitting(false);
-    }
+  const rememberDraft = (draft: ReviewDesignDraft) => {
+    setItems((current) => current.map((item) => item.petId === draft.petId ? { ...item, draftDesign: draft } : item));
+    setCatalogItems((current) => current.map((item) => item.petId === draft.petId ? { ...item, draftDesign: draft } : item));
+    setPending((current) => current?.item.petId === draft.petId ? { ...current, item: { ...current.item, draftDesign: draft } } : current);
+    setManaging((current) => current?.item.petId === draft.petId ? { ...current, item: { ...current.item, draftDesign: draft } } : current);
   };
-
-  const submitReview = async ({ reason, finalName, finalTraits, finalStyle, publishedAccessory, reviewNote }: ReviewDialogResult) => {
-    if (!pending) return;
-    setSubmitting(true);
-    setDialogError('');
-
+  const persistDraft = async (item: ReviewQueueItem | ReviewCatalogItem, editorState: ReviewEditorState) => {
+    const draft = await api.saveDraft({ petId: item.petId, expectedDraftRevision: item.draftDesign?.draftRevision ?? 0,
+      expectedDesignVersion: item.designVersion, document: editorState.editor.document, editorState });
+    rememberDraft(draft);
+    return draft;
+  };
+  const submitPublication = async ({ editorState, note, draftOnly }: { editorState: ReviewEditorState; note: string; draftOnly?: boolean }) => {
+    if (!managing) return;
+    setSubmitting(true); setManageError('');
     try {
-      await api.review({
-        petId: pending.item.petId,
-        decision: pending.decision,
-        ...(pending.decision === 'rejected' ? { reason } : {}),
-        ...(pending.decision === 'approved' ? { finalName, finalTraits, finalStyle, publishedAccessory } : {}),
-        ...(reviewNote ? { reviewNote } : {}),
-      });
+      const draft = managing.action !== 'pause' ? await persistDraft(managing.item, editorState) : undefined;
+      if (draftOnly) { showToast('SVG 초안을 저장하고 DB 저장본을 다시 불러왔어요.'); return; }
+      await api.manage({ petId: managing.item.petId, action: managing.action, reviewNote: note,
+        expectedDraftRevision: draft?.draftRevision, expectedDesignVersion: managing.item.designVersion });
+      setManaging(null);
+      showToast(managing.action === 'pause' ? '공개를 중지했어요.' : 'SVG 디자인을 확정했어요.');
+      void api.getCatalog(catalogQuery).then(setCatalogItems).catch(() => showToast('확정은 완료됐어요. 저장본은 검색으로 다시 불러와 주세요.'));
+    } catch (error) { setManageError(error instanceof Error ? error.message : '저장하지 못했어요. 새로고침 후 확인해 주세요.'); }
+    finally { setSubmitting(false); }
+  };
+  const submitReview = async ({ reason, finalName, reviewNote, editorState, draftOnly }: ReviewDialogResult) => {
+    if (!pending) return;
+    setSubmitting(true); setDialogError('');
+    try {
+      const draft = pending.decision === 'approved' ? await persistDraft(pending.item, editorState) : undefined;
+      if (draftOnly) { showToast('SVG 초안을 저장하고 DB 저장본을 다시 불러왔어요.'); return; }
+      await api.review({ petId: pending.item.petId, decision: pending.decision,
+        ...(pending.decision === 'rejected' ? { reason } : { finalName, expectedDraftRevision: draft?.draftRevision, expectedDesignVersion: pending.item.designVersion }), reviewNote });
       setItems((current) => current.filter((item) => item.petId !== pending.item.petId));
-      showToast(`${pending.decision === 'approved' ? finalName : getPetDisplayName(pending.item)} 등록을 ${pending.decision === 'approved' ? '승인' : '반려'}했어요.`);
+      showToast(pending.decision === 'approved' ? finalName + ' 등록을 승인했어요.' : '등록을 반려했어요.');
       setPending(null);
-    } catch {
-      setDialogError('결과를 저장하지 못했어요. 잠시 후 다시 시도해 주세요.');
-    } finally {
-      setSubmitting(false);
-    }
+      if (pending.decision === 'approved') void api.getCatalog('').then(setCatalogItems).catch(() => showToast('승인은 완료됐어요. 저장본은 검색으로 다시 불러와 주세요.'));
+    } catch (error) { setDialogError(error instanceof Error ? error.message : '저장하지 못했어요. 새로고침 후 확인해 주세요.'); }
+    finally { setSubmitting(false); }
   };
 
   return (
@@ -817,7 +812,7 @@ export default function ReviewApp({ api = defaultReviewApi }: ReviewAppProps) {
           className="review-refresh"
           type="button"
           onClick={() => void loadQueue(true)}
-          disabled={phase === 'loading' || refreshing || submitting}
+          disabled={phase === 'loading' || refreshing || submitting || Boolean(photoItem)}
         >
           <span className={refreshing ? 'is-spinning' : ''} aria-hidden="true">↻</span>
           {refreshing ? '새로고침 중' : '새로고침'}
@@ -825,14 +820,16 @@ export default function ReviewApp({ api = defaultReviewApi }: ReviewAppProps) {
       </header>
 
       <main className="review-main">
+        <ReviewPhotoAdditions api={api} />
         <CatalogPanel
           items={catalogItems}
           query={catalogQuery}
           loading={catalogLoading}
-          disabled={submitting}
+          disabled={submitting || Boolean(photoItem)}
           onQuery={setCatalogQuery}
           onSearch={() => void loadCatalog()}
           onManage={(item, action) => { setManageError(''); setManaging({ item, action }); }}
+          onManagePhotos={setPhotoItem}
         />
         {phase === 'loading' && <LoadingState />}
         {phase === 'error' && <ErrorState onRetry={() => void loadQueue()} />}
@@ -843,7 +840,8 @@ export default function ReviewApp({ api = defaultReviewApi }: ReviewAppProps) {
               <ReviewCard
                 key={item.petId}
                 item={item}
-                disabled={submitting}
+                disabled={submitting || Boolean(photoItem)}
+                onManagePhotos={setPhotoItem}
                 onOpenReview={openReview}
                 onNotice={showToast}
               />
@@ -856,6 +854,7 @@ export default function ReviewApp({ api = defaultReviewApi }: ReviewAppProps) {
 
       {pending && (
         <ReviewDialog
+          api={api}
           key={`${pending.item.petId}-${pending.decision}`}
           pending={pending}
           submitting={submitting}
@@ -865,7 +864,15 @@ export default function ReviewApp({ api = defaultReviewApi }: ReviewAppProps) {
         />
       )}
 
-      {managing && <PublicationDialog item={managing.item} action={managing.action} submitting={submitting} error={manageError} onCancel={() => { if (!submitting) setManaging(null); }} onSubmit={(value) => void submitPublication(value)} />}
+      {managing && <PublicationDialog api={api} item={managing.item} action={managing.action} submitting={submitting} error={manageError} onCancel={() => { if (!submitting) setManaging(null); }} onSubmit={(value) => void submitPublication(value)} />}
+
+      {photoItem && <ReviewPhotoManager key={photoItem.petId} api={api} petId={photoItem.petId} name={getPetDisplayName(photoItem)}
+        status={'status' in photoItem ? photoItem.status : 'pending'} fallbackUrls={'photoUrls' in photoItem ? photoItem.photoUrls : []}
+        onClose={() => setPhotoItem(null)} onSaved={(set: ReviewPhotoSet) => {
+          const active = activeReviewPhotos(set.photos);
+          setItems((current) => current.map((item) => item.petId === set.petId ? { ...item, photoUrls: active.flatMap((photo) => photo.url ? [photo.url] : []), photoCount: active.length, photoPresent: active.length > 0 } : item));
+          showToast('사진 변경을 저장하고 저장본을 다시 불러왔어요.');
+        }} onDownload={(url) => void saveReviewPhoto(url, getPetDisplayName(photoItem)).then(() => showToast('768px 이하 검수용 사진을 저장했어요.')).catch(() => showToast('검수용 사진을 저장하지 못했어요.'))} />}
 
       {toast && <CompletionToast notice={toast} onDismiss={() => setToast(null)} />}
     </div>

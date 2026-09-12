@@ -49,7 +49,7 @@ export async function setRechargeNotificationSettings(
 ): Promise<RechargeNotificationSettings> {
   const configuration = notificationConfiguration(env);
   if (input.enabled && (!configuration.available || input.tossAgreementGranted !== true)) {
-    throw new ApiError('NOTIFICATION_AGREEMENT_REQUIRED', 409, '토스 알림 수신에 동의한 뒤 이용권 알림을 켤 수 있어요.');
+    throw new ApiError('NOTIFICATION_AGREEMENT_REQUIRED', 409, '토스 알림 수신에 동의한 뒤 티켓 알림을 켤 수 있어요.');
   }
   const ciphertext = input.enabled
     ? await encryptNotificationKey(input.anonymousKey, input.ownerHash, configuration.encryptionKey)

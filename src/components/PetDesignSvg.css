@@ -1,0 +1,21 @@
+.dog-avatar { position:relative; display:flex; flex-direction:column; align-items:center; filter:drop-shadow(0 5px 0 rgba(39,36,42,.10)); transform-origin:50% 85%; }
+.dog-avatar svg { width:100%; overflow:visible; }
+.dog-name { margin-top:-9px; background:rgba(255,255,255,.94); border:1px solid rgba(25,31,40,.14); border-radius:999px; padding:4px 10px; font-size:11px; font-weight:700; white-space:nowrap; box-shadow:0 2px 7px rgba(0,0,0,.08); }
+.dog-tail { transform-origin:145px 112px; animation:wag .6s ease-in-out infinite alternate; }
+.dog-tongue { opacity:0; transform-origin:90px 100px; }
+.is-panting .dog-tongue { opacity:1; animation:pant .65s ease-in-out infinite alternate; }
+.dog-tongue--side { transform-origin:87px 101px; }
+.is-panting .dog-tongue--side { animation-name:pant-side; }
+.dog-avatar.is-eating { animation:nibble .18s ease-in-out 4 alternate; }
+.is-eating .dog-tongue { opacity:1; animation:lick .3s ease-in-out 2 alternate; }
+@keyframes wag { to { transform:rotate(14deg); } }
+@keyframes nibble { to { transform:translateY(9px) rotate(2deg); } }
+@keyframes lick { to { transform:scaleY(1.2); } }
+@keyframes pant { from { transform:scaleY(.78) translateY(-1px); } to { transform:scaleY(.96); } }
+@keyframes pant-side { from { transform:rotate(-2deg) scale(.8) translate(-1px,-1px); } to { transform:rotate(2deg) scale(.94); } }
+.dog-avatar.is-happy:not(.is-eating) { animation:happybounce .55s ease-in-out infinite alternate; }
+.dog-avatar.is-happy .dog-tail { animation-duration:.22s; }
+@keyframes happybounce { to { transform:translateY(-7px) rotate(-1deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .pet-design-svg, .pet-design-svg .dog-tail, .pet-design-svg .dog-tongue { animation:none !important; }
+}

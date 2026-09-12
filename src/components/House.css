@@ -31,7 +31,9 @@
   justify-content: flex-start;
   color: #333d4b;
   animation: none;
-  transition: left 220ms cubic-bezier(.2,.75,.25,1), top 220ms cubic-bezier(.2,.75,.25,1), right 220ms cubic-bezier(.2,.75,.25,1), bottom 220ms cubic-bezier(.2,.75,.25,1);
+  transition-property: left, top;
+  transition-duration: 0ms;
+  transition-timing-function: ease-in-out;
 }
 
 .house-room .house-pet-artwork,
@@ -85,21 +87,9 @@
   font-weight: 800;
 }
 
-.house-room .house-pet-name--revisit small {
-  background: #e8f3ff;
-  color: #1b64da;
-}
-
 .house-room .house-pet-name--owner small {
   background: #ff506f;
   color: #fff;
-}
-
-.house-room .house-pet-name--met small {
-  min-width: 16px;
-  justify-content: center;
-  padding-right: 3px;
-  padding-left: 3px;
 }
 
 .house-room .house-slot--daily-a { left: 3%; top: 44%; }
@@ -111,29 +101,10 @@
 .house-room .house-pet.is-positioned {
   right: auto !important;
   bottom: auto !important;
-  transition: none;
 }
 
-.house-room .house-pet.is-idle-active:not(.is-grabbed):not(.is-arriving) {
-  will-change: transform;
-  animation: house-pet-roam var(--idle-duration, 12s) ease-in-out infinite;
-  animation-delay: calc(var(--idle-index, 0) * -3.1s);
-}
-
-.house-room .house-pet.is-idle-calm:not(.is-grabbed):not(.is-arriving) {
-  animation: house-pet-calm 9s ease-in-out infinite;
-  animation-delay: calc(var(--calm-index, 0) * -2.7s);
-}
-
-.house-room .house-pet.is-idle-calm:not(.is-grabbed) .dog-tail {
-  animation: house-tail-calm 9s ease-in-out infinite;
-  animation-delay: calc(var(--calm-index, 0) * -2.7s);
-}
-
-.house-room .house-pet.is-idle-calm:not(.is-grabbed) .dog-tongue,
-.house-room .house-pet.is-idle-calm:not(.is-grabbed) .panting-tongue-point {
-  opacity: .88;
-  animation: none;
+.house-room .house-pet.is-walking {
+  will-change: left, top;
 }
 
 .house-room .pet-button.house-pet.is-arriving {
@@ -143,8 +114,7 @@
 
 .house-room.is-motion-paused .house-pet,
 .house-room.is-motion-paused .dog-tail,
-.house-room.is-motion-paused .dog-tongue,
-.house-room.is-motion-paused .panting-tongue-point {
+.house-room.is-motion-paused .dog-tongue {
   animation-play-state: paused !important;
 }
 
@@ -193,26 +163,6 @@
 
 .house-room .house-first-hint strong { font-size: 13px; line-height: 1.35; }
 .house-room .house-first-hint small { margin-top: 2px; color: #6b7684; font-size: 11px; font-weight: 650; }
-
-@keyframes house-pet-roam {
-  0%, 100% { transform: translate3d(0,0,0) rotate(0); }
-  22% { transform: translate3d(var(--roam-x1, 18px),var(--roam-y1, -8px),0) rotate(-.7deg); }
-  49% { transform: translate3d(var(--roam-x2, 36px),var(--roam-y2, 6px),0) rotate(.7deg); }
-  74% { transform: translate3d(var(--roam-x3, 10px),var(--roam-y3, 14px),0) rotate(-.45deg); }
-}
-
-@keyframes house-pet-calm {
-  0%, 70%, 100% { transform: translate(0,0); }
-  78% { transform: translate(0,-3px) rotate(-.5deg); }
-  88% { transform: translate(2px,0) rotate(.5deg); }
-}
-
-@keyframes house-tail-calm {
-  0%, 73%, 100% { transform: rotate(0); }
-  79% { transform: rotate(-8deg); }
-  86% { transform: rotate(10deg); }
-  92% { transform: rotate(-3deg); }
-}
 
 @keyframes house-hint-in {
   from { opacity: 0; transform: translate(-50%,8px); }

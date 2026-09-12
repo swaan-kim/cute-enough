@@ -1,12 +1,22 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.57.4';
+import { withReviewedArtwork } from '../_shared/reviewed-artwork.ts';
+import { refreshArtwork } from './artwork-api.ts';
+import { PET_DESIGN_FORMAT, withPublishedDesign, assertLegacyDesignCompatible } from '../_shared/published-design.ts';
+import { refreshDesign } from './design-api.ts';
 import { verifyAnonymousKey } from '../_shared/anonymous-key.ts';
 import { ApiError } from '../_shared/api-error.ts';
 import { corsGuard, json } from '../_shared/cors.ts';
 import { orderDailyPets } from '../_shared/daily-pool.ts';
 import { decodeDataUri, hashUser, kstDate } from '../_shared/security.ts';
+import { readPetApiBody, requireDirectSubmissionDataUri, requirePhotoUploadInput, hasSubmissionPhotoReceipts } from '../_shared/submission-photos.ts';
+import { verifyPhotoReceipts } from '../_shared/submission-photo-receipts.ts';
+import { registerSubmissionPhotos, registerSubmissionPhotoPaths, uploadSubmissionPhoto, type SubmissionClient } from './submission-api.ts';
+import { createPhotoAdditionApi, type PhotoAdditionClient } from './photo-addition-api.ts';
 import { rewardAllowance, rewardStatusPayload, rewardRpcRequest, rewardRpcError, type RewardDatabaseState } from '../_shared/reward-api.ts';
 import { getRechargeNotificationSettings, setRechargeNotificationSettings, noteRechargeNotificationVisit } from '../_shared/notification-settings.ts';
 import { collectKeysetPages } from '../_shared/keyset-pagination.ts';
+import { albumRpcError, albumSummaryFields, createAlbumApi } from './album-api.ts';
+import { createPhotoPrepareApi, type PhotoPrepareClient } from './photo-prepare-api.ts';
 import {
   canOpenOwnerPhoto,
   canRevealStoredPetPhoto,
@@ -15,13 +25,14 @@ import {
   SHARED_CHARACTER_PET_STATUSES,
 } from '../_shared/pet-visibility.ts';
 import {
-  normalizePetName,
+  requirePetName,
   requireAccessorySubmission,
   requireAction,
   requireAnonymousKey,
   requirePetTraits,
   requirePetStyle,
   requireUuid,
+  rejectCreatorDesignFields,
   type PetApiAction,
 } from '../_shared/validation.ts';
 
@@ -30,6 +41,15 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
   { auth: { persistSession: false } },
 );
+const albumApi = createAlbumApi(supabase);
+const preparePhoto = createPhotoPrepareApi(supabase as unknown as PhotoPrepareClient);
+// Keep the narrow upload boundary independent of Supabase's recursive query types.
+const submissionClient = supabase as unknown as SubmissionClient;
+const photoAdditionApi = createPhotoAdditionApi(supabase as unknown as PhotoAdditionClient, {
+  secret: () => Deno.env.get('USER_HASH_SALT') ?? '',
+  uploadsEnabled: () => Deno.env.get('AIT_UPLOADS_ENABLED') === 'true',
+  decodePhoto: decodeDataUri,
+});
 
 const DAILY_FREE_PETS = 2;
 const MAX_REWARDED_PER_DAY = 2;
@@ -169,9 +189,9 @@ function allowancePayload(
   };
 }
 
-async function getRewardState(ownerHash: string): Promise<RewardDatabaseState> {
-  const { data, error } = await supabase.rpc('get_pet_reward_state', { p_owner_hash: ownerHash });
-  if (error || !data) throw error ?? new Error('REWARD_STATE_UNAVAILABLE');
+async function getRewardState(ownerHash: string, albumEnabled = false): Promise<RewardDatabaseState> {
+  const { data, error } = await supabase.rpc(albumEnabled ? 'get_pet_album_reward_state' : 'get_pet_reward_state', { p_owner_hash: ownerHash });
+  if (error || !data) throw rewardRpcError(error ?? {});
   return data as RewardDatabaseState;
 }
 
@@ -182,8 +202,8 @@ function rewardFlags() {
   };
 }
 
-async function currentRewardStatus(ownerHash: string, state?: RewardDatabaseState) {
-  const [free, rewards] = await Promise.all([getFreeAllowance(ownerHash), state ?? getRewardState(ownerHash)]);
+async function currentRewardStatus(ownerHash: string, albumEnabled = false) {
+  const [free, rewards] = await Promise.all([getFreeAllowance(ownerHash), getRewardState(ownerHash, albumEnabled)]);
   return rewardStatusPayload(rewards, allowancePayloadV2(kstDate(), free, rewards.adsCompletedToday), rewardFlags());
 }
 
@@ -238,12 +258,13 @@ async function getExistingPetPhotos(petIds: string[]): Promise<Array<{ pet_id: s
   return photos;
 }
 
-async function createPetPhotoSignedUrl(
+async function createPetPhotoSignedResult(
   petId: string,
   ownerHash: string,
   date: string,
   allowPendingOwner: boolean,
-): Promise<string> {
+  includePhotoId = false,
+): Promise<{ photoUrl: string; photoId?: string; photoCaption?: string }> {
   const { data: pet, error: petError } = await supabase.from('pets')
     .select('id,storage_path,status,owner_hash')
     .eq('id', petId)
@@ -262,19 +283,34 @@ async function createPetPhotoSignedUrl(
   }
   const photoPaths = photos.map((photo) => photo.storage_path);
   const selectedPath = await selectDailyPhotoPath(pet.id, ownerHash, date, photoPaths);
+  const { data: exactPhoto, error: exactPhotoError } = await supabase.from('pet_photos')
+    .select('id,caption').eq('pet_id', pet.id).eq('storage_path', selectedPath).eq('is_active', true).maybeSingle();
+  if (exactPhotoError) throw exactPhotoError;
+  if (!exactPhoto) throw new ApiError('PHOTO_NOT_REVEALABLE', 404, '공개할 수 있는 사진이 없어요.');
   const { data: signed, error: signError } = await supabase.storage.from('pet-photos').createSignedUrl(selectedPath, 600);
   if (signError) throw signError;
-  return signed.signedUrl;
+  return { photoUrl: signed.signedUrl, ...(includePhotoId ? { photoId: exactPhoto.id } : {}),
+    ...(exactPhoto.caption ? { photoCaption: exactPhoto.caption } : {}) };
 }
 
 const RATE_LIMITS: Record<PetApiAction, { seconds: number; limit: number }> = {
   house: { seconds: 60, limit: 60 },
   shared: { seconds: 60, limit: 60 },
   mine: { seconds: 60, limit: 30 },
+  artwork: { seconds: 60, limit: 60 },
+  design: { seconds: 60, limit: 60 },
   reveal: { seconds: 60, limit: 10 },
   ownerPhoto: { seconds: 60, limit: 30 },
+  photoPrepare: { seconds: 60, limit: 30 },
+  album: { seconds: 60, limit: 30 },
+  albumPhoto: { seconds: 60, limit: 60 },
+  setFavorite: { seconds: 60, limit: 30 },
   submit: { seconds: 60 * 60, limit: 3 },
+  submitPhoto: { seconds: 60 * 60, limit: 20 },
   submissionStatus: { seconds: 60, limit: 20 },
+  photoAdditionStatus: { seconds: 60, limit: 30 },
+  photoAdditionUpload: { seconds: 60 * 60, limit: 20 },
+  photoAdditionSubmit: { seconds: 60 * 60, limit: 10 },
   report: { seconds: 60 * 60, limit: 10 },
   rewardStart: { seconds: 60, limit: 10 },
   rewardComplete: { seconds: 60, limit: 30 },
@@ -350,18 +386,39 @@ async function findSubmissionResult(ownerHash: string, submissionId: string, dat
 }
 
 Deno.serve(async (request) => {
-  const reply = (data: unknown, status = 200) => json(request,
-    data && typeof data === 'object' ? { ...data, serverNow: new Date().toISOString() } : data, status);
+  let svgDesignClient = false;
+  const reply = async (data: unknown, status = 200) => {
+    try {
+      if (status === 200 && !svgDesignClient) await assertLegacyDesignCompatible(supabase,data);
+      const result = status === 200
+        ? await (svgDesignClient ? withPublishedDesign(supabase, data) : withReviewedArtwork(supabase, data)) : data;
+      return json(request, result && typeof result === 'object' ? { ...result, serverNow: new Date().toISOString() } : result, status);
+    } catch (error) {
+      if (error instanceof ApiError) return json(request,{ error: error.message, code: error.code },error.status);
+      return json(request, { error: '저장된 캐릭터 이미지를 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.', code: 'REVIEWED_ARTWORK_UNAVAILABLE' }, 503);
+    }
+  };
   let verifiedOwnerHash: string | undefined;
+  let albumRewardClient = false;
+  let photoAdditionRequest = false;
+  let photoPrepareRequest = false;
   const corsResponse = corsGuard(request);
   if (corsResponse) return corsResponse;
   if (request.method !== 'POST') return reply({ error: '지원하지 않는 요청 방식이에요.', code: 'METHOD_NOT_ALLOWED' }, 405);
-  const contentLength = Number(request.headers.get('Content-Length') ?? 0);
-  if (contentLength > 6 * 1024 * 1024) return reply({ error: '요청한 사진 용량이 너무 커요.', code: 'REQUEST_TOO_LARGE' }, 413);
   try {
-    const body = await request.json().catch(() => { throw new ApiError('INVALID_JSON', 400, '요청 내용을 확인해 주세요.'); }) as Record<string, unknown>;
+    const body = await readPetApiBody(request);
     const action = requireAction(body.action);
+    photoPrepareRequest = action === 'photoPrepare';
+    photoAdditionRequest = action === 'photoAdditionStatus' || action === 'photoAdditionUpload' || action === 'photoAdditionSubmit';
+    svgDesignClient = body.designFormat === PET_DESIGN_FORMAT;
+    // Enable only after all public pets have confirmed SVG designs and the new AIT is released.
+    if (Deno.env.get('PET_REQUIRE_SVG_DESIGN') === 'true' && !svgDesignClient) {
+      throw new ApiError('CLIENT_RESTART_REQUIRED', 426, '새 강아지 디자인을 보려면 앱을 다시 열어 주세요.');
+    }
+    if (action === 'submit' || action === 'submitPhoto') rejectCreatorDesignFields(body);
     const apiVersion = body.apiVersion === 2 ? 2 : 1;
+    const albumEnabled = body.albumVersion === 1 || body.albumVersion === 2;
+    albumRewardClient = albumEnabled;
     const anonymousKey = requireAnonymousKey(body.userHash);
     await verifyAnonymousKey(anonymousKey);
     const ownerHash = await hashUser(anonymousKey);
@@ -369,18 +426,45 @@ Deno.serve(async (request) => {
 
     if (action === 'submissionStatus') {
       await enforceRateLimit(ownerHash, action);
-      const submissionId = requireUuid(body.submissionId, '사진 등록 요청을 다시 시작해 주세요.');
+      const submissionId = requireUuid(body.submissionId, '사진 등록 요청을 다시 시작해 주세요.').toLowerCase();
       const result = await findSubmissionResult(ownerHash, submissionId, kstDate());
       return reply(result ? { found: true, result } : { found: false });
     }
 
-    if (action === 'submit') {
-      const submissionId = requireUuid(body.submissionId, '사진 등록 요청을 다시 시작해 주세요.');
+    if (action === 'submit' || action === 'submitPhoto') {
+      const submissionId = requireUuid(body.submissionId, '사진 등록 요청을 다시 시작해 주세요.').toLowerCase();
       const existing = await findSubmissionResult(ownerHash, submissionId, kstDate());
-      if (existing) return reply(existing);
+      if (existing) {
+        if (action === 'submitPhoto') throw new ApiError('SUBMISSION_ALREADY_REGISTERED', 409, '이미 등록한 강아지예요. 등록 결과를 확인해 주세요.');
+        return reply(existing);
+      }
     }
 
     await enforceRateLimit(ownerHash, action);
+
+    if (action === 'photoPrepare') return reply(await preparePhoto(ownerHash, body, kstDate()));
+    if (action === 'photoAdditionStatus') return reply(await photoAdditionApi.status(ownerHash, body));
+    if (action === 'photoAdditionUpload') return reply(await photoAdditionApi.upload(ownerHash, body), 201);
+    if (action === 'photoAdditionSubmit') return reply(await photoAdditionApi.submit(ownerHash, body));
+
+    if (action === 'design') {
+      const result = await refreshDesign(supabase, requireUuid(body.petId));
+      return json(request, { ...(result as object), serverNow: new Date().toISOString() }, 200);
+    }
+
+    if (action === 'artwork') {
+      const result = await refreshArtwork(supabase, requireUuid(body.petId));
+      await assertLegacyDesignCompatible(supabase,result);
+      return json(request, { ...(result as object), serverNow: new Date().toISOString() }, 200);
+    }
+
+    if (action === 'album') return reply(await albumApi.album(ownerHash, body));
+    if (action === 'setFavorite') return reply(await albumApi.favorite(ownerHash, body));
+    if (action === 'albumPhoto') {
+      const result = await albumApi.photo(ownerHash, requireUuid(body.photoId), kstDate());
+      const rewardStatus = await currentRewardStatus(ownerHash, albumEnabled);
+      return reply({ ...result, allowance: rewardStatus.allowance, rewardStatus });
+    }
 
     if (action === 'notificationSettings') return reply(await getRechargeNotificationSettings(supabase, ownerHash));
     if (action === 'setNotificationSettings') {
@@ -394,8 +478,8 @@ Deno.serve(async (request) => {
       if (action === 'shareStart' && !rewardFlags().share) throw new ApiError('SHARE_REWARDS_DISABLED', 403, '친구 초대 보상은 잠시 준비 중이에요.');
       const rpc = rewardRpcRequest(action, body, ownerHash);
       const { data, error } = await supabase.rpc(rpc.name, rpc.args);
-      if (error) throw rewardRpcError(error);
-      const status = await currentRewardStatus(ownerHash);
+      if (error) throw albumEnabled ? albumRpcError(error) : rewardRpcError(error);
+      const status = await currentRewardStatus(ownerHash, albumEnabled);
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId : body.requestId;
       const state = data as RewardDatabaseState | null;
       return reply({ ...status, ...(typeof sessionId === 'string' ? { sessionId } : {}),
@@ -452,11 +536,15 @@ Deno.serve(async (request) => {
             expectedCount: DAILY_PUBLIC_PET_LIMIT,
           });
         }
-        const rewards = await getRewardState(ownerHash);
+        const rewards = await getRewardState(ownerHash, albumEnabled);
+        const albumStates = albumEnabled
+          ? await albumApi.states(ownerHash, [...dailyPets.map((pet) => pet.id), ...(ownerBonusPet ? [ownerBonusPet.id] : [])])
+          : undefined;
         return reply({
           apiVersion: 2,
-          dailyPets,
-          ownerBonusPet,
+          dailyPets: albumStates ? dailyPets.map((pet) => ({ ...pet, ...albumSummaryFields(albumStates.get(pet.id)) })) : dailyPets,
+          ownerBonusPet: ownerBonusPet && albumStates
+            ? { ...ownerBonusPet, ...albumSummaryFields(albumStates.get(ownerBonusPet.id)) } : ownerBonusPet,
           dailyProgress: snapshot.dailyProgress,
           allowance: rewardAllowance(allowancePayloadV2(date, snapshot.freeAllowance, rewardedUsed, uploadReward), rewards),
           rewardStatus: rewardStatusPayload(rewards, allowancePayloadV2(date, snapshot.freeAllowance, rewardedUsed, uploadReward), rewardFlags()),
@@ -586,7 +674,8 @@ Deno.serve(async (request) => {
         ? { pet_id: snapshot.uploadReward.petId, used_at: snapshot.uploadReward.usedAt }
         : null;
       const isMine = petOwnerHash === ownerHash;
-      const rewards = apiVersion === 2 ? await getRewardState(ownerHash) : undefined;
+      const rewards = apiVersion === 2 ? await getRewardState(ownerHash, albumEnabled) : undefined;
+      const albumState = albumEnabled ? (await albumApi.states(ownerHash, [petId])).get(petId) : undefined;
       return reply({
         pet: {
           ...summary,
@@ -601,6 +690,7 @@ Deno.serve(async (request) => {
           shareable: true,
           revealedToday: Boolean(activeReveal),
           revisitUntil: activeReveal?.revisitUntil,
+          ...(albumEnabled ? albumSummaryFields(albumState) : {}),
         },
         allowance: apiVersion === 2
           ? rewardAllowance(allowancePayloadV2(
@@ -641,6 +731,7 @@ Deno.serve(async (request) => {
       const existingPhotoPetIds = new Set(
         (await getExistingPetPhotos((pets ?? []).map((pet) => pet.id))).map((photo) => photo.pet_id),
       );
+      const albumStates = albumEnabled ? await albumApi.states(ownerHash, pets.map((pet) => pet.id)) : undefined;
       return reply({ pets: (pets ?? []).map(({ status, created_at, rejection_reason, published_accessory, published_style, design_version, ...pet }) => ({
         ...pet,
         publishedAccessory: published_accessory ?? undefined,
@@ -660,6 +751,7 @@ Deno.serve(async (request) => {
         shareable: isShareablePetStatus(status),
         revealedToday: activeReveals.has(pet.id),
         revisitUntil: activeReveals.get(pet.id)?.revisit_until,
+        ...(albumStates ? { ...albumSummaryFields(albumStates.get(pet.id)), favoriteCount: albumStates.get(pet.id)?.favoriteCount ?? 0 } : {}),
       })) });
     }
 
@@ -684,6 +776,9 @@ Deno.serve(async (request) => {
       }
 
       const date = kstDate();
+      // A failed signature must not record a photo visit. The download can
+      // still fail after this server response, so retries keep the daily key.
+      const signedPhoto = await createPetPhotoSignedResult(petId, ownerHash, date, true, albumEnabled);
       const { error: viewError } = await supabase.from('daily_pet_views').upsert({
         owner_hash: ownerHash,
         view_date: date,
@@ -693,9 +788,8 @@ Deno.serve(async (request) => {
         ignoreDuplicates: true,
       });
       if (viewError) throw viewError;
-      const photoUrl = await createPetPhotoSignedUrl(petId, ownerHash, date, true);
       return reply({
-        photoUrl,
+        ...signedPhoto,
         signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
         ownerPhotoAvailable: true,
       });
@@ -704,10 +798,18 @@ Deno.serve(async (request) => {
     if (action === 'reveal') {
       const petId = requireUuid(body.petId);
       const date = kstDate();
+      if (albumEnabled && body.unlockMethod !== 'UPLOAD') {
+        // The ad switch gates new starts, not an already earned credit. The
+        // atomic photo RPC verifies its owner, dog and completed status before
+        // consuming it once; replay never consumes an ad credit.
+        const result = await albumApi.reveal(ownerHash, body, date);
+        const rewardStatus = await currentRewardStatus(ownerHash, albumEnabled);
+        return reply({ ...result, allowance: rewardStatus.allowance, rewardStatus });
+      }
       if (apiVersion === 2 && body.requestId !== undefined && body.revisit !== true && body.unlockMethod !== 'UPLOAD') {
         const requestId = requireUuid(body.requestId, '사진 요청을 다시 확인해 주세요.');
         if (typeof body.unlockMethod !== 'string' || !['FREE', 'SHARE', 'REWARDED'].includes(body.unlockMethod)) {
-          throw new ApiError('INVALID_UNLOCK_METHOD', 400, '올바르지 않은 이용권 방식이에요.');
+          throw new ApiError('INVALID_UNLOCK_METHOD', 400, '올바르지 않은 티켓 방식이에요.');
         }
         const { data, error } = await supabase.rpc('record_pet_reveal_v4', {
           p_owner_hash: ownerHash, p_reveal_date: date, p_pet_id: petId,
@@ -717,12 +819,12 @@ Deno.serve(async (request) => {
         if (error) throw rewardRpcError(error);
         const result = data as AtomicRevealResult & { revealDate?: string; unlockMethod?: string };
         if (!result?.revisitUntil || !isRevisitActive(result.revisitUntil)) {
-          throw new ApiError('PET_REVISIT_EXPIRED', 403, '다시 만날 수 있는 시간이 지났어요. 이용권으로 다시 만나주세요.');
+          throw new ApiError('PET_REVISIT_EXPIRED', 403, '다시 만날 수 있는 시간이 지났어요. 티켓으로 다시 만나주세요.');
         }
-        const photoUrl = await createPetPhotoSignedUrl(petId, ownerHash, result.revealDate ?? date, false);
-        const status = await currentRewardStatus(ownerHash);
+        const signedPhoto = await createPetPhotoSignedResult(petId, ownerHash, result.revealDate ?? date, false);
+        const status = await currentRewardStatus(ownerHash, albumEnabled);
         return reply({
-          apiVersion: 2, ...result, photoUrl,
+          apiVersion: 2, ...result, ...signedPhoto,
           signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
           allowance: status.allowance, rewardStatus: status,
         });
@@ -737,7 +839,7 @@ Deno.serve(async (request) => {
       if (revealError) throw revealError;
       const revealRows = reveals ?? [];
       const activeReveal = activeRows[0];
-      const rewardState = await getRewardState(ownerHash);
+      const rewardState = await getRewardState(ownerHash, albumEnabled);
       const rewardedUsed = Math.max(rewardState.adsCompletedToday,
         revealRows.filter((item) => item.unlock_method === 'REWARDED').length);
       const { data: uploadReward, error: uploadCheckError } = await supabase.from('upload_rewards')
@@ -753,22 +855,22 @@ Deno.serve(async (request) => {
         : allowancePayload(date, freeAllowance, rewardedUsed, uploadReward), rewardState);
 
       if (activeReveal) {
-        const photoUrl = await createPetPhotoSignedUrl(petId, ownerHash, activeReveal.reveal_date, true);
+        const signedPhoto = await createPetPhotoSignedResult(petId, ownerHash, activeReveal.reveal_date, true, albumEnabled);
         const dailyProgress = apiVersion === 2
           ? await markDailyHousePetMet(ownerHash, date, petId)
           : undefined;
         return reply({
           ...(apiVersion === 2 ? { apiVersion: 2 } : {}),
-          photoUrl,
+          ...signedPhoto,
           signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
           revisitUntil: activeReveal.revisit_until,
-          allowance: apiVersion === 2 ? rewardAllowance(currentAllowance, await getRewardState(ownerHash)) : currentAllowance,
+          allowance: apiVersion === 2 ? rewardAllowance(currentAllowance, await getRewardState(ownerHash, albumEnabled)) : currentAllowance,
           ...(dailyProgress ? { dailyProgress } : {}),
         });
       }
 
       if (body.revisit === true) {
-        throw new ApiError('PET_REVISIT_EXPIRED', 403, '다시 만날 수 있는 시간이 지났어요. 이용권으로 다시 만나주세요.');
+        throw new ApiError('PET_REVISIT_EXPIRED', 403, '다시 만날 수 있는 시간이 지났어요. 티켓으로 다시 만나주세요.');
       }
 
       if (typeof body.unlockMethod !== 'string' || !['FREE', 'REWARDED', 'UPLOAD'].includes(body.unlockMethod)) {
@@ -781,16 +883,16 @@ Deno.serve(async (request) => {
       const adSessionId = unlockMethod === 'REWARDED'
         ? requireUuid(body.adSessionId, '광고 완료 값을 다시 확인해 주세요.')
         : undefined;
-      if (unlockMethod === 'FREE' && freeAllowance.remaining < 1) throw new ApiError('FREE_ALLOWANCE_EMPTY', 409, '이용권은 3시간마다 한 마리씩 충전돼요.');
-      if (unlockMethod === 'REWARDED' && freeAllowance.remaining > 0) throw new ApiError('FREE_ALLOWANCE_AVAILABLE', 409, '충전된 이용권으로 먼저 만나보세요.');
+      if (unlockMethod === 'FREE' && freeAllowance.remaining < 1) throw new ApiError('FREE_ALLOWANCE_EMPTY', 409, '티켓은 3시간마다 한 장씩 충전돼요.');
+      if (unlockMethod === 'REWARDED' && freeAllowance.remaining > 0) throw new ApiError('FREE_ALLOWANCE_AVAILABLE', 409, '충전된 티켓으로 먼저 만나보세요.');
       if (unlockMethod === 'REWARDED' && rewardState.bonusTickets > 0) throw new ApiError('BONUS_ALLOWANCE_AVAILABLE', 409, '보너스 티켓으로 먼저 만나보세요.');
-      if (unlockMethod === 'REWARDED' && rewardedUsed >= MAX_REWARDED_PER_DAY) throw new ApiError('DAILY_LIMIT_REACHED', 409, '오늘의 광고 보상을 모두 받았어요. 이용권 충전을 기다려 주세요.');
+      if (unlockMethod === 'REWARDED' && rewardedUsed >= MAX_REWARDED_PER_DAY) throw new ApiError('DAILY_LIMIT_REACHED', 409, '오늘의 광고 보상을 모두 받았어요. 티켓 충전을 기다려 주세요.');
       if (unlockMethod === 'UPLOAD') {
         if (uploadUsed) return reply({ error: '사진 등록으로 받은 만남을 이미 사용했어요.', code: 'UPLOAD_REWARD_USED' }, 409);
         if (!uploadReward || uploadReward.pet_id !== petId) return reply({ error: '등록한 강아지에게만 쓸 수 있는 만남이에요.', code: 'UPLOAD_REWARD_MISMATCH' }, 403);
       }
 
-      const photoUrl = await createPetPhotoSignedUrl(petId, ownerHash, date, unlockMethod === 'UPLOAD');
+      const signedPhoto = await createPetPhotoSignedResult(petId, ownerHash, date, unlockMethod === 'UPLOAD', albumEnabled);
       const recordArgs = {
         p_owner_hash: ownerHash, p_reveal_date: date, p_pet_id: petId,
         p_unlock_method: unlockMethod, p_ad_session_id: adSessionId ?? null,
@@ -808,13 +910,13 @@ Deno.serve(async (request) => {
               supabase.from('upload_rewards').select('pet_id,used_at').eq('owner_hash', ownerHash).eq('reward_date', date).maybeSingle(),
             ]);
             if (latestRowsError || latestRewardError) throw latestRowsError ?? latestRewardError;
-            const concurrentPhotoUrl = await createPetPhotoSignedUrl(petId, ownerHash, concurrentReveal.reveal_date, true);
+            const concurrentSignedPhoto = await createPetPhotoSignedResult(petId, ownerHash, concurrentReveal.reveal_date, true);
             const dailyProgress = apiVersion === 2
               ? await markDailyHousePetMet(ownerHash, date, petId)
               : undefined;
             return reply({
               ...(apiVersion === 2 ? { apiVersion: 2 } : {}),
-              photoUrl: concurrentPhotoUrl,
+              ...concurrentSignedPhoto,
               signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
               revisitUntil: concurrentReveal.revisit_until,
               allowance: apiVersion === 2
@@ -851,7 +953,7 @@ Deno.serve(async (request) => {
       if (apiVersion === 2 && !dailyProgress) throw new Error('DAILY_HOUSE_PROGRESS_NOT_RECORDED');
       return reply({
         ...(apiVersion === 2 ? { apiVersion: 2 } : {}),
-        photoUrl,
+        ...signedPhoto,
         signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString(),
         revisitUntil,
         allowance: {
@@ -874,15 +976,32 @@ Deno.serve(async (request) => {
       });
     }
 
+    if (action === 'submitPhoto') {
+      if (Deno.env.get('AIT_UPLOADS_ENABLED') !== 'true') {
+        throw new ApiError('UPLOADS_DISABLED', 503, '사진 소개는 지금 준비 중이에요. 잠시 뒤 다시 시도해 주세요.');
+      }
+      const submissionId = requireUuid(body.submissionId, '사진 등록 요청을 다시 시작해 주세요.').toLowerCase();
+      const { photoIndex, dataUri } = requirePhotoUploadInput(body);
+      const photo = decodeDataUri(dataUri);
+      return reply(await uploadSubmissionPhoto(submissionClient, { ownerHash, submissionId, photoIndex }, photo,
+        Deno.env.get('USER_HASH_SALT') ?? ''), 201);
+    }
+
     if (action === 'submit') {
       if (Deno.env.get('AIT_UPLOADS_ENABLED') !== 'true') {
         return reply({ error: '사진 소개는 지금 준비 중이에요. 잠시 뒤 다시 시도해 주세요.', code: 'UPLOADS_DISABLED' }, 503);
       }
-      const submissionId = requireUuid(body.submissionId, '사진 등록 요청을 다시 시작해 주세요.');
+      const submissionId = requireUuid(body.submissionId, '사진 등록 요청을 다시 시작해 주세요.').toLowerCase();
       const date = kstDate();
       const existing = await findSubmissionResult(ownerHash, submissionId, date);
       if (existing) return reply(existing);
-      const { bytes, mime } = decodeDataUri(body.dataUri);
+      const normalizedName = requirePetName(body.name);
+      const staged = hasSubmissionPhotoReceipts(body);
+      // Hosted Edge CPU limits allow one normalization per request. Multi-photo
+      // finalization verifies compact receipts and performs no JPEG decoding.
+      const receipts = staged ? await verifyPhotoReceipts(body.photoReceipts, { ownerHash, submissionId },
+        Deno.env.get('USER_HASH_SALT') ?? '') : undefined;
+      const photos = staged ? undefined : [decodeDataUri(requireDirectSubmissionDataUri(body))];
       const traits = requirePetTraits(body.traits);
       const style = requirePetStyle(body.style ?? {
         schemaVersion: 1,
@@ -890,22 +1009,12 @@ Deno.serve(async (request) => {
         furStyle: 'neat',
       }, traits);
       const accessorySubmission = requireAccessorySubmission(body.accessorySelectionMode, body.requestedAccessory);
-      const normalizedName = normalizePetName(body.name);
       const id = crypto.randomUUID();
-      // Each attempt owns a different object; a retry cannot replace an already reviewed photo.
-      const path = `${ownerHash}/${submissionId}/${id}.jpg`;
-      const { error: uploadError } = await supabase.storage.from('pet-photos').upload(path, bytes, {
-        contentType: mime,
-        cacheControl: '3600',
-        upsert: false,
-      });
-      if (uploadError) throw uploadError;
-      const { data: registered, error: registerError } = await supabase.rpc('register_pet_submission_v3', {
+      const registrationArgs = {
         p_owner_hash: ownerHash,
         p_submission_id: submissionId,
         p_pet_id: id,
-        p_storage_path: path,
-        p_name: normalizedName || null,
+        p_name: normalizedName,
         p_traits: traits,
         p_style: style,
         p_reveal_date: date,
@@ -913,42 +1022,19 @@ Deno.serve(async (request) => {
         p_global_pending_limit: boundedEnvInteger('AIT_PENDING_UPLOAD_LIMIT', 100, 1000),
         p_accessory_selection_mode: accessorySubmission.mode,
         p_requested_accessory: accessorySubmission.requestedAccessory,
-      }).single();
-      if (registerError || !registered) {
-        const committed = await findSubmissionResult(ownerHash, submissionId, date);
-        if (committed) {
-          if (committed.pet.id !== id) await supabase.storage.from('pet-photos').remove([path]);
-          return reply(committed);
-        }
-        const message = registerError?.message ?? '';
-        const cleanupKnownRejection = () => supabase.storage.from('pet-photos').remove([path]);
-        if (message.includes('DAILY_UPLOAD_LIMIT_REACHED')) {
-          await cleanupKnownRejection();
-          throw new ApiError('DAILY_UPLOAD_LIMIT_REACHED', 429, '사진은 하루에 한 장만 소개할 수 있어요.');
-        }
-        if (message.includes('PENDING_UPLOAD_LIMIT_REACHED')) {
-          await cleanupKnownRejection();
-          throw new ApiError('PENDING_UPLOAD_LIMIT_REACHED', 409, '검수 중인 사진이 있어요. 검수가 끝난 뒤 다시 소개해 주세요.');
-        }
-        if (message.includes('UPLOAD_CAPACITY_REACHED')) {
-          await cleanupKnownRejection();
-          throw new ApiError('UPLOAD_CAPACITY_REACHED', 503, '오늘 받을 수 있는 사진이 모두 모였어요. 내일 다시 소개해 주세요.');
-        }
-        throw registerError ?? new Error('Pet registration failed');
-      }
-      const registration = registered as { reward_granted: boolean; pet_id: string };
+      };
+      const recover = () => findSubmissionResult(ownerHash, submissionId, date);
+      const submitted = receipts
+        ? await registerSubmissionPhotoPaths(submissionClient, registrationArgs, receipts.map((photo) => photo.storagePath), recover)
+        : await registerSubmissionPhotos(submissionClient, registrationArgs, photos!, recover);
+      if (submitted.recovered) return reply(submitted.recovered);
+      const registration = submitted.registration;
       const rewardGranted = Boolean(registration.reward_granted);
       const registeredPetId = registration.pet_id;
-      if (registeredPetId !== id) {
-        await supabase.storage.from('pet-photos').remove([path]);
-        const committed = await findSubmissionResult(ownerHash, submissionId, date);
-        if (!committed) throw new Error('SUBMISSION_RESULT_UNAVAILABLE');
-        return reply(committed);
-      }
       return reply({
         pet: {
           id: registeredPetId,
-          name: normalizedName || undefined,
+          name: normalizedName,
           traits,
           photoAvailable: true,
           ownerPhotoAvailable: true,
@@ -976,9 +1062,9 @@ Deno.serve(async (request) => {
     return reply({ error: '알 수 없는 요청이에요.', code: 'INVALID_ACTION' }, 404);
   } catch (error) {
     let recovery: Record<string, unknown> = {};
-    if (verifiedOwnerHash) {
+    if (verifiedOwnerHash && !photoAdditionRequest && !photoPrepareRequest) {
       try {
-        const state = await currentRewardStatus(verifiedOwnerHash);
+        const state = await currentRewardStatus(verifiedOwnerHash, albumRewardClient);
         recovery = { allowance: state.allowance, nextChargeAt: state.allowance.nextChargeAt };
       } catch { /* Preserve the original failure if allowance lookup is also unavailable. */ }
     }

@@ -2,8 +2,8 @@ const HOUR = 3_600_000;
 const KST_OFFSET = 9 * HOUR;
 
 export const RECHARGE_NOTIFICATION_COPY = {
-  title: '이용권 충전',
-  body: '강아지 이용권이 충전됐어요.',
+  title: '티켓 충전',
+  body: '강아지 티켓이 충전됐어요.',
 } as const;
 
 /** Earliest allowed send time, preserving 08:00 inclusive and 21:00 exclusive. */

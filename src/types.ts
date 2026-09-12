@@ -1,3 +1,6 @@
+import type { PublishedPetDesign } from '../supabase/functions/_shared/pet-design';
+export type { PetDesignV1, PublishedPetDesign } from '../supabase/functions/_shared/pet-design';
+
 export type EarShape = 'floppy' | 'upright' | 'semi' | 'rounded';
 export type HeadShape = 'round' | 'oval' | 'long';
 export type MarkingPattern = 'none' | 'brow' | 'mask' | 'blaze' | 'spots';
@@ -42,8 +45,29 @@ export interface PetTraitsV1 {
   confidence: number;
 }
 
-export interface PetSummary {
+export interface PetPhotoCollection {
+  collectedCount: number;
+  totalCount: number;
+  collectedToday: boolean;
+  canCollectToday: boolean;
+  todayPhotoId?: string;
+}
+
+export type PhotoIntent = 'collect' | 'replay';
+
+export type PetDesignDelivery = {
+  publishedDesign?: PublishedPetDesign;
+  designStatus?: 'ready' | 'missing' | 'unavailable';
+};
+
+export interface PetSummary extends PetDesignDelivery {
+  collection?: PetPhotoCollection;
   id: string;
+  isFavorite?: boolean;
+  unlockedPhotoCount?: number;
+  hasUnseenPhotos?: boolean;
+  /** 마지막으로 공개한 사진의 고정 ID. URL이나 재열람 만료 시각과는 별개다. */
+  albumPhotoId?: string;
   name?: string;
   traits: PetTraitsV1;
   photoUrl?: string;
@@ -51,8 +75,6 @@ export interface PetSummary {
   photoUrls?: string[];
   /** 비공개 실사를 직접 내려주지 않는 운영 목록에서 서버가 확인한 사진 보유 여부. */
   photoAvailable?: boolean;
-  /** 전달받은 캐릭터 이미지 또는 CDN URL. 없으면 trait 기반 SVG가 표시돼요. */
-  illustrationUrl?: string;
   /** 현재 이 화면을 보는 사용자가 등록한 강아지인지 여부. */
   isMine?: boolean;
   /** 서버가 소유권과 활성 원본을 확인해 소유자 전용 사진 열람을 허용했는지 여부. */
@@ -76,22 +98,57 @@ export interface PetSummary {
 }
 
 export interface OwnedPetSummary extends PetSummary {
+  favoriteCount?: number;
   approvalStatus: PetStatus;
   createdAt?: string;
   rejectionReason?: string;
 }
 
+/** Additional photos stay private and separate until a creator explicitly reviews them. */
+export interface PhotoAdditionSubmission {
+  submissionId: string;
+  petId: string;
+  status: 'pending' | 'approved' | 'rejected';
+  photoCount: number;
+  createdAt: string;
+  reviewNote?: string;
+}
+
+export interface PhotoAdditionStatus {
+  petId: string;
+  activePhotoCount: number;
+  pendingPhotoCount: number;
+  maxPhotoCount: 5;
+  remainingCount: number;
+  canSubmit: boolean;
+  unavailableReason?: string;
+  submission?: PhotoAdditionSubmission;
+  /** When an exact submissionId is queried, confirms whether that attempt committed. */
+  found?: boolean;
+}
+
+export interface SubmitPhotoAdditionInput {
+  petId: string;
+  submissionId: string;
+  dataUris: string[];
+}
+
+export interface SubmitPhotoAdditionResult {
+  submission: PhotoAdditionSubmission;
+  remainingCount: number;
+}
+
 export interface DailyAllowance {
-  /** 오늘의 강아지 목록을 고정하는 KST 날짜. 무료 이용권 충전 주기와는 별개다. */
+  /** 오늘의 강아지 목록을 고정하는 KST 날짜. 무료 티켓 충전 주기와는 별개다. */
   date: string;
   /**
    * 구버전 클라이언트 호환 값. 현재는 `2 - remaining`으로 계산하며
    * 자정 초기화가 아니라 3시간 충전 상태를 나타낸다.
    */
   freeUsed: number;
-  /** 지금 사용할 수 있는 기본 이용권. 최대 2개다. */
+  /** 지금 사용할 수 있는 기본 티켓. 최대 2개다. */
   remaining?: number;
-  /** 이용권이 2개보다 적을 때 다음 1개가 충전되는 시각. */
+  /** 티켓이 2개보다 적을 때 다음 1개가 충전되는 시각. */
   nextChargeAt?: string;
   rewardedUsed: number;
   /** 서버가 허용한 KST 하루 보상형 광고 횟수. 구버전 응답은 앱 기본값 2를 사용한다. */
@@ -142,6 +199,15 @@ export interface ShareRewardResult extends RewardStatus {
 }
 
 export interface RevealResult {
+  rewardStatus?: RewardStatus;
+  alreadyRevealed?: boolean;
+  collection?: PetPhotoCollection;
+  photoCaption?: string;
+  photoId?: string;
+  isFavorite?: boolean;
+  unlockedPhotoCount?: number;
+  hasUnseenPhotos?: boolean;
+  albumPhotoId?: string;
   photoUrl: string;
   signedUrlExpiresAt: string;
   /** 서버가 결정한 이 사진의 무료 재열람 만료 시각. */
@@ -151,8 +217,10 @@ export interface RevealResult {
   dailyProgress?: DailyProgress;
 }
 
-/** 소유자 전용 사진은 이용권이나 재열람 기록을 변경하지 않는다. */
+/** 소유자 전용 사진은 티켓이나 재열람 기록을 변경하지 않는다. */
 export interface OwnerPhotoResult {
+  photoCaption?: string;
+  photoId?: string;
   photoUrl: string;
   signedUrlExpiresAt: string;
   ownerPhotoAvailable: true;
@@ -173,7 +241,7 @@ export interface HouseResult {
   pets: PetSummary[];
   /** KST 날짜 동안 순서와 구성이 고정되는 공개 강아지(최대 4마리). */
   dailyPets?: PetSummary[];
-  /** 공개 4마리와 진행도·이용권에서 완전히 분리된 내 최신 강아지(최대 다섯 번째). */
+  /** 공개 4마리와 진행도·티켓에서 완전히 분리된 내 최신 강아지(최대 다섯 번째). */
   ownerBonusPet?: PetSummary;
   allowance?: DailyAllowance;
   dailyProgress?: DailyProgress;
@@ -196,12 +264,30 @@ export type SubmissionStatusResult =
   | { found: true; result: SubmitPetResult }
   | { found: false };
 
-export type AppScreen = 'home' | 'mine' | 'shared' | 'play' | 'upload' | 'submitted';
+export interface AlbumPetSummary extends PetSummary {
+  unlockedPhotos: Array<{ photoId: string; unlockedAt: string; source: 'reveal' | 'legacy_gift' }>;
+}
+
+export interface AlbumResult {
+  pets: AlbumPetSummary[];
+  nextCursor?: string;
+  legacyGiftCount: number;
+}
+
+export interface FavoriteResult {
+  petId: string;
+  isFavorite: boolean;
+  favoriteCount: number;
+}
+
+export type AppScreen = 'home' | 'mine' | 'album' | 'shared' | 'play' | 'upload' | 'add-photos' | 'submitted';
 
 export type AppRoute =
   | { screen: 'home' }
+  | { screen: 'album' }
   | { screen: 'mine' }
   | { screen: 'shared'; petId: string }
   | { screen: 'play'; petId: string }
   | { screen: 'upload' }
+  | { screen: 'add-photos'; petId: string }
   | { screen: 'submitted' };

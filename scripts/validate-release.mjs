@@ -43,8 +43,24 @@ if (runtime !== 'preview' && (!env.VITE_SUPABASE_URL || !env.VITE_SUPABASE_ANON_
 }
 
 const adsEnabled = env.VITE_ADS_ENABLED === 'true';
+const adsTestMode = env.VITE_ADS_TEST_MODE === 'true';
+const adDiagnosticsFlag = env.VITE_AD_DIAGNOSTICS || 'false';
+if (!['true', 'false'].includes(adDiagnosticsFlag)) {
+  throw new Error('VITE_AD_DIAGNOSTICS는 true 또는 false로 설정해야 합니다.');
+}
+const adDiagnostics = adDiagnosticsFlag === 'true';
 const adGroupId = env.VITE_REWARDED_AD_GROUP_ID || '';
-if (runtime !== 'preview' && adsEnabled && (!adGroupId || /test/i.test(adGroupId))) {
+const privateTestAds = runtime === 'private' && adsTestMode && adsEnabled && adGroupId === 'ait-ad-test-rewarded-id';
+if (adDiagnostics && !privateTestAds) {
+  throw new Error('광고 진단 화면은 private 환경에서 광고 활성화, 테스트 모드, 정확한 ait-ad-test-rewarded-id를 함께 설정해야 합니다.');
+}
+if (adsTestMode && !privateTestAds) {
+  throw new Error('광고 테스트 모드는 private 환경에서 광고 활성화와 정확한 ait-ad-test-rewarded-id를 함께 설정해야 합니다.');
+}
+if (runtime === 'production' && /test/i.test(adGroupId)) {
+  throw new Error('production 번들에는 테스트 광고 그룹 ID를 포함할 수 없습니다.');
+}
+if (runtime !== 'preview' && adsEnabled && (!adGroupId.trim() || (/test/i.test(adGroupId) && !privateTestAds))) {
   throw new Error('광고 활성화 번들에는 승인된 실광고 그룹 ID가 필요합니다. 테스트 ID는 제출할 수 없습니다.');
 }
 if (runtime === 'production' && /vercel\.app/i.test(env.VITE_SHARE_OG_URL || '')) {
@@ -54,4 +70,4 @@ if (runtime !== 'preview' && !/^https:\/\//i.test(env.VITE_SHARE_OG_URL || '')) 
   throw new Error(`${runtime} 번들에는 HTTPS 영구 공개 공유 OG 주소가 필요합니다.`);
 }
 
-console.log(`[release-check] ${runtime} 설정 검증 완료 (광고 ${adsEnabled ? '활성' : '비활성'})`);
+console.log(`[release-check] ${runtime} 설정 검증 완료 (광고 ${privateTestAds ? 'private 테스트' : adsEnabled ? '활성' : '비활성'}${adDiagnostics ? ', 진단 화면' : ''})`);

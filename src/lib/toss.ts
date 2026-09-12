@@ -34,7 +34,25 @@ export async function getUserHash(): Promise<string> {
   return preview;
 }
 
-const PHOTO_OPTIONS = { maxCount: 2, maxWidth: 1024, base64: true } as const;
+const PHOTO_OPTIONS = { maxWidth: 1024, base64: true } as const;
+const MAX_PHOTO_COUNT = 5;
+const PHOTO_FORMAT_ERROR = 'JPG, PNG 또는 WEBP 사진만 올릴 수 있어요.';
+const PHOTO_READ_ERROR = '선택한 사진을 읽지 못했어요. 다른 사진을 골라 주세요.';
+
+class PhotoSelectionError extends Error {}
+
+function photoSelectionLimit(maxCount: number): number {
+  if (!Number.isInteger(maxCount) || maxCount < 1) {
+    throw new PhotoSelectionError('사진은 1장 이상, 최대 5장까지 선택할 수 있어요.');
+  }
+  return Math.min(maxCount, MAX_PHOTO_COUNT);
+}
+
+function validatePhotoCount(count: number, maxCount: number): void {
+  if (count > maxCount) {
+    throw new PhotoSelectionError(`사진은 최대 ${maxCount}장까지 선택할 수 있어요. 다시 골라 주세요.`);
+  }
+}
 
 export class PhotoPickerUnavailableError extends Error {
   readonly useBrowserFallback = true;
@@ -46,8 +64,7 @@ export function isPhotoPickerUnavailableError(error: unknown): error is PhotoPic
       && (error as { useBrowserFallback?: unknown }).useBrowserFallback === true);
 }
 
-function normalizePickedPhoto(dataUri: unknown): string | null {
-  if (dataUri == null) return null;
+function normalizePickedPhoto(dataUri: unknown): string {
   if (typeof dataUri !== 'string' || dataUri.trim().length === 0) throw new Error('INVALID_DATA');
   const value = dataUri.trim();
   if (value.startsWith('data:image/')) return value;
@@ -55,54 +72,126 @@ function normalizePickedPhoto(dataUri: unknown): string | null {
   return `data:image/jpeg;base64,${value}`;
 }
 
-export function pickOnePhotoFromBrowser(): Promise<string | null> {
+function normalizePickedPhotos(items: { dataUri: string }[], maxCount: number): string[] {
+  if (!Array.isArray(items)) throw new Error('INVALID_DATA');
+  validatePhotoCount(items.length, maxCount);
+  return items.map((item) => normalizePickedPhoto(item?.dataUri));
+}
+
+function browserPhotoMimeType(file: File): string {
+  const type = file.type.toLowerCase().replace(/^image\/jpg$/, 'image/jpeg');
+  if (['image/jpeg', 'image/png', 'image/webp'].includes(type)) return type;
+  // Some browsers do not provide a MIME type. Only known image extensions are
+  // accepted in that case; an explicit unsupported MIME type is never ignored.
+  if (!type) {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
+    if (extension === 'png') return 'image/png';
+    if (extension === 'webp') return 'image/webp';
+  }
+  throw new PhotoSelectionError(PHOTO_FORMAT_ERROR);
+}
+
+export async function pickPhotosFromBrowser(maxCount = MAX_PHOTO_COUNT): Promise<string[]> {
+  const limit = photoSelectionLimit(maxCount);
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/jpeg,image/png,image/webp';
+    input.multiple = true;
     input.style.display = 'none';
+    const readers = new Set<FileReader>();
     let settled = false;
-    const finish = (value: string | null, error?: Error) => {
+    let reading = false;
+    const finish = (value: string[], error?: Error) => {
       if (settled) return;
       settled = true;
+      input.onchange = null;
+      input.removeEventListener('cancel', cancel);
       input.remove();
+      for (const reader of readers) {
+        reader.onload = null;
+        reader.onerror = null;
+        reader.onabort = null;
+        if (reader.readyState === FileReader.LOADING) reader.abort();
+      }
+      readers.clear();
       if (error) reject(error);
       else resolve(value);
     };
+    const cancel = () => finish([]);
     input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file) return finish(null);
-      if (file.type && !['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(file.type)) {
-        finish(null, new Error('JPG, PNG 또는 WEBP 사진만 올릴 수 있어요.'));
+      if (settled || reading) return;
+      const files = Array.from(input.files ?? []);
+      if (files.length === 0) return finish([]);
+      let mimeTypes: string[];
+      try {
+        validatePhotoCount(files.length, limit);
+        mimeTypes = files.map(browserPhotoMimeType);
+      } catch (error) {
+        finish([], error instanceof Error ? error : new Error(PHOTO_FORMAT_ERROR));
         return;
       }
-      const reader = new FileReader();
-      reader.onload = () => finish(String(reader.result).replace(/^data:image\/jpg;/i, 'data:image/jpeg;'));
-      reader.onerror = () => finish(null, new Error('선택한 사진을 읽지 못했어요. 다른 사진을 골라 주세요.'));
-      reader.readAsDataURL(file);
+      reading = true;
+      const photos = new Array<string>(files.length);
+      let remaining = files.length;
+      try {
+        files.forEach((file, index) => {
+          if (settled) return;
+          const reader = new FileReader();
+          readers.add(reader);
+          reader.onload = () => {
+            if (settled) return;
+            if (typeof reader.result !== 'string' || !/^data:[^,]*;base64,.+/i.test(reader.result)) {
+              finish([], new Error(PHOTO_READ_ERROR));
+              return;
+            }
+            photos[index] = reader.result.replace(/^data:[^;]*;/i, `data:${mimeTypes[index]};`);
+            remaining -= 1;
+            if (remaining === 0) finish(photos);
+          };
+          reader.onerror = () => finish([], new Error(PHOTO_READ_ERROR));
+          reader.onabort = () => finish([], new Error(PHOTO_READ_ERROR));
+          reader.readAsDataURL(file);
+        });
+      } catch {
+        finish([], new Error(PHOTO_READ_ERROR));
+      }
     };
-    input.addEventListener('cancel', () => finish(null), { once: true });
+    input.addEventListener('cancel', cancel, { once: true });
     document.body.appendChild(input);
-    input.click();
+    try {
+      input.click();
+    } catch {
+      finish([], new Error('기기 사진 선택창을 열지 못했어요. 다시 시도해 주세요.'));
+    }
   });
 }
 
-export async function pickOnePhoto(): Promise<string | null> {
-  if (isPreviewRuntime) return pickOnePhotoFromBrowser();
+export async function pickOnePhotoFromBrowser(): Promise<string | null> {
+  return (await pickPhotosFromBrowser(1))[0] ?? null;
+}
+
+export async function pickPhotos(maxCount = MAX_PHOTO_COUNT): Promise<string[]> {
+  const limit = photoSelectionLimit(maxCount);
+  if (isPreviewRuntime) return pickPhotosFromBrowser(limit);
+
+  const options = { ...PHOTO_OPTIONS, maxCount: Math.max(2, limit) };
 
   let modernPickerError: unknown;
   try {
     // getAlbumItems is the current, selection-focused API. Unlike getPhotos it
     // does not make a hidden requestPermission bridge call before the picker.
-    // Android's multi-photo contract rejects maxCount=1 before showing its UI,
-    // so request the smallest valid multi-select count and consume only item 0.
+    // Some Android versions reject maxCount=1 before showing the picker. Ask
+    // for at least two, then reject any selection exceeding the actual limit.
     if (Device.getAlbumItems.isSupported()) {
       try {
-        const items = await Device.getAlbumItems({ ...PHOTO_OPTIONS, types: ['PHOTO'] });
-        return normalizePickedPhoto(items[0]?.dataUri);
+        const items = await Device.getAlbumItems({ ...options, types: ['PHOTO'] });
+        return normalizePickedPhotos(items, limit);
       } catch (error) {
+        if (error instanceof PhotoSelectionError) throw error;
         const details = bridgeErrorCode(error);
-        if (isPhotoPickerCanceled(details)) return null;
+        if (isPhotoPickerCanceled(details)) return [];
         if (!shouldTryLegacyPhotoPicker(details)) throw error;
         modernPickerError = error;
       }
@@ -110,11 +199,12 @@ export async function pickOnePhoto(): Promise<string | null> {
 
     // Keep the permission-wrapped photo-only API for older Toss versions and
     // as a recovery path when the modern bridge cannot request album access.
-    const items = await pickWithPermissionWrappedPhotoPicker();
-    return normalizePickedPhoto(items[0]?.dataUri);
+    const items = await pickWithPermissionWrappedPhotoPicker(options.maxCount);
+    return normalizePickedPhotos(items, limit);
   } catch (error) {
+    if (error instanceof PhotoSelectionError) throw error;
     const details = bridgeErrorCode(error);
-    if (isPhotoPickerCanceled(details)) return null;
+    if (isPhotoPickerCanceled(details)) return [];
 
     const modernDetails = bridgeErrorCode(modernPickerError);
     console.warn('[photo-picker]', [modernDetails, details].filter(Boolean).join(' -> ') || 'UNKNOWN_ERROR');
@@ -131,20 +221,28 @@ export async function pickOnePhoto(): Promise<string | null> {
   }
 }
 
-async function pickWithPermissionWrappedPhotoPicker() {
+export async function pickOnePhoto(): Promise<string | null> {
+  return (await pickPhotos(1))[0] ?? null;
+}
+
+async function pickWithPermissionWrappedPhotoPicker(maxCount: number) {
+  const options = { ...PHOTO_OPTIONS, maxCount };
   try {
-    return await Device.getPhotos(PHOTO_OPTIONS);
+    return await Device.getPhotos(options);
   } catch (error) {
     const details = bridgeErrorCode(error);
     if (!isPhotoPermissionError(details)) throw error;
 
+    let permission: 'allowed' | 'denied';
     try {
-      const permission = await Device.getPhotos.openPermissionDialog();
-      if (permission === 'allowed') return await Device.getPhotos(PHOTO_OPTIONS);
-    } catch {
+      permission = await Device.getPhotos.openPermissionDialog();
+    } catch (permissionError) {
+      if (isPhotoPickerCanceled(bridgeErrorCode(permissionError))) throw permissionError;
       // Preserve the original permission error so the caller can show one
       // consistent recovery message instead of exposing a bridge error.
+      throw error;
     }
+    if (permission === 'allowed') return await Device.getPhotos(options);
     throw error;
   }
 }
@@ -209,13 +307,14 @@ export async function sharePet(petId: string, petName?: string): Promise<void> {
       throw new Error('공유 링크를 만들지 못했어요. 잠시 뒤 다시 시도해 주세요.');
     }
   }
-  const message = `${petName ?? '귀여운 강아지'}가 기다리고 있어요 🐶\n${url}`;
+  const shareText = `${petName?.trim() || '귀여운'} 강아지가 놀러왔어요 🐶`;
+  const message = `${shareText}\n${url}`;
   try {
     await Share.sendMessage({ message });
   }
   catch {
     if (!isPreviewRuntime) throw new Error('공유 화면을 열지 못했어요. 잠시 뒤 다시 시도해 주세요.');
-    if (navigator.share) return navigator.share({ title: '옆집 강아지', text: `${petName ?? '귀여운 강아지'}가 기다리고 있어요 🐶`, url });
+    if (navigator.share) return navigator.share({ title: '옆집 강아지', text: shareText, url });
     await navigator.clipboard.writeText(url);
     throw new Error('링크를 복사했어요.');
   }

@@ -37,7 +37,7 @@ export function preparePetName(value: string) {
 
 export function getPetNameError(value: string): string | undefined {
   const normalized = sanitizePetName(value);
-  if (!normalized) return undefined;
+  if (!normalized.replace(/\p{Default_Ignorable_Code_Point}/gu, '').trim()) return '강아지 이름을 입력해 주세요.';
   if (petNameLength(normalized) > MAX_PET_NAME_LENGTH) return '강아지 이름은 네 글자까지 입력해 주세요.';
   if (!ALLOWED_NAME.test(normalized)) return '이름에는 한글, 영문, 숫자만 사용할 수 있어요.';
   const comparable = normalized.toLocaleLowerCase('ko').replaceAll(' ', '');

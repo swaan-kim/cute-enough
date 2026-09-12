@@ -139,7 +139,7 @@ export function consumeAllowance(
   if (method === 'FREE') {
     const current = refreshAllowance(allowance, now);
     const remaining = storedFreeRemaining(current);
-    if (remaining <= 0) throw new Error('이용권은 3시간마다 한 마리씩 충전돼요.');
+    if (remaining <= 0) throw new Error('티켓은 3시간마다 한 장씩 충전돼요.');
     const freeRemaining = remaining - 1;
     return {
       ...current,

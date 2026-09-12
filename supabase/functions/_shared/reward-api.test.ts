@@ -1,11 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import { rewardRpcError, rewardRpcRequest, rewardStatusPayload, type RewardDatabaseState } from './reward-api';
+import { rewardRpcError, rewardRpcRequest, rewardStatusPayload, SHARE_REWARD_UNIT, type RewardDatabaseState } from './reward-api';
 
 const sessionId = '582b1dc1-bdb2-4f98-8e74-8202712d234c';
 const requestId = 'a43d71c0-a6cf-4be3-a60a-c72b0dcc8f81';
 const petId = 'b937ec21-3cce-4254-8fa7-c779b47e1b78';
 
 describe('reward API boundary', () => {
+  it.each([1, 2])('uses album-aware reward status for album version %s', (albumVersion) => {
+    expect(rewardRpcRequest('rewardStatus', { albumVersion }, 'verified-viewer')).toEqual({
+      name: 'get_pet_album_reward_state', args: { p_owner_hash: 'verified-viewer' },
+    });
+  });
+
+  it.each([undefined, 0, 3, '2'])('preserves legacy reward status for album version %j', (albumVersion) => {
+    expect(rewardRpcRequest('rewardStatus', { albumVersion }, 'verified-viewer')).toEqual({
+      name: 'get_pet_reward_state', args: { p_owner_hash: 'verified-viewer' },
+    });
+  });
+
+  it.each(['티켓', '강아지 티켓'])('accepts console and legacy queued close unit %s without granting from close', (rewardUnit) => {
+    expect(SHARE_REWARD_UNIT).toBe('티켓');
+    expect(rewardRpcRequest('shareClose', { sessionId,
+      summary: { sentRewardsCount: 1, sentRewardAmount: 1, rewardUnit },
+    }, 'verified-viewer')).toEqual({ name: 'close_pet_share_reward', args: {
+      p_owner_hash: 'verified-viewer', p_session_id: sessionId, p_total_reward_amount: 1,
+    } });
+  });
+
+  it.each(['', '포인트', '티켓 ', 'ticket', '강아지티켓', null, 1])('rejects malformed close unit %j', (rewardUnit) => {
+    expect(() => rewardRpcRequest('shareClose', { sessionId,
+      summary: { sentRewardsCount: 1, sentRewardAmount: 1, rewardUnit },
+    }, 'verified-viewer')).toThrow(expect.objectContaining({ code: 'INVALID_REWARD_INPUT', status: 400 }));
+  });
+
   it('uses the verified owner instead of any owner or module supplied by the client', () => {
     const request = rewardRpcRequest('shareReward', {
       ownerHash: 'another-viewer', moduleId: 'another-module', sessionId, requestId,
