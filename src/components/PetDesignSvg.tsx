@@ -1,4 +1,4 @@
-import { createElement, useId, useMemo } from 'react';
+import { createElement, useId, useMemo, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { validatePetDesign, type PetDesignV1, type SvgDesignNode } from '../../supabase/functions/_shared/pet-design';
 import './PetDesignSvg.css';
 
@@ -10,10 +10,11 @@ export interface PetDesignSvgProps {
   eating?: boolean;
   panting?: boolean;
   happy?: boolean;
+  smiling?: boolean;
 }
 
 /** The only final artwork renderer. Geometry is data; trusted CSS owns motion. */
-export function PetDesignSvg({ document, name, size = 150, active = false, eating = false, panting = false, happy = false }: PetDesignSvgProps) {
+export function PetDesignSvg({ document, name, size = 150, active = false, eating = false, panting = false, happy = false, smiling = false }: PetDesignSvgProps) {
   const instanceId = `pet-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}-`;
   const design = useMemo(() => validatePetDesign(document), [document]);
   function renderNode(node: SvgDesignNode, key: string): React.ReactNode {
@@ -29,7 +30,11 @@ export function PetDesignSvg({ document, name, size = 150, active = false, eatin
       // Keep the stored transform outside the group whose transform CSS animates.
       return createElement('g', attrs, createElement('g', { className: `dog-${node.motion}${suffix}`, 'data-motion-role': node.motion }, children));
     }
-    return createElement(node.tag, attrs, children);
+    const original = createElement(node.tag, attrs, children);
+    const part = node.attrs?.['data-design-part'];
+    return part === 'left-eye' || part === 'right-eye'
+      ? <SmileEye key={key} smiling={smiling}>{original}</SmileEye>
+      : original;
   }
   const stateClasses = [active && 'is-active', eating && 'is-eating', panting && 'is-panting', happy && 'is-happy'].filter(Boolean).join(' ');
   return (
@@ -40,4 +45,34 @@ export function PetDesignSvg({ document, name, size = 150, active = false, eatin
       {name && <span className="dog-name">{name}</span>}
     </div>
   );
+}
+
+/** Transient expression only: measure the saved eye, never rewrite its document. */
+function SmileEye({ smiling, children }: { smiling: boolean; children: ReactNode }) {
+  const originalRef = useRef<SVGGElement>(null);
+  const [eye, setEye] = useState<{ x: number; y: number; width: number; height: number; color: string }>();
+  useLayoutEffect(() => {
+    if (!smiling) { setEye(undefined); return; }
+    const original = originalRef.current;
+    if (!original || typeof original.getBBox !== 'function') return;
+    try {
+      // The wrapper's box includes transforms on the stored eye node.
+      const box = original.getBBox();
+      if (![box.x, box.y, box.width, box.height].every(Number.isFinite) || box.width <= 0 || box.height <= 0) return;
+      const shape = original.querySelector('circle,ellipse,path,rect') ?? original.firstElementChild;
+      const fill = shape ? getComputedStyle(shape).fill : '';
+      const color = fill && fill !== 'none' && !fill.startsWith('url(') ? fill : '#25222A';
+      setEye({ x: box.x, y: box.y, width: box.width, height: box.height, color });
+    } catch { /* Unmeasurable eyes retain the original approved artwork. */ }
+  }, [smiling]);
+  const visible = smiling && eye;
+  return <g className="pet-smile-eye">
+    <g ref={originalRef} visibility={visible ? 'hidden' : undefined}>{children}</g>
+    {visible && <path
+      className="pet-smile-arc"
+      d={`M ${eye.x} ${eye.y + eye.height * .65} A ${eye.width / 2} ${eye.height * .6} 0 0 1 ${eye.x + eye.width} ${eye.y + eye.height * .65}`}
+      fill="none" stroke={eye.color} strokeWidth={eye.width * .27} strokeLinecap="round"
+      pointerEvents="none" aria-hidden="true"
+    />}
+  </g>;
 }

@@ -240,24 +240,16 @@ h1, h2, p, figure { margin: 0; }
 .feed-zone:focus-visible { border-radius:28px; box-shadow:inset 0 0 0 3px #3182f6; }
 .feed-zone.phase-petting { cursor:grab; }
 .feed-zone.phase-petting:active { cursor:grabbing; }
-.feed-zone.is-pet-reacting.pet-reaction-a .dog-avatar { animation:petreactionbodya .45s cubic-bezier(.2,.8,.3,1); }
-.feed-zone.is-pet-reacting.pet-reaction-b .dog-avatar { animation:petreactionbodyb .45s cubic-bezier(.2,.8,.3,1); }
-.feed-zone.is-pet-reacting.pet-reaction-a .dog-tail { animation:petreactionwaga .11s ease-in-out 4 alternate; }
-.feed-zone.is-pet-reacting.pet-reaction-b .dog-tail { animation:petreactionwagb .11s ease-in-out 4 alternate; }
-.feed-zone.is-pet-reacting [data-design-part="left-eye"],
-.feed-zone.is-pet-reacting [data-design-part="right-eye"] { transform-box:fill-box; transform-origin:center; }
-.feed-zone.is-pet-reacting [data-design-part="left-eye"] { --pet-eye-tilt:12deg; }
-.feed-zone.is-pet-reacting [data-design-part="right-eye"] { --pet-eye-tilt:-12deg; }
-.feed-zone.is-pet-reacting.pet-reaction-a [data-design-part="left-eye"],
-.feed-zone.is-pet-reacting.pet-reaction-a [data-design-part="right-eye"] { animation:petreactionsquinta .45s ease-in-out; }
-.feed-zone.is-pet-reacting.pet-reaction-b [data-design-part="left-eye"],
-.feed-zone.is-pet-reacting.pet-reaction-b [data-design-part="right-eye"] { animation:petreactionsquintb .45s ease-in-out; }
+.feed-zone.is-pet-reacting.pet-reaction-a .dog-avatar { animation:petreactionbodya var(--pet-reaction-duration,450ms) cubic-bezier(.2,.8,.3,1); }
+.feed-zone.is-pet-reacting.pet-reaction-b .dog-avatar { animation:petreactionbodyb var(--pet-reaction-duration,450ms) cubic-bezier(.2,.8,.3,1); }
+.feed-zone.is-pet-reacting.pet-reaction-a .dog-tail { animation:petreactionwaga .11s ease-in-out infinite alternate; }
+.feed-zone.is-pet-reacting.pet-reaction-b .dog-tail { animation:petreactionwagb .11s ease-in-out infinite alternate; }
+.feed-zone.is-pet-reacting.phase-done .dog-avatar { animation-name:petreactionfinal; }
+@keyframes petreactionfinal { 0%,50%,100%{transform:translateY(0)} 23%{transform:translateY(-7px)} }
 @keyframes petreactionbodya { 0%,100%{transform:translateY(0) rotate(0)} 34%{transform:translateY(-7px) rotate(-1.5deg)} 67%{transform:translateY(-2px) rotate(1.2deg)} }
 @keyframes petreactionbodyb { 0%,100%{transform:translateY(0) rotate(0)} 34%{transform:translateY(-7px) rotate(1.5deg)} 67%{transform:translateY(-2px) rotate(-1.2deg)} }
 @keyframes petreactionwaga { from{transform:rotate(-30deg) scaleY(.96)} to{transform:rotate(30deg) scaleY(1.04)} }
 @keyframes petreactionwagb { from{transform:rotate(-30deg) scaleY(.96)} to{transform:rotate(30deg) scaleY(1.04)} }
-@keyframes petreactionsquinta { 0%,100%{transform:rotate(0) scaleY(1)} 22%,76%{transform:rotate(var(--pet-eye-tilt)) scaleY(.18)} }
-@keyframes petreactionsquintb { 0%,100%{transform:rotate(0) scaleY(1)} 22%,76%{transform:rotate(var(--pet-eye-tilt)) scaleY(.18)} }
 .heart-pop { position:absolute; top:25px; right:25%; font-size:35px; color:#ff6b8a; opacity:0; }
 .is-eating ~ .heart-pop { animation:heartpop .7s ease-out; }
 @keyframes heartpop { 0%{opacity:0;transform:scale(.4) translateY(20px)} 40%{opacity:1} 100%{opacity:0;transform:scale(1.4) translateY(-35px)} }
@@ -269,11 +261,7 @@ h1, h2, p, figure { margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   .feed-zone.is-pet-reacting .dog-avatar,
-  .feed-zone.is-pet-reacting .dog-tail,
-  .feed-zone.is-pet-reacting [data-design-part="left-eye"],
-  .feed-zone.is-pet-reacting [data-design-part="right-eye"] { animation:none!important; }
-  .feed-zone.is-pet-reacting [data-design-part="left-eye"],
-  .feed-zone.is-pet-reacting [data-design-part="right-eye"] { transform:rotate(var(--pet-eye-tilt)) scaleY(.18); }
+  .feed-zone.is-pet-reacting .dog-tail { animation:none!important; }
 }
 
 .interaction-dock { z-index:3; flex:0 0 auto; width:min(calc(100% - 40px),430px); min-height:150px; margin:0 auto max(18px,var(--ait-safe-bottom)); display:flex; flex-direction:column; justify-content:center; }

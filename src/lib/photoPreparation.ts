@@ -1,40 +1,21 @@
 /** A single encounter's disposable image buffer, never a photo-access grant. */
-export type PreparedPhoto = {
-  petId: string;
-  photoId: string;
-  photoUrl: string;
-  signedUrlExpiresAt: string;
-  photoCaption?: string;
-};
-
 type Photo = { photoId?: string; photoUrl: string; signedUrlExpiresAt?: string };
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const MAX_PREPARE_AGE_MS = 5 * 60_000;
 const IMAGE_LOAD_ERROR = '사진을 불러오지 못했어요. 다시 불러와 주세요.';
 const IMAGE_TOO_LARGE_ERROR = '사진이 너무 커서 불러오지 못했어요.';
 
 export function createPhotoPreparation(petId: string, requestId: string) {
   let disposed = false;
-  let started = false;
-  let prepared: { photo: PreparedPhoto; deadline: number; image: Promise<string> } | undefined;
   let finalImage: { photoUrl: string; image: Promise<string> } | undefined;
-  let preparationExpiry: ReturnType<typeof setTimeout> | undefined;
   const controllers = new Set<AbortController>();
   const objectUrls = new Set<string>();
   const abortError = () => new DOMException('사진 준비를 취소했어요.', 'AbortError');
 
-  function clearPreparationExpiry() {
-    clearTimeout(preparationExpiry);
-    preparationExpiry = undefined;
-  }
-
   function releaseImages() {
-    clearPreparationExpiry();
     for (const controller of controllers) controller.abort();
     controllers.clear();
     for (const url of objectUrls) URL.revokeObjectURL(url);
     objectUrls.clear();
-    prepared = undefined;
   }
 
   async function download(photoUrl: string): Promise<string> {
@@ -85,43 +66,10 @@ export function createPhotoPreparation(petId: string, requestId: string) {
 
   return {
     petId, requestId,
-    prefetch(load: (signal: AbortSignal) => Promise<PreparedPhoto>) {
-      if (started || disposed) return;
-      started = true;
-      const controller = new AbortController();
-      controllers.add(controller);
-      void load(controller.signal).then((photo) => {
-        const deadline = Math.min(Date.parse(photo.signedUrlExpiresAt), Date.now() + MAX_PREPARE_AGE_MS);
-        if (disposed || controller.signal.aborted || photo.petId !== petId || !photo.photoId || !(deadline > Date.now())) return;
-        const image = download(photo.photoUrl);
-        const candidate = { photo, deadline, image };
-        prepared = candidate;
-        // Expire an abandoned preparation even if the user never finishes or
-        // leaves. A committed/displayed image instead lives until close/dispose.
-        preparationExpiry = setTimeout(() => {
-          if (prepared === candidate) releaseImages();
-        }, Math.max(0, deadline - Date.now()));
-        // A failed speculative fetch is silent; final authorization still runs.
-        void image.catch(() => undefined);
-      }).catch(() => undefined).finally(() => controllers.delete(controller));
-    },
     async resolve(photo: Photo): Promise<string> {
       if (disposed) throw abortError();
-      const candidate = prepared;
-      if (candidate && photo.photoId === candidate.photo.photoId && candidate.deadline > Date.now()) {
-        try {
-          const url = await candidate.image;
-          if (disposed) throw abortError();
-          if (prepared === candidate && candidate.deadline > Date.now()) {
-            clearPreparationExpiry();
-            prepared = undefined;
-            finalImage = { photoUrl: photo.photoUrl, image: Promise.resolve(url) };
-            return url;
-          }
-        } catch { if (disposed) throw abortError(); }
-      }
       if (!finalImage || finalImage.photoUrl !== photo.photoUrl) {
-        // A changed/expired candidate must not keep downloading beside the final photo.
+        // Only download the URL returned by the final authorized photo request.
         releaseImages();
         finalImage = { photoUrl: photo.photoUrl, image: download(photo.photoUrl) };
       }

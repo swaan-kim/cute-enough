@@ -3,7 +3,7 @@ import { SAMPLE_PETS } from '../data/samplePets';
 import { selectPetPhotoUrl } from './petPhoto';
 import { savePreviewSubmission } from './previewPetStore';
 import { getPreviewScenario, getScenarioStorage } from '../data/previewScenarios';
-import { fetchMyPets, fetchSubmissionStatus, openOwnerPhoto, preparePetPhoto, PetApiError, reopenPet, revealPet, submitPet, toPetApiError } from './api';
+import { fetchMyPets, fetchSubmissionStatus, openOwnerPhoto, PetApiError, reopenPet, revealPet, submitPet, toPetApiError } from './api';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -53,20 +53,6 @@ describe('pet api error normalization', () => {
   it('does not erase an already normalized error', async () => {
     const original = new PetApiError('다시 시도해 주세요.', 'NETWORK_ERROR', 'unknown');
     await expect(toPetApiError(original)).resolves.toBe(original);
-  });
-});
-
-describe('read-only preview photo preparation', () => {
-  it('does not initialize legacy gifts, tickets or visits just by preparing', async () => {
-    const pet = SAMPLE_PETS[0];
-    const storage = getScenarioStorage(getPreviewScenario());
-    storage.setItem('cute-enough:preview-reveals', JSON.stringify([{ petId: pet.id }]));
-    const before = JSON.stringify({ ...localStorage });
-    await expect(preparePetPhoto(pet, crypto.randomUUID(), 'replay')).rejects.toThrow('이미 볼 수 있는 사진');
-    expect(JSON.stringify({ ...localStorage })).toBe(before);
-    const owner = { ...pet, isMine: true, approvalStatus: 'pending' as const };
-    await expect(preparePetPhoto(owner, crypto.randomUUID(), 'owner')).resolves.toMatchObject({ petId: pet.id });
-    expect(JSON.stringify({ ...localStorage })).toBe(before);
   });
 });
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createPhotoPreparation, type PreparedPhoto } from './photoPreparation';
+import { createPhotoPreparation } from './photoPreparation';
 
-const photo = (id = 'one'): PreparedPhoto => ({ petId: 'pet', photoId: id, photoUrl: `https://image.test/${id}.jpg`, signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString() });
+const photo = (id = 'one') => ({ petId: 'pet', photoId: id, photoUrl: `https://image.test/${id}.jpg`, signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString() });
 const fetchMock = vi.fn();
 const revoke = vi.fn();
 let decode: () => Promise<void>;
@@ -21,53 +21,23 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('one-encounter authorized photo buffer', () => {
-  it('downloads and decodes once, reusing pixels only after matching final authorization', async () => {
+  it('does no work before authorization and downloads/decodes the final URL once', async () => {
     const buffer = createPhotoPreparation('pet', 'request');
-    const load = vi.fn(async () => photo());
-    buffer.prefetch(load); buffer.prefetch(load);
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-    expect(await buffer.resolve({ ...photo(), photoUrl: 'https://image.test/refreshed-url' })).toBe('blob:photo-1');
-    expect(load).toHaveBeenCalledOnce(); expect(fetchMock).toHaveBeenCalledOnce();
-    buffer.dispose(); expect(revoke).toHaveBeenCalledWith('blob:photo-1');
-  });
-  it('does not show an old candidate when final photo selection changes', async () => {
-    const buffer = createPhotoPreparation('pet', 'request');
-    buffer.prefetch(async () => photo());
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-    expect(await buffer.resolve(photo('two'))).toBe('blob:photo-2');
-    expect(fetchMock.mock.calls[1][0]).toBe(photo('two').photoUrl);
-    buffer.dispose();
-  });
-  it('does not reuse expired preparation', async () => {
-    const buffer = createPhotoPreparation('pet', 'request');
-    buffer.prefetch(async () => ({ ...photo(), signedUrlExpiresAt: new Date(0).toISOString() }));
-    await Promise.resolve();
     expect(fetchMock).not.toHaveBeenCalled();
-    await buffer.resolve(photo()); expect(fetchMock).toHaveBeenCalledOnce(); buffer.dispose();
+    expect('prefetch' in buffer).toBe(false);
+    const first = buffer.resolve(photo());
+    const duplicate = buffer.resolve(photo());
+    expect(await first).toBe('blob:photo-1');
+    expect(await duplicate).toBe('blob:photo-1');
+    expect(fetchMock).toHaveBeenCalledOnce();
+    buffer.dispose(); expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:photo-1');
   });
-  it('falls back after preparation API failure without preventing final loading', async () => {
+  it('releases the previous image when a refreshed authorized URL arrives', async () => {
     const buffer = createPhotoPreparation('pet', 'request');
-    buffer.prefetch(async () => { throw new Error('old API'); });
-    expect(await buffer.resolve(photo())).toBe('blob:photo-1'); buffer.dispose();
-  });
-  it('falls back to the final authorized URL after a speculative image download fails', async () => {
-    const buffer = createPhotoPreparation('pet', 'request');
-    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
-    buffer.prefetch(async () => photo());
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-    expect(await buffer.resolve({ ...photo(), photoUrl: 'https://image.test/refreshed-url' })).toBe('blob:photo-1');
-    expect(fetchMock.mock.calls[1][0]).toBe('https://image.test/refreshed-url');
-    buffer.dispose();
-  });
-  it('discards pixels prepared more than five minutes ago even with a valid signed URL', async () => {
-    const now = Date.now();
-    const buffer = createPhotoPreparation('pet', 'request');
-    buffer.prefetch(async () => photo());
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-    vi.useFakeTimers(); vi.setSystemTime(now + 301_000);
-    expect(await buffer.resolve(photo())).toBe('blob:photo-2');
+    await buffer.resolve(photo());
+    expect(await buffer.resolve(photo('two'))).toBe('blob:photo-2');
     expect(revoke).toHaveBeenCalledWith('blob:photo-1');
-    expect(fetchMock).toHaveBeenCalledTimes(2); buffer.dispose();
+    buffer.dispose();
   });
   it.each([
     ['text/html', '3'], ['image/jpeg', String(9 * 1024 * 1024)],
@@ -77,25 +47,9 @@ describe('one-encounter authorized photo buffer', () => {
     await expect(buffer.resolve(photo())).rejects.toThrow();
     expect(sequence).toBe(0); buffer.dispose();
   });
-  it('silently ignores a different pet from a preparation response', async () => {
-    const buffer = createPhotoPreparation('pet', 'request');
-    buffer.prefetch(async () => ({ ...photo(), petId: 'wrong' }));
-    await Promise.resolve(); expect(fetchMock).not.toHaveBeenCalled(); buffer.dispose();
-  });
-  it('automatically releases an unused preparation after five minutes without user input', async () => {
+  it('keeps an authorized displayed image alive until close', async () => {
     vi.useFakeTimers();
     const buffer = createPhotoPreparation('pet', 'request');
-    buffer.prefetch(async () => photo());
-    await vi.waitFor(() => expect(sequence).toBe(1));
-    await vi.advanceTimersByTimeAsync(300_000);
-    expect(revoke).toHaveBeenCalledWith('blob:photo-1');
-    expect(await buffer.resolve(photo())).toBe('blob:photo-2'); buffer.dispose();
-  });
-  it('keeps a finally authorized displayed image alive until close, not preparation expiry', async () => {
-    vi.useFakeTimers();
-    const buffer = createPhotoPreparation('pet', 'request');
-    buffer.prefetch(async () => photo());
-    await vi.waitFor(() => expect(sequence).toBe(1));
     expect(await buffer.resolve(photo())).toBe('blob:photo-1');
     await vi.advanceTimersByTimeAsync(300_000);
     expect(revoke).not.toHaveBeenCalled();
@@ -139,11 +93,10 @@ describe('one-encounter authorized photo buffer', () => {
     buffer.dispose(); expect(await result).toMatchObject({ name: 'AbortError' });
     expect(revoke).toHaveBeenCalledWith('blob:photo-1');
   });
-  it('does not start an image download after a late preparation response on an abandoned encounter', async () => {
-    let finish!: (value: PreparedPhoto) => void;
+  it('rejects authorization arriving after leaving without downloading', async () => {
     const buffer = createPhotoPreparation('pet', 'request');
-    buffer.prefetch(() => new Promise((resolve) => { finish = resolve; }));
-    buffer.dispose(); finish(photo()); await Promise.resolve();
+    buffer.dispose();
+    await expect(buffer.resolve(photo())).rejects.toMatchObject({ name: 'AbortError' });
     expect(fetchMock).not.toHaveBeenCalled();
   });
   it('does not retain late downloaded bytes after leaving even when fetch ignores the abort', async () => {

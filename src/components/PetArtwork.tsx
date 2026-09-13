@@ -14,13 +14,14 @@ type PetArtworkProps = {
   eating?: boolean;
   panting?: boolean;
   happy?: boolean;
+  smiling?: boolean;
   accessory?: PetAccessory;
   style?: PetStyleV1;
   /** Parent cards provide their own retry action instead of nesting buttons. */
   retryControl?: boolean;
 };
 
-export function PetArtwork({ pet, traits, name, size, active, eating, panting, happy, accessory, style, retryControl = true }: PetArtworkProps) {
+export function PetArtwork({ pet, traits, name, size, active, eating, panting, happy, smiling, accessory, style, retryControl = true }: PetArtworkProps) {
   const design = usePetDesign(pet);
   const resolvedTraits = pet?.traits ?? traits;
   const resolvedStyle = pet?.publishedStyle ?? style;
@@ -34,7 +35,7 @@ export function PetArtwork({ pet, traits, name, size, active, eating, panting, h
 
   if (document) return <div className={`pet-artwork-design ${eating ? 'is-eating' : ''}`} data-design-sha256={design?.snapshot.publishedDesign?.sha256}
     data-design-version={design?.snapshot.publishedDesign?.designVersion}>
-    <PetDesignSvg document={document} name={label} size={size} active={active} eating={eating} panting={panting} happy={happy} />
+    <PetDesignSvg document={document} name={label} size={size} active={active} eating={eating} panting={panting} happy={happy} smiling={smiling} />
   </div>;
 
   if (!design) return null;

@@ -28,8 +28,8 @@ test('two free dogs → zero tickets → ad picker → earned reward → three t
   const input = timing.filter((e) => e.action === 'third-input').at(-1)!;
   const request = timing.filter((e) => e.action === 'reveal').at(-1)!;
   const modal = timing.find((e) => e.action === 'modal-visible' && e.at > input.at)!;
-  expect(request.at - input.at, 'Request begins during the final 450 ms reaction').toBeLessThan(400);
-  expect(modal.at - input.at, 'Reaction remains visible before the modal').toBeGreaterThanOrEqual(400);
+  expect(request.at - input.at, 'Request begins during the final 900 ms reaction').toBeLessThan(400);
+  expect(modal.at - input.at, 'Reaction remains visible before the modal').toBeGreaterThanOrEqual(850);
   expect(timing.filter((event) => event.action === 'modal-visible').every((event) => !event.loading), 'Fast images open without a skeleton flash').toBe(true);
   await page.screenshot({ path: testInfo.outputPath('reward-photo-mobile.png') });
 });
@@ -69,19 +69,57 @@ test('duplicate earned events and manual continue spend one reward once', async 
 });
 
 for (const accessKind of ['replay', 'owner'] as const) {
-  test(`${accessKind} prefetch downloads before input without a grant and reuses the decoded image`, async ({ page, flow }) => {
+  test(`${accessKind} downloads only on the third input without spending a ticket`, async ({ page, flow }) => {
     if (accessKind === 'owner') flow.makeOwner(); else flow.makeReplay();
     const name = accessKind === 'owner' ? '우리집' : names[0];
     await openHome(page); await choose(page, name); await feed(page, name);
-    await expect.poll(() => flow.count('photoPrepare')).toBe(1);
-    await expect.poll(() => flow.photos.length).toBe(1);
+    expect(flow.count('photoPrepare')).toBe(0);
+    expect(flow.photos).toHaveLength(0);
     expect(flow.count('reveal')).toBe(0); expect(flow.count('ownerPhoto')).toBe(0);
     expect(flow.grantCount).toBe(0); expect(flow.remaining).toBe(2);
-    expect(flow.calls.find((c) => c.action === 'photoPrepare')?.body.accessKind).toBe(accessKind);
     await petThree(page, name); await expectPhoto(page, name);
     expect(flow.photos).toHaveLength(1);
     expect(flow.count(accessKind === 'owner' ? 'ownerPhoto' : 'reveal')).toBe(1);
     expect(flow.grantCount).toBe(0); expect(flow.remaining).toBe(2);
+  });
+}
+
+for (const reducedMotion of ['no-preference', 'reduce'] as const) {
+  test(`final smile lasts 900 ms with saved geometry: ${reducedMotion}`, async ({ page, flow }, testInfo) => {
+    await page.emulateMedia({ reducedMotion });
+    await page.clock.install();
+    await openHome(page); await choose(page, names[0]); await feed(page, names[0]);
+    // Use the browser clock, not the Node clock (they can differ by a few ms).
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1_000));
+    const originalEyes = await page.locator('.feed-zone [data-design-part$="-eye"]').evaluateAll((eyes) => eyes.map((eye) => eye.outerHTML));
+    const sha = await page.locator('.feed-zone [data-design-sha256]').getAttribute('data-design-sha256');
+    for (let i = 0; i < 2; i++) {
+      await page.getByRole('button', { name: `${names[0]} 쓰다듬기, ${i}번 완료` }).tap();
+      await expect(page.locator('.feed-zone .pet-smile-arc')).toHaveCount(2);
+      await page.clock.runFor(450);
+      await expect(page.locator('.feed-zone .pet-smile-arc')).toHaveCount(0);
+    }
+    expect(flow.count('photoPrepare')).toBe(0);
+    expect(flow.count('reveal')).toBe(0); expect(flow.photos).toHaveLength(0);
+    await page.getByRole('button', { name: `${names[0]} 쓰다듬기, 2번 완료` }).tap();
+    await expect.poll(() => flow.count('reveal')).toBe(1);
+    await page.clock.runFor(250);
+    await expect(page.locator('.feed-zone .pet-smile-arc')).toHaveCount(2);
+    expect(await page.locator('.feed-zone [data-design-part$="-eye"]').evaluateAll((eyes) => eyes.map((eye) => eye.outerHTML))).toEqual(originalEyes);
+    await expect(page.locator('.feed-zone [data-design-sha256]')).toHaveAttribute('data-design-sha256', sha!);
+    const motion = await page.locator('.feed-zone .dog-tail').first().evaluate((tail) => ({
+      tail: getComputedStyle(tail).animationName,
+      body: getComputedStyle(tail.closest('.dog-avatar')!).animationName,
+    }));
+    if (reducedMotion === 'reduce') expect(motion).toEqual({ tail: 'none', body: 'none' });
+    else { expect(motion.tail).toMatch(/petreactionwag/); expect(motion.body).toBe('petreactionfinal'); }
+    await page.screenshot({ path: testInfo.outputPath(`final-smile-${reducedMotion}.png`) });
+    await page.clock.runFor(649);
+    await expect(page.getByRole('dialog', { name: '강아지 실사 사진' })).toHaveCount(0);
+    await expect(page.locator('.feed-zone .pet-smile-arc')).toHaveCount(2);
+    await page.clock.runFor(1);
+    await expect(page.getByRole('dialog', { name: '강아지 실사 사진' })).toBeVisible();
+    expect(flow.count('reveal')).toBe(1); expect(flow.count('photoPrepare')).toBe(0);
   });
 }
 
@@ -101,13 +139,15 @@ test('slow photo keeps one skeleton until decoded and close prevents a stale ove
   await expect(page.getByRole('dialog', { name: '강아지 실사 사진' })).toHaveCount(0);
 });
 
-test('leaving during speculative preparation grants nothing and never reopens the photo', async ({ page, flow }) => {
-  flow.makeReplay(); flow.prepareDelayMs = 1_500;
+test('leaving before the third input requests no photo and never opens a modal', async ({ page, flow }) => {
+  flow.makeReplay();
   await openHome(page); await choose(page, names[0]); await feed(page, names[0]);
-  await expect.poll(() => flow.count('photoPrepare')).toBe(1);
+  const dog = page.locator('.feed-zone');
+  await dog.tap(); await dog.tap();
+  expect(flow.count('photoPrepare')).toBe(0);
   await page.evaluate(() => (window as any).__nativeFixture.navigate('backEvent'));
   await expect(page.getByRole('region', { name: '강아지들이 있는 집' })).toBeVisible();
-  await page.waitForTimeout(1_700);
+  await page.waitForTimeout(1_000);
   expect(flow.count('reveal')).toBe(0); expect(flow.grantCount).toBe(0); expect(flow.remaining).toBe(2);
   expect(flow.photos).toHaveLength(0);
   await expect(page.getByRole('dialog', { name: '강아지 실사 사진' })).toHaveCount(0);

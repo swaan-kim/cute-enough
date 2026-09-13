@@ -30,7 +30,6 @@ import { getUserHash } from './toss';
 import { verifyPetDesignDelivery } from './verifyPetDesignDelivery';
 import { getPetNameError, sanitizePetName } from './petName';
 import { getSubmissionPhotos } from './submissionPhotos';
-import type { PreparedPhoto } from './photoPreparation';
 import { forgetSubmissionPhotos, uploadSubmissionPhotos } from './submissionPhotoUpload';
 import type { DailyAllowance, RewardStatus, RewardSessionResult, ShareCloseSummary, ShareRewardResult } from '../types';
 
@@ -351,20 +350,6 @@ export async function revealPet(pet: PetSummary, method: UnlockMethod, adSession
     };
   }
   return invokePetApi<RevealResult>({ action: 'reveal', apiVersion: 2, albumVersion: 2, petId: pet.id, unlockMethod: method, adSessionId, requestId: logicalRequestId, photoIntent });
-}
-
-/** Read-only preparation: never call reveal/ownerPhoto here to warm an image. */
-export async function preparePetPhoto(pet: PetSummary, requestId: string, accessKind: 'owner' | 'replay', signal?: AbortSignal): Promise<PreparedPhoto> {
-  if (!isPreviewRuntime) return invokePetApi<PreparedPhoto>({ action: 'photoPrepare', apiVersion: 2, albumVersion: 2, petId: pet.id, requestId, accessKind }, 8_000, signal);
-  if (signal?.aborted) throw new DOMException('사진 준비를 취소했어요.', 'AbortError');
-  const storage = getScenarioStorage(getPreviewScenario());
-  const allowedOwner = accessKind === 'owner' && pet.isMine && ['pending', 'approved'].includes(pet.approvalStatus ?? 'approved');
-  const existing = accessKind === 'replay' && pet.approvalStatus !== 'pending'
-    ? previewAlbumEntries([pet], storage, new Set(), false)[0]?.albumPhotoId : undefined;
-  const photos = previewPhotos(pet);
-  const photo = allowedOwner ? photos[0] : photos.find((item) => item.photoId === existing);
-  if (!photo || (!allowedOwner && (!existing || ['rejected', 'paused', 'deleted'].includes(pet.approvalStatus ?? '')))) throw new Error('이미 볼 수 있는 사진만 준비할 수 있어요.');
-  return { petId: pet.id, photoId: photo.photoId, photoUrl: photo.url, photoCaption: photo.photoCaption, signedUrlExpiresAt: new Date(Date.now() + 600_000).toISOString() };
 }
 
 export async function fetchRewardStatus(): Promise<RewardStatus> {

@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { Asset, Button, ConfirmDialog, Result, Top } from '@toss/tds-mobile';
 import { AppToast, DAILY_COMPLETE_TOAST, DAILY_LIMIT_TOAST } from './components/AppToast';
 import type { PetInteractionMethod } from './components/PlayScene';
-import { albumPhotoMetadata, fetchAlbum, openAlbumPhoto, preparePetPhoto, setPetFavorite } from './lib/api';
+import { albumPhotoMetadata, fetchAlbum, openAlbumPhoto, setPetFavorite } from './lib/api';
 import { createPhotoPreparation, type PhotoPreparation } from './lib/photoPreparation';
 import type { AlbumPetSummary, AlbumResult } from './types';
 import { House } from './components/House';
@@ -727,15 +727,6 @@ export default function App() {
     photoPreparationRef.current?.dispose();
   }, []);
   useEffect(() => {
-    const suspendSpeculation = () => {
-      if (!document.hidden || playCompletionRef.current) return;
-      photoPreparationRef.current?.dispose();
-      photoPreparationRef.current = undefined;
-    };
-    document.addEventListener('visibilitychange', suspendSpeculation);
-    return () => document.removeEventListener('visibilitychange', suspendSpeculation);
-  }, []);
-  useEffect(() => {
     if (!showHomeHint) return undefined;
     const timer = window.setTimeout(() => {
       setShowHomeHint(false);
@@ -953,22 +944,10 @@ export default function App() {
     playCompletionRef.current = undefined;
   }
 
-  function startPlayPhotoPreparation() {
-    if (!selected || !preparedVisit || preparedVisit.characterOnlyReason || !preparedVisit.requestId) return;
-    void loadRevealCard().catch(() => undefined);
-    if (!preparedVisit.ownerPhoto && preparedVisit.photoIntent !== 'replay') return;
-    const pet = selected;
-    const visit = preparedVisit;
-    if (!photoPreparationRef.current || photoPreparationRef.current.requestId !== visit.requestId) {
-      photoPreparationRef.current?.dispose();
-      photoPreparationRef.current = createPhotoPreparation(pet.id, visit.requestId!);
-    }
-    photoPreparationRef.current.prefetch((signal) => preparePetPhoto(pet, visit.requestId!, visit.ownerPhoto ? 'owner' : 'replay', signal));
-  }
-
   function beginPlayCompletion(method: PetInteractionMethod) {
     if (!selected || !preparedVisit?.requestId || preparedVisit.characterOnlyReason || busyRef.current || playCompletionRef.current) return;
-    // The third accepted gesture commits once, while its last reaction is still playing.
+    // No photo request before the third accepted gesture; overlap its 900 ms reaction.
+    void loadRevealCard().catch(() => undefined);
     playCompletionRef.current = { requestId: preparedVisit.requestId, petId: selected.id, generation: photoGenerationRef.current + 1 };
     void handleFed(undefined, undefined, true, method, true);
   }
@@ -1862,7 +1841,7 @@ export default function App() {
     <Suspense fallback={screenFallback}><PlayScene pet={selected} photoHint={preparedVisit?.photoIntent === 'collect' && !preparedVisit.ownerPhoto && !preparedVisit.characterOnlyReason
       ? preparedVisit.method === 'REWARDED' ? '받은 광고 보상으로 만나요. 티켓은 쓰지 않아요.'
         : preparedVisit.method === 'FREE' || preparedVisit.method === 'SHARE' ? '새 사진을 만나면 티켓 1장을 써요' : undefined
-      : undefined} onPettingStart={startPlayPhotoPreparation} onInteractionComplete={beginPlayCompletion} onFed={finishPlayReaction} onSound={playSound} /></Suspense>,
+      : undefined} onInteractionComplete={beginPlayCompletion} onFed={finishPlayReaction} onSound={playSound} /></Suspense>,
   );
 
   return renderWithAppShell(

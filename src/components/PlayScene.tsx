@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { Asset, Top } from '@toss/tds-mobile';
 import type { SoundEffect } from '../lib/sound';
 import { playHaptic } from '../lib/haptics';
@@ -20,6 +20,8 @@ const TREATS: Array<{ id: TreatId; label: string; objectLabel: string; image: st
 const TREAT_DRAG_MAX_LIFT_Y = 32;
 const PET_STROKE_DISTANCE = 72;
 const PET_POINTER_NOISE = 2;
+const PET_REACTION_MS = 450;
+const FINAL_REACTION_MS = 900;
 
 type DragState = {
   treatId: TreatId;
@@ -37,10 +39,9 @@ function getTreatDragLift(event: ReactPointerEvent<HTMLElement>, drag: DragState
   return TREAT_DRAG_MAX_LIFT_Y * easedProgress;
 }
 
-export function PlayScene({ pet, photoHint, onPettingStart, onInteractionComplete, onFed, onSound }: {
+export function PlayScene({ pet, photoHint, onInteractionComplete, onFed, onSound }: {
   pet: PetSummary;
   photoHint?: string;
-  onPettingStart?: () => void;
   onInteractionComplete?: (method: PetInteractionMethod) => void;
   onFed: (method: PetInteractionMethod) => void;
   onSound: (effect: SoundEffect, variant?: number) => void;
@@ -68,7 +69,6 @@ export function PlayScene({ pet, photoHint, onPettingStart, onInteractionComplet
   }>();
   const timersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const petReactionTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  const pettingStartedRef = useRef(false);
   const completedRef = useRef(false);
 
   useEffect(() => {
@@ -95,10 +95,6 @@ export function PlayScene({ pet, photoHint, onPettingStart, onInteractionComplet
     timersRef.current.push(setTimeout(() => {
       setEating(false);
       setPhase('petting');
-      if (!pettingStartedRef.current) {
-        pettingStartedRef.current = true;
-        onPettingStart?.();
-      }
     }, 950));
   }
 
@@ -110,7 +106,7 @@ export function PlayScene({ pet, photoHint, onPettingStart, onInteractionComplet
     setPetReactionSequence((sequence) => sequence + 1);
     setPetReactionActive(true);
     if (petReactionTimerRef.current) clearTimeout(petReactionTimerRef.current);
-    petReactionTimerRef.current = setTimeout(() => setPetReactionActive(false), 450);
+    petReactionTimerRef.current = setTimeout(() => setPetReactionActive(false), next === 3 ? FINAL_REACTION_MS : PET_REACTION_MS);
     timersRef.current.push(petReactionTimerRef.current);
     setHasPetInteraction(true);
     onSound('pet', next - 1);
@@ -119,7 +115,7 @@ export function PlayScene({ pet, photoHint, onPettingStart, onInteractionComplet
       completedRef.current = true;
       setPhase('done');
       onInteractionComplete?.(method);
-      timersRef.current.push(setTimeout(() => onFed(method), 450));
+      timersRef.current.push(setTimeout(() => onFed(method), FINAL_REACTION_MS));
     }
   }
 
@@ -221,6 +217,7 @@ export function PlayScene({ pet, photoHint, onPettingStart, onInteractionComplet
 
       <div
         className={`feed-zone phase-${phase} ${greeting ? 'is-greeting' : ''} ${dragGhost ? 'is-dragging-treat' : ''} ${petReactionActive ? 'is-pet-reacting' : ''} ${petReactionSequence ? `pet-reaction-${petReactionSequence % 2 ? 'a' : 'b'}` : ''}`}
+        style={{ '--pet-reaction-duration': `${phase === 'done' ? FINAL_REACTION_MS : PET_REACTION_MS}ms` } as CSSProperties}
         ref={zoneRef}
         role="button"
         tabIndex={0}
@@ -244,6 +241,7 @@ export function PlayScene({ pet, photoHint, onPettingStart, onInteractionComplet
           active={phase !== 'treat' || Boolean(selectedTreat)}
           eating={eating}
           happy={phase === 'happy'}
+          smiling={petReactionActive}
           size={245}
           retryControl={false}
         />

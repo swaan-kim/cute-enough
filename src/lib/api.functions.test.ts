@@ -28,21 +28,6 @@ afterEach(() => {
 });
 
 describe('production Edge Function client', () => {
-  it('prepares only through the read-only action and forwards cancellation without a reveal', async () => {
-    vi.stubEnv('VITE_APP_RUNTIME', 'production');
-    vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
-    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
-    const photo = { petId: 'pet', photoId: 'photo', photoUrl: 'https://image.test/photo.jpg', signedUrlExpiresAt: '2099-01-01T00:00:00Z' };
-    functionMocks.invoke.mockResolvedValue({ data: photo, error: null });
-    const { preparePetPhoto } = await import('./api');
-    const { SAMPLE_PETS } = await import('../data/samplePets');
-    const controller = new AbortController();
-    await expect(preparePetPhoto({ ...SAMPLE_PETS[0], id: 'pet' }, 'request', 'replay', controller.signal)).resolves.toEqual(photo);
-    expect(functionMocks.invoke).toHaveBeenCalledOnce();
-    expect(functionMocks.invoke.mock.calls[0][1].body).toMatchObject({ action: 'photoPrepare', petId: 'pet', requestId: 'request', accessKind: 'replay', albumVersion: 2 });
-    controller.abort();
-    expect(functionMocks.invoke.mock.calls[0][1].signal.aborted).toBe(true);
-  });
   it.each(['INVALID_PHOTO_RECEIPT', 'PHOTO_RECEIPT_EXPIRED', 'PET_PHOTO_MISSING'])('reuploads photos after %s instead of reusing broken receipts', async (code) => {
     vi.stubEnv('VITE_APP_RUNTIME', 'production');
     vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
