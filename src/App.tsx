@@ -165,7 +165,7 @@ export default function App() {
   const photoIdRef = useRef<string>();
   const photoGenerationRef = useRef(0);
   const photoPreparationRef = useRef<PhotoPreparation>();
-  const playCompletionRef = useRef<{ requestId: string; petId: string; generation: number }>();
+  const playCompletionRef = useRef<{ requestId: string; petId: string; generation: number; interactionMethod?: PetInteractionMethod }>();
   const photoFeedbackGenerationRef = useRef(-1);
   const [favoritePending, setFavoritePending] = useState(false);
   const favoritePendingRef = useRef(false);
@@ -944,9 +944,9 @@ export default function App() {
     playCompletionRef.current = undefined;
   }
 
-  function beginPlayCompletion(method: PetInteractionMethod) {
+  function beginPlayPhotoRequest(method: PetInteractionMethod) {
     if (!selected || !preparedVisit?.requestId || preparedVisit.characterOnlyReason || busyRef.current || playCompletionRef.current) return;
-    // No photo request before the third accepted gesture; overlap its 900 ms reaction.
+    // The second accepted gesture starts the existing authorized request once.
     void loadRevealCard().catch(() => undefined);
     playCompletionRef.current = { requestId: preparedVisit.requestId, petId: selected.id, generation: photoGenerationRef.current + 1 };
     void handleFed(undefined, undefined, true, method, true);
@@ -957,14 +957,16 @@ export default function App() {
     if (!completion) { void handleFed(undefined, undefined, true, method); return; }
     const activeRoute = getCurrentRoute(routeStackRef.current);
     if (completion.generation !== photoGenerationRef.current || activeRoute.screen !== 'play' || activeRoute.petId !== completion.petId) return;
+    completion.interactionMethod = method;
     photoOpenRef.current = true;
     setPhotoOpen(true);
-    notifyPlayPhotoReady(preparedVisit?.method);
+    notifyPlayPhotoReady(preparedVisit?.method, method);
   }
 
-  function notifyPlayPhotoReady(method?: UnlockMethod) {
+  function notifyPlayPhotoReady(method?: UnlockMethod, interactionMethod?: PetInteractionMethod) {
     if (!photoOpenRef.current || !photoUrlRef.current || photoFeedbackGenerationRef.current === photoGenerationRef.current) return;
     photoFeedbackGenerationRef.current = photoGenerationRef.current;
+    trackProductEvent('play_complete', { access_method: method, interaction_method: playCompletionRef.current?.interactionMethod ?? interactionMethod });
     playSound('reveal');
     trackProductEvent('photo_reveal', { access_method: method });
   }
@@ -1482,14 +1484,19 @@ export default function App() {
       photoOpenRef.current = true;
       setPhotoOpen(true);
     }
+    let photoResponseReceived = false;
+    const refreshAfterAbandonedRequest = () => {
+      invalidateHouseSnapshot(); invalidateAlbum();
+      mineNeedsRefreshRef.current = true;
+      if (getCurrentRoute(routeStackRef.current).screen === 'home') void loadHouse(true);
+    };
     try {
       const result = activeVisit.ownerPhoto
         ? await openOwnerPhoto(activePet)
         : await revealPet(activePet, activeVisit.method ?? 'FREE', activeVisit.adSessionId, activeVisit.requestId, activeVisit.photoIntent);
+      photoResponseReceived = true;
       if (generation !== photoGenerationRef.current) {
-        invalidateHouseSnapshot(); invalidateAlbum();
-        mineNeedsRefreshRef.current = true;
-        if (getCurrentRoute(routeStackRef.current).screen === 'home') void loadHouse(true);
+        refreshAfterAbandonedRequest();
         return;
       }
       if ('allowance' in result) {
@@ -1528,10 +1535,14 @@ export default function App() {
       if (generation !== photoGenerationRef.current) return;
       photoUrlRef.current = displayUrl;
       setPhotoUrl(displayUrl); setToast('');
-      trackProductEvent('play_complete', { access_method: activeVisit.method, interaction_method: interactionMethod });
-      notifyPlayPhotoReady(activeVisit.method);
+      notifyPlayPhotoReady(activeVisit.method, interactionMethod);
     } catch (error) {
-      if (generation !== photoGenerationRef.current) return;
+      if (generation !== photoGenerationRef.current) {
+        // The record may have committed before a response/status read failed.
+        // Refresh that unknown outcome, but not an already-received image abort.
+        if (!photoResponseReceived) refreshAfterAbandonedRequest();
+        return;
+      }
       photoPreparationRef.current?.dispose();
       photoPreparationRef.current = undefined;
       applyErrorAllowance(error);
@@ -1840,8 +1851,8 @@ export default function App() {
   if (screen === 'play' && selected) return renderWithAppShell(
     <Suspense fallback={screenFallback}><PlayScene pet={selected} photoHint={preparedVisit?.photoIntent === 'collect' && !preparedVisit.ownerPhoto && !preparedVisit.characterOnlyReason
       ? preparedVisit.method === 'REWARDED' ? '받은 광고 보상으로 만나요. 티켓은 쓰지 않아요.'
-        : preparedVisit.method === 'FREE' || preparedVisit.method === 'SHARE' ? '새 사진을 만나면 티켓 1장을 써요' : undefined
-      : undefined} onInteractionComplete={beginPlayCompletion} onFed={finishPlayReaction} onSound={playSound} /></Suspense>,
+        : preparedVisit.method === 'FREE' || preparedVisit.method === 'SHARE' ? '두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요' : undefined
+      : undefined} onPhotoRequest={beginPlayPhotoRequest} onFed={finishPlayReaction} onSound={playSound} /></Suspense>,
   );
 
   return renderWithAppShell(

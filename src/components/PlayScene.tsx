@@ -39,10 +39,10 @@ function getTreatDragLift(event: ReactPointerEvent<HTMLElement>, drag: DragState
   return TREAT_DRAG_MAX_LIFT_Y * easedProgress;
 }
 
-export function PlayScene({ pet, photoHint, onInteractionComplete, onFed, onSound }: {
+export function PlayScene({ pet, photoHint, onPhotoRequest, onFed, onSound }: {
   pet: PetSummary;
   photoHint?: string;
-  onInteractionComplete?: (method: PetInteractionMethod) => void;
+  onPhotoRequest?: (method: PetInteractionMethod) => void;
   onFed: (method: PetInteractionMethod) => void;
   onSound: (effect: SoundEffect, variant?: number) => void;
 }) {
@@ -111,10 +111,10 @@ export function PlayScene({ pet, photoHint, onInteractionComplete, onFed, onSoun
     setHasPetInteraction(true);
     onSound('pet', next - 1);
     void playHaptic('pet');
+    if (next === 2) onPhotoRequest?.(method);
     if (next === 3) {
       completedRef.current = true;
       setPhase('done');
-      onInteractionComplete?.(method);
       timersRef.current.push(setTimeout(() => onFed(method), FINAL_REACTION_MS));
     }
   }

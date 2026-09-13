@@ -199,13 +199,13 @@ vi.mock('./components/PetArtwork', () => ({
 }));
 
 vi.mock('./components/PlayScene', () => ({
-  PlayScene: ({ pet, onFed, photoHint, onInteractionComplete }: { pet: typeof appHarness.submittedPet; onFed: (method: 'stroke' | 'tap' | 'keyboard') => void; photoHint?: string; onInteractionComplete?: (method: 'tap') => void }) => (
+  PlayScene: ({ pet, onFed, photoHint, onPhotoRequest }: { pet: typeof appHarness.submittedPet; onFed: (method: 'stroke' | 'tap' | 'keyboard') => void; photoHint?: string; onPhotoRequest?: (method: 'tap') => void }) => (
     <main data-testid="play-scene" data-pet-id={pet.id} data-status={pet.approvalStatus} data-design-sha256={(pet as Partial<AlbumPetSummary>).publishedDesign?.sha256}>
       {pet.name}와 노는 중
       {photoHint && <p>{photoHint}</p>}
       <button type="button" onClick={() => onFed('tap')}>간식 주기</button>
       <button type="button" onClick={() => undefined}>쓰다듬기 시작 신호</button>
-      <button type="button" onClick={() => onInteractionComplete?.('tap')}>세 번째 입력 신호</button>
+      <button type="button" onClick={() => onPhotoRequest?.('tap')}>두 번째 입력 신호</button>
     </main>
   ),
 }));
@@ -403,7 +403,7 @@ describe('App upload submission integration', () => {
     expect(screen.queryByRole('button', { name: /소리 (켜기|끄기)/ })).not.toBeInTheDocument();
   });
 
-  it('starts a new-photo commit on the third gesture before showing the modal at reaction end', async () => {
+  it('starts a new-photo commit on the second gesture before showing the modal at reaction end', async () => {
     const pet = collectedFriend({ unlockedPhotoCount: 0, albumPhotoId: undefined,
       collection: { collectedCount: 0, totalCount: 3, collectedToday: false, canCollectToday: true } });
     apiMocks.fetchHouse.mockResolvedValue({ pets: [pet] });
@@ -412,17 +412,58 @@ describe('App upload submission integration', () => {
     fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
     fireEvent.click(await screen.findByRole('button', { name: '쓰다듬기 시작 신호' }));
     expect(apiMocks.revealPet).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '세 번째 입력 신호' }));
+    fireEvent.click(screen.getByRole('button', { name: '두 번째 입력 신호' }));
     await waitFor(() => expect(photoBufferMocks.resolve).toHaveBeenCalledOnce());
     expect(apiMocks.revealPet).toHaveBeenCalledOnce();
     expect(screen.queryByRole('dialog', { name: '강아지 실사 사진' })).not.toBeInTheDocument();
+    expect(analyticsMocks.trackProductEvent.mock.calls.some(([event]) => event === 'play_complete')).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
     await waitFor(() => expect(screen.getByRole('dialog', { name: '강아지 실사 사진' })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: '세 번째 입력 신호' }));
+    expect(analyticsMocks.trackProductEvent.mock.calls.filter(([event]) => event === 'play_complete')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '두 번째 입력 신호' }));
     expect(apiMocks.revealPet).toHaveBeenCalledOnce();
   });
 
-  it('does not request an owner photo before the third input or after abandoning play', async () => {
+  it.each([false, true])('keeps a second-input commit after leaving without recording completed play, delayed=%s', async (delayed) => {
+    const pet = collectedFriend({ unlockedPhotoCount: 0, albumPhotoId: undefined,
+      collection: { collectedCount: 0, totalCount: 3, collectedToday: false, canCollectToday: true } });
+    const pending = deferred<ReturnType<typeof collectedPhotoResponse>>();
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [pet] });
+    apiMocks.revealPet.mockReturnValue(pending.promise);
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
+    fireEvent.click(await screen.findByRole('button', { name: '두 번째 입력 신호' }));
+    expect(apiMocks.revealPet).toHaveBeenCalledOnce();
+    if (!delayed) await act(async () => pending.resolve(collectedPhotoResponse(pet)));
+    act(() => appHarness.navigationHandlers?.onBack());
+    if (delayed) await act(async () => pending.resolve(collectedPhotoResponse(pet)));
+    await waitFor(() => expect(apiMocks.fetchHouse.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.queryByRole('dialog', { name: '강아지 실사 사진' })).not.toBeInTheDocument();
+    expect(analyticsMocks.trackProductEvent.mock.calls.some(([event]) => event === 'play_complete' || event === 'photo_reveal')).toBe(false);
+    expect(apiMocks.revealPet).toHaveBeenCalledOnce();
+    expect(photoBufferMocks.dispose).toHaveBeenCalledTimes(delayed ? 0 : 1);
+  });
+
+  it('refreshes an uncertain late API failure after leaving without reopening or logging completion', async () => {
+    const pet = collectedFriend({ unlockedPhotoCount: 0, albumPhotoId: undefined,
+      collection: { collectedCount: 0, totalCount: 3, collectedToday: false, canCollectToday: true } });
+    const pending = deferred<ReturnType<typeof collectedPhotoResponse>>();
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [pet] });
+    apiMocks.revealPet.mockReturnValue(pending.promise);
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
+    fireEvent.click(await screen.findByRole('button', { name: '두 번째 입력 신호' }));
+    act(() => appHarness.navigationHandlers?.onBack());
+    const readsBeforeRejection = apiMocks.fetchHouse.mock.calls.length;
+    await act(async () => pending.reject(new Error('사진 요청 결과를 확인하지 못했어요.')));
+    await waitFor(() => expect(apiMocks.fetchHouse.mock.calls.length).toBeGreaterThan(readsBeforeRejection));
+    expect(screen.queryByRole('dialog', { name: '강아지 실사 사진' })).not.toBeInTheDocument();
+    expect(screen.queryByText('사진 요청 결과를 확인하지 못했어요.')).not.toBeInTheDocument();
+    expect(analyticsMocks.trackProductEvent.mock.calls.some(([event]) => event === 'play_complete' || event === 'photo_reveal')).toBe(false);
+    expect(apiMocks.revealPet).toHaveBeenCalledOnce();
+  });
+
+  it('does not request an owner photo before the second input or after abandoning play', async () => {
     const pet = { ...collectedFriend(), id: 'prefetch-owner', isMine: true, approvalStatus: 'approved' as const, ownerPhotoAvailable: true };
     apiMocks.fetchHouse.mockResolvedValue({ pets: [], ownerBonusPet: pet });
     render(<App />);
@@ -444,7 +485,7 @@ describe('App upload submission integration', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
     fireEvent.click(await screen.findByRole('button', { name: '쓰다듬기 시작 신호' }));
-    fireEvent.click(screen.getByRole('button', { name: '세 번째 입력 신호' }));
+    fireEvent.click(screen.getByRole('button', { name: '두 번째 입력 신호' }));
     await waitFor(() => expect(photoBufferMocks.resolve).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
     expect(await screen.findByRole('dialog', { name: '강아지 실사 사진' })).toBeInTheDocument();
@@ -652,7 +693,7 @@ describe('App upload submission integration', () => {
     fireEvent.click(screen.getByRole('button', { name: '사진 닫기' }));
     fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
     expect(await screen.findByTestId('play-scene')).toBeInTheDocument();
-    expect(screen.queryByText('새 사진을 만나면 티켓 1장을 써요')).not.toBeInTheDocument();
+    expect(screen.queryByText('두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요')).not.toBeInTheDocument();
     expect(apiMocks.revealPet).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
     await waitFor(() => expect(screen.getByTestId('revealed-photo-url')).toHaveTextContent('free-reopen.jpg'));
@@ -694,7 +735,7 @@ describe('App upload submission integration', () => {
     apiMocks.revealPet.mockResolvedValueOnce(collected).mockResolvedValueOnce({ ...collected, alreadyRevealed: true });
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
-    expect(await screen.findByText('새 사진을 만나면 티켓 1장을 써요')).toBeInTheDocument();
+    expect(await screen.findByText('두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요')).toBeInTheDocument();
     expect(apiMocks.revealPet).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog', { name: '강아지 실사 사진' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
@@ -708,7 +749,7 @@ describe('App upload submission integration', () => {
     fireEvent.click(screen.getByRole('button', { name: '사진 닫기' }));
     fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
     expect(await screen.findByTestId('play-scene')).toBeInTheDocument();
-    expect(screen.queryByText('새 사진을 만나면 티켓 1장을 써요')).not.toBeInTheDocument();
+    expect(screen.queryByText('두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
     await waitFor(() => expect(screen.getByTestId('revealed-photo-url')).toHaveTextContent('unseen-photo.jpg'));
     expect(apiMocks.revealPet.mock.calls.map((call) => call[4])).toEqual(['collect', 'replay']);
@@ -739,7 +780,7 @@ describe('App upload submission integration', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
     expect(await screen.findByTestId('play-scene')).toBeInTheDocument();
-    expect(screen.queryByText('새 사진을 만나면 티켓 1장을 써요')).not.toBeInTheDocument();
+    expect(screen.queryByText('두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요')).not.toBeInTheDocument();
     const clock = vi.spyOn(Date, 'now').mockReturnValue(chargeAt + 1_000);
     act(() => window.dispatchEvent(new Event('focus')));
     await waitFor(() => expect(apiMocks.fetchHouse).toHaveBeenCalledTimes(2));
@@ -760,7 +801,7 @@ describe('App upload submission integration', () => {
     fireEvent.click(await screen.findByRole('button', { name: '보리 옮기기 또는 선택' }));
     expect(await screen.findByTestId('play-scene')).toHaveAttribute('data-status', 'pending');
     expect(apiMocks.openOwnerPhoto).not.toHaveBeenCalled();
-    expect(screen.queryByText('새 사진을 만나면 티켓 1장을 써요')).not.toBeInTheDocument();
+    expect(screen.queryByText('두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
     await waitFor(() => expect(screen.getByTestId('revealed-photo-url')).toHaveTextContent('mine-photo.jpg'));
     expect(apiMocks.openOwnerPhoto).toHaveBeenCalledOnce();
@@ -1263,7 +1304,7 @@ describe('App upload submission integration', () => {
       fireEvent.click(await screen.findByRole('button', { name: '광고 보고 이 친구 만나기' }));
       await screen.findByTestId('play-scene');
       expect(screen.getByText('받은 광고 보상으로 만나요. 티켓은 쓰지 않아요.')).toBeInTheDocument();
-      expect(screen.queryByText('새 사진을 만나면 티켓 1장을 써요')).not.toBeInTheDocument();
+      expect(screen.queryByText('두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요')).not.toBeInTheDocument();
       expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce();
       expect(apiMocks.revealPet).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));

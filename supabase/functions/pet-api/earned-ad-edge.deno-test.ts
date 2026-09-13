@@ -27,6 +27,9 @@ Deno.test('earned ad credits remain usable through the actual Edge handler when 
   let availableCredit = false;
   let missingAlbumStatus = false;
   let allowStart = false;
+  let albumStateResponseGate: Promise<void> | undefined;
+  let albumReadObserver: (() => void) | undefined;
+  let rewardReadObserver: (() => void) | undefined;
   const expectedOwner = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
     new TextEncoder().encode(`${salt}:${rawOwner}`)))).map((value) => value.toString(16).padStart(2, '0')).join('');
   const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
@@ -60,12 +63,16 @@ Deno.test('earned ad credits remain usable through the actual Edge handler when 
           reusedRequest, alreadyRevealed: reusedRequest, dailyProgress: progress,
           revisitUntil: new Date(Date.now() + 3_600_000).toISOString() }));
       }
-      if (name === 'get_pet_album_state') return Promise.resolve(response([{ petId, isFavorite: false,
-        unlockedPhotoCount: 1, hasUnseenPhotos: true, albumPhotoId: photoId, favoriteCount: 0,
-        collection: { collectedCount: 1, totalCount: 2, collectedToday: true, canCollectToday: false } }]));
+      if (name === 'get_pet_album_state') {
+        albumReadObserver?.();
+        return Promise.resolve(albumStateResponseGate).then(() => response([{ petId, isFavorite: false,
+          unlockedPhotoCount: 1, hasUnseenPhotos: true, albumPhotoId: photoId, favoriteCount: 0,
+          collection: { collectedCount: 1, totalCount: 2, collectedToday: true, canCollectToday: false } }]));
+      }
       if (name === 'get_pet_free_allowance') return Promise.resolve(response({ free_remaining: 0,
         next_free_at: new Date(Date.now() + 3_600_000).toISOString() }));
       if (name === 'get_pet_reward_state' || name === 'get_pet_album_reward_state') {
+        rewardReadObserver?.();
         if (name === 'get_pet_album_reward_state' && missingAlbumStatus) {
           return Promise.resolve(response({ code: 'PGRST202', message: 'Function is not in the schema cache' }, 404));
         }
@@ -103,6 +110,7 @@ Deno.test('earned ad credits remain usable through the actual Edge handler when 
     const reset = () => {
       calls = []; recordError = undefined; reusedRequest = false;
       availableCredit = false; missingAlbumStatus = false; allowStart = false;
+      albumStateResponseGate = undefined; albumReadObserver = undefined; rewardReadObserver = undefined;
       Deno.env.set('AIT_REWARDED_ADS_ENABLED', 'false');
     };
     const records = () => calls.filter((call) => call.path.endsWith('/record_pet_photo_unlock'));
@@ -122,6 +130,43 @@ Deno.test('earned ad credits remain usable through the actual Edge handler when 
       assert.equal(retry.body.reusedRequest, true);
       assert.deepEqual(records()[0].body, records()[1].body);
       assert.equal(calls.some((call) => /complete_pet_ad_reward|start_pet.*ad_reward/.test(call.path)), false);
+    });
+    await t.step('post-record reward reads overlap the pending album state and retain the public response', async () => {
+      reset();
+      const albumState = Promise.withResolvers<void>();
+      const albumRead = Promise.withResolvers<void>();
+      const rewardRead = Promise.withResolvers<void>();
+      albumStateResponseGate = albumState.promise;
+      albumReadObserver = albumRead.resolve;
+      rewardReadObserver = rewardRead.resolve;
+      let responseCompleted = false;
+      const pending = request().then((result) => { responseCompleted = true; return result; });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([Promise.all([albumRead.promise, rewardRead.promise]), new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('Reward read waited for the blocked album state')), 2_000);
+        })]);
+        const recordIndex = calls.findIndex((call) => call.path.endsWith('/record_pet_photo_unlock'));
+        const stateIndex = calls.findIndex((call) => call.path.endsWith('/get_pet_album_state'));
+        const rewardIndex = calls.findIndex((call) => call.path.endsWith('/get_pet_album_reward_state'));
+        assert.ok(recordIndex >= 0 && stateIndex > recordIndex && rewardIndex > recordIndex);
+        assert.equal(responseCompleted, false);
+        albumState.resolve();
+        const result = await pending;
+        assert.equal(result.status, 200);
+        assert.equal(result.body.photoId, photoId);
+        assert.equal(result.body.unlockedPhotoCount, 1);
+        assert.deepEqual(result.body.dailyProgress, progress);
+        assert.deepEqual(result.body.allowance, result.body.rewardStatus.allowance);
+        assert.equal(result.body.rewardStatus.capabilities.ads, false);
+        assert.equal(records().length, 1);
+        assert.equal(calls.filter((call) => call.path.endsWith('/get_pet_album_reward_state')).length, 1);
+        assert.equal(calls.filter((call) => call.path.endsWith('/get_pet_free_allowance')).length, 1);
+      } finally {
+        clearTimeout(timeout);
+        albumState.resolve();
+        await pending;
+      }
     });
     await t.step('SQL denial for wrong owner, dog, or incomplete credit never returns a photo URL', async () => {
       for (const extra of [{ adSessionId: requestId }, { petId: requestId }, { userHash: 'different-owner' }]) {

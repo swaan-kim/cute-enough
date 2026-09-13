@@ -9,6 +9,16 @@ const authorized = { petId, photoId, storagePath: 'private-owner/photo.jpg' };
 const state = [{ petId, isFavorite: false, unlockedPhotoCount: 1, hasUnseenPhotos: true, albumPhotoId: photoId, favoriteCount: 0 }];
 const dailyProgress = { date: '2026-09-05', metPetIds: [petId], metCount: 1, totalCount: 4, completed: false };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function fixture(overrides: Record<string, unknown> = {}) {
   const order: string[] = [];
   const replies: Record<string, unknown> = {
@@ -24,7 +34,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
   };
   const rpc = vi.fn(async (name: string, _args: Record<string, unknown>) => {
     order.push(name);
-    const data = replies[name];
+    const data = await replies[name];
     if (data instanceof Error) return { data: null, error: { message: data.message } };
     return { data, error: null };
   });
@@ -220,6 +230,100 @@ describe('collection v2 photo intent, free replay and exact captions', () => {
 
   it('maps daily collection limit to a Korean no-extra-ad guidance', () => {
     expect(albumRpcError({ message: 'DAILY_PHOTO_ALREADY_COLLECTED' })).toMatchObject({ status: 409, code: 'DAILY_PHOTO_ALREADY_COLLECTED' });
+  });
+});
+
+describe('post-record album and reward reads', () => {
+  it.each(['collect', 'replay'])('joins independent %s reads only after the record succeeds', async (photoIntent) => {
+    const recordName = photoIntent === 'collect' ? 'record_pet_photo_unlock' : 'record_pet_photo_replay';
+    const record = deferred<unknown>();
+    const albumState = deferred<unknown>();
+    const rewardStarted = deferred<void>();
+    const reward = deferred<void>();
+    const { api, order } = fixture({ [recordName]: record.promise, get_pet_album_state: albumState.promise });
+    const afterRecord = vi.fn(() => {
+      order.push('reward_status');
+      rewardStarted.resolve();
+      return reward.promise;
+    });
+    let completed = false;
+    const pending = api.reveal('verified-user', {
+      petId, requestId, albumVersion: 2, photoIntent, unlockMethod: 'FREE',
+    }, '2026-09-05', afterRecord).then((result) => { completed = true; return result; });
+
+    await vi.waitFor(() => expect(order).toContain(recordName));
+    expect(order).toEqual([photoIntent === 'collect' ? 'prepare_pet_photo_unlock' : 'prepare_pet_photo_replay', 'sign', recordName]);
+    expect(afterRecord).not.toHaveBeenCalled();
+    record.resolve({ photoId, dailyProgress, revealDate: '2026-09-05', reusedRequest: true });
+    await rewardStarted.promise;
+    expect(order.slice(-2)).toEqual(['get_pet_album_state', 'reward_status']);
+    expect(completed).toBe(false);
+    albumState.resolve(state);
+    await vi.waitFor(() => expect(afterRecord).toHaveBeenCalledTimes(1));
+    expect(completed).toBe(false);
+    reward.resolve();
+    expect(await pending).toMatchObject({ photoId, petId, dailyProgress, unlockedPhotoCount: 1, reusedRequest: true });
+    expect(await pending).not.toHaveProperty('afterRecord');
+  });
+
+  it.each([
+    ['collect', 'prepare_pet_photo_unlock'], ['collect', 'sign'], ['collect', 'record_pet_photo_unlock'],
+    ['replay', 'prepare_pet_photo_replay'], ['replay', 'sign'], ['replay', 'record_pet_photo_replay'],
+  ])('does not read reward status if %s fails at %s', async (photoIntent, failurePoint) => {
+    const { api, rpc, sign } = fixture({ [failurePoint]: new Error('ALBUM_PHOTO_UNAVAILABLE') });
+    if (failurePoint === 'sign') sign.mockResolvedValueOnce({ data: { signedUrl: '' }, error: { message: 'offline' } });
+    const afterRecord = vi.fn(async () => {});
+    await expect(api.reveal('verified-user', {
+      petId, requestId, albumVersion: 2, photoIntent, unlockMethod: 'FREE',
+    }, '2026-09-05', afterRecord)).rejects.toMatchObject({
+      code: failurePoint === 'sign' ? 'PHOTO_SIGNING_FAILED' : 'ALBUM_PHOTO_UNAVAILABLE',
+    });
+    expect(afterRecord).not.toHaveBeenCalled();
+    expect(rpc.mock.calls.some(([name]) => name === 'get_pet_album_state')).toBe(false);
+  });
+
+  it.each(['collect', 'replay'])('keeps %s retry photo recovery and today progress ahead of reward reads', async (photoIntent) => {
+    const recordName = photoIntent === 'collect' ? 'record_pet_photo_unlock' : 'record_pet_photo_replay';
+    const { api, order } = fixture({
+      [recordName]: { photoId: requestId, dailyProgress, revealDate: '2026-09-04', reusedRequest: true },
+      authorize_pet_album_photo: { ...authorized, photoId: requestId, photoCaption: '다시 만난 순간' },
+    });
+    const afterRecord = vi.fn(async () => { order.push('reward_status'); });
+    const result = await api.reveal('verified-user', {
+      petId, requestId, albumVersion: 2, photoIntent, unlockMethod: 'FREE',
+    }, '2026-09-05', afterRecord);
+    expect(order.slice(0, 5)).toEqual([
+      photoIntent === 'collect' ? 'prepare_pet_photo_unlock' : 'prepare_pet_photo_replay',
+      'sign', recordName, 'authorize_pet_album_photo', 'sign',
+    ]);
+    expect(order.indexOf('reward_status')).toBeGreaterThan(order.indexOf('mark_daily_house_pet_met'));
+    expect(afterRecord).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ photoId: requestId, photoCaption: '다시 만난 순간', dailyProgress, reusedRequest: true });
+  });
+
+  it.each(['collect', 'replay'])('propagates a failed %s reward read without repeating its record', async (photoIntent) => {
+    const { api, rpc } = fixture();
+    const failure = new Error('reward read unavailable');
+    await expect(api.reveal('verified-user', {
+      petId, requestId, albumVersion: 2, photoIntent, unlockMethod: 'FREE',
+    }, '2026-09-05', async () => { throw failure; })).rejects.toBe(failure);
+    expect(rpc.mock.calls.filter(([name]) => name.startsWith('record_pet_photo_'))).toHaveLength(1);
+  });
+
+  it.each(['collect', 'replay'])('preserves the album error when both %s reads fail', async (photoIntent) => {
+    const { api } = fixture({ get_pet_album_state: new Error('ALBUM_PHOTO_UNAVAILABLE') });
+    await expect(api.reveal('verified-user', {
+      petId, requestId, albumVersion: 2, photoIntent, unlockMethod: 'FREE',
+    }, '2026-09-05', async () => { throw new Error('reward read unavailable'); }))
+      .rejects.toMatchObject({ code: 'ALBUM_PHOTO_UNAVAILABLE' });
+  });
+
+  it('leaves legacy revisit without a record callback for its existing reward-status fallback', async () => {
+    const { api } = fixture();
+    const afterRecord = vi.fn(async () => {});
+    expect(await api.reveal('verified-user', { petId, revisit: true }, '2026-09-05', afterRecord))
+      .toMatchObject({ photoId, petId, dailyProgress, unlockedPhotoCount: 1 });
+    expect(afterRecord).not.toHaveBeenCalled();
   });
 });
 

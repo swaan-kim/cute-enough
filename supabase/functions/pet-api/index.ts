@@ -802,8 +802,12 @@ Deno.serve(async (request) => {
         // The ad switch gates new starts, not an already earned credit. The
         // atomic photo RPC verifies its owner, dog and completed status before
         // consuming it once; replay never consumes an ad credit.
-        const result = await albumApi.reveal(ownerHash, body, date);
-        const rewardStatus = await currentRewardStatus(ownerHash, albumEnabled);
+        let recordedRewardStatus: Awaited<ReturnType<typeof currentRewardStatus>> | undefined;
+        const result = await albumApi.reveal(ownerHash, body, date, async () => {
+          recordedRewardStatus = await currentRewardStatus(ownerHash, albumEnabled);
+        });
+        // Legacy revisits use the photo path without a new record callback.
+        const rewardStatus = recordedRewardStatus ?? await currentRewardStatus(ownerHash, albumEnabled);
         return reply({ ...result, allowance: rewardStatus.allowance, rewardStatus });
       }
       if (apiVersion === 2 && body.requestId !== undefined && body.revisit !== true && body.unlockMethod !== 'UPLOAD') {

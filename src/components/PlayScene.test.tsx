@@ -40,20 +40,20 @@ beforeEach(() => hapticMocks.playHaptic.mockClear());
 
 describe('PlayScene completion', () => {
   it('shows a small ticket hint only when entering a new-photo encounter', () => {
-    const { rerender } = render(<TDSMobileAITProvider brandPrimaryColor="#FF6B8A"><PlayScene pet={pet} photoHint="새 사진을 만나면 티켓 1장을 써요" onFed={() => undefined} onSound={() => undefined} /></TDSMobileAITProvider>);
-    expect(screen.getByText('새 사진을 만나면 티켓 1장을 써요')).toHaveClass('play-photo-hint');
+    const { rerender } = render(<TDSMobileAITProvider brandPrimaryColor="#FF6B8A"><PlayScene pet={pet} photoHint="두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요" onFed={() => undefined} onSound={() => undefined} /></TDSMobileAITProvider>);
+    expect(screen.getByText('두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요')).toHaveClass('play-photo-hint');
     rerender(<TDSMobileAITProvider brandPrimaryColor="#FF6B8A"><PlayScene pet={pet} onFed={() => undefined} onSound={() => undefined} /></TDSMobileAITProvider>);
-    expect(screen.queryByText('새 사진을 만나면 티켓 1장을 써요')).not.toBeInTheDocument();
+    expect(screen.queryByText('두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요')).not.toBeInTheDocument();
   });
 
-  it('requests on the third input and opens only after 900 ms exactly once in StrictMode', () => {
+  it('requests on the second input and opens only after 900 ms exactly once in StrictMode', () => {
     vi.useFakeTimers();
-    const onInteractionComplete = vi.fn();
+    const onPhotoRequest = vi.fn();
     const onFed = vi.fn();
     render(
       <StrictMode>
         <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
-          <PlayScene pet={pet} onInteractionComplete={onInteractionComplete} onFed={onFed} onSound={() => undefined} />
+          <PlayScene pet={pet} onPhotoRequest={onPhotoRequest} onFed={onFed} onSound={() => undefined} />
         </TDSMobileAITProvider>
       </StrictMode>,
     );
@@ -61,22 +61,23 @@ describe('PlayScene completion', () => {
     fireEvent.click(screen.getByRole('button', { name: '고구마 간식' }));
     fireEvent.click(screen.getByRole('button', { name: '하늘에게 간식 주기' }));
     act(() => vi.advanceTimersByTime(949));
-    expect(onInteractionComplete).not.toHaveBeenCalled();
+    expect(onPhotoRequest).not.toHaveBeenCalled();
     expect(onFed).not.toHaveBeenCalled();
     act(() => vi.advanceTimersByTime(1));
     fireEvent.keyDown(screen.getByRole('button', { name: /하늘 쓰다듬기/ }), { key: 'Enter' });
+    expect(onPhotoRequest).not.toHaveBeenCalled();
     fireEvent.keyDown(screen.getByRole('button', { name: /하늘 쓰다듬기/ }), { key: 'Enter' });
-    expect(onInteractionComplete).not.toHaveBeenCalled();
+    expect(onPhotoRequest).toHaveBeenCalledOnce();
     fireEvent.keyDown(screen.getByRole('button', { name: /하늘 쓰다듬기/ }), { key: 'Enter' });
-    expect(onInteractionComplete).toHaveBeenCalledOnce();
-    expect(onInteractionComplete).toHaveBeenCalledWith('keyboard');
+    expect(onPhotoRequest).toHaveBeenCalledOnce();
+    expect(onPhotoRequest).toHaveBeenCalledWith('keyboard');
     expect(onFed).not.toHaveBeenCalled();
     fireEvent.keyDown(screen.getByRole('button', { name: '하늘 교감 완료' }), { key: 'Enter' });
     act(() => vi.advanceTimersByTime(899));
     expect(onFed).not.toHaveBeenCalled();
     act(() => vi.advanceTimersByTime(1));
 
-    expect(onInteractionComplete).toHaveBeenCalledOnce();
+    expect(onPhotoRequest).toHaveBeenCalledOnce();
     expect(onFed).toHaveBeenCalledOnce();
     expect(onFed).toHaveBeenCalledWith('keyboard');
     expect(hapticMocks.playHaptic.mock.calls).toEqual([
@@ -89,11 +90,11 @@ describe('PlayScene completion', () => {
 
   it('fills one heart per cumulative stroke and reports a stroke after three strokes', () => {
     vi.useFakeTimers();
-    const onInteractionComplete = vi.fn();
+    const onPhotoRequest = vi.fn();
     const onFed = vi.fn();
     const { container } = render(
       <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
-        <PlayScene pet={pet} onInteractionComplete={onInteractionComplete} onFed={onFed} onSound={() => undefined} />
+        <PlayScene pet={pet} onPhotoRequest={onPhotoRequest} onFed={onFed} onSound={() => undefined} />
       </TDSMobileAITProvider>,
     );
 
@@ -119,7 +120,7 @@ describe('PlayScene completion', () => {
     expect(dog).toHaveClass('is-pet-reacting');
     act(() => vi.advanceTimersByTime(1));
     expect(dog).not.toHaveClass('is-pet-reacting');
-    expect(onInteractionComplete).not.toHaveBeenCalled();
+    expect(onPhotoRequest).not.toHaveBeenCalled();
 
     firePointer(dog, 'pointerdown', { pointerId: 12, clientX: 80, clientY: 80 });
     firePointer(dog, 'pointermove', { pointerId: 12, clientX: 155, clientY: 80 });
@@ -132,8 +133,8 @@ describe('PlayScene completion', () => {
     firePointer(dog, 'pointerup', { pointerId: 13, clientX: 125, clientY: 125 });
     expect(dog).toHaveAttribute('aria-label', '하늘 교감 완료');
     expect(screen.getByLabelText('쓰다듬기 3/3')).toBeInTheDocument();
-    expect(onInteractionComplete).toHaveBeenCalledOnce();
-    expect(onInteractionComplete).toHaveBeenCalledWith('stroke');
+    expect(onPhotoRequest).toHaveBeenCalledOnce();
+    expect(onPhotoRequest).toHaveBeenCalledWith('stroke');
     expect(onFed).not.toHaveBeenCalled();
     act(() => vi.advanceTimersByTime(899));
     expect(dog).toHaveClass('is-pet-reacting');
@@ -146,11 +147,11 @@ describe('PlayScene completion', () => {
 
   it('counts a short movement as one tap, restarts reactions, and ignores a cancelled pointer', () => {
     vi.useFakeTimers();
-    const onInteractionComplete = vi.fn();
+    const onPhotoRequest = vi.fn();
     const onFed = vi.fn();
     const { container } = render(
       <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
-        <PlayScene pet={pet} onInteractionComplete={onInteractionComplete} onFed={onFed} onSound={() => undefined} />
+        <PlayScene pet={pet} onPhotoRequest={onPhotoRequest} onFed={onFed} onSound={() => undefined} />
       </TDSMobileAITProvider>,
     );
 
@@ -186,10 +187,10 @@ describe('PlayScene completion', () => {
     expect(container.querySelector('.feed-zone')).toHaveClass('pet-reaction-b');
 
     firePointer(dog, 'pointerdown', { pointerId: 23, clientX: 60, clientY: 60 });
-    expect(onInteractionComplete).not.toHaveBeenCalled();
+    expect(onPhotoRequest).toHaveBeenCalledOnce();
     firePointer(dog, 'pointerup', { pointerId: 23, clientX: 60, clientY: 60 });
-    expect(onInteractionComplete).toHaveBeenCalledOnce();
-    expect(onInteractionComplete).toHaveBeenCalledWith('tap');
+    expect(onPhotoRequest).toHaveBeenCalledOnce();
+    expect(onPhotoRequest).toHaveBeenCalledWith('tap');
     expect(onFed).not.toHaveBeenCalled();
     act(() => vi.advanceTimersByTime(900));
 
@@ -199,11 +200,11 @@ describe('PlayScene completion', () => {
 
   it('never completes when unmounted while eating', () => {
     vi.useFakeTimers();
-    const onInteractionComplete = vi.fn();
+    const onPhotoRequest = vi.fn();
     const onFed = vi.fn();
     const { unmount } = render(
       <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
-        <PlayScene pet={pet} onInteractionComplete={onInteractionComplete} onFed={onFed} onSound={() => undefined} />
+        <PlayScene pet={pet} onPhotoRequest={onPhotoRequest} onFed={onFed} onSound={() => undefined} />
       </TDSMobileAITProvider>,
     );
 
@@ -213,17 +214,17 @@ describe('PlayScene completion', () => {
     unmount();
     act(() => vi.advanceTimersByTime(1000));
 
-    expect(onInteractionComplete).not.toHaveBeenCalled();
+    expect(onPhotoRequest).not.toHaveBeenCalled();
     expect(onFed).not.toHaveBeenCalled();
   });
 
   it('keeps the immediate completion signal but cancels the photo callback when unmounted during the reaction', () => {
     vi.useFakeTimers();
-    const onInteractionComplete = vi.fn();
+    const onPhotoRequest = vi.fn();
     const onFed = vi.fn();
     const { unmount } = render(
       <TDSMobileAITProvider brandPrimaryColor="#FF6B8A">
-        <PlayScene pet={pet} onInteractionComplete={onInteractionComplete} onFed={onFed} onSound={() => undefined} />
+        <PlayScene pet={pet} onPhotoRequest={onPhotoRequest} onFed={onFed} onSound={() => undefined} />
       </TDSMobileAITProvider>,
     );
 
@@ -231,12 +232,12 @@ describe('PlayScene completion', () => {
     fireEvent.click(screen.getByRole('button', { name: '하늘에게 간식 주기' }));
     act(() => vi.advanceTimersByTime(950));
     for (let i = 0; i < 3; i++) fireEvent.keyDown(screen.getByRole('button', { name: /하늘 쓰다듬기/ }), { key: ' ' });
-    expect(onInteractionComplete).toHaveBeenCalledOnce();
-    expect(onInteractionComplete).toHaveBeenCalledWith('keyboard');
+    expect(onPhotoRequest).toHaveBeenCalledOnce();
+    expect(onPhotoRequest).toHaveBeenCalledWith('keyboard');
     unmount();
     act(() => vi.advanceTimersByTime(1000));
 
-    expect(onInteractionComplete).toHaveBeenCalledOnce();
+    expect(onPhotoRequest).toHaveBeenCalledOnce();
     expect(onFed).not.toHaveBeenCalled();
   });
 

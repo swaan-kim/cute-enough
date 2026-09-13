@@ -8,6 +8,7 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 type Body = Record<string, any>;
 type Call = { action: string; body: Body };
 type Session = { petId: string; earned: boolean; cancelled: boolean; consumed: boolean };
+export type FlowTiming = { action: string; at: number; apiAction?: string; loading?: boolean; method?: string };
 
 export class FlowServer {
   userHash = 'browser-flow-fixture-user';
@@ -20,6 +21,10 @@ export class FlowServer {
   grantCount = 0;
   completionCount = 0;
   photoDelayMs = 0;
+  photoApiDelayMs = 0;
+  // Local comparison only: change the served module, never production source.
+  photoRequestInput: 2 | 3 = 2;
+  baselineTransforms = 0;
   prepareDelayMs = 0;
   failPhoto = false;
   sessions = new Map<string, Session>();
@@ -142,34 +147,103 @@ export class FlowServer {
   async install(page: Page) {
     page.on('pageerror', (error) => this.errors.push(error.message));
     await page.addInitScript((userHash) => { Object.assign(window, { __nativeUserHash: userHash }); }, this.userHash);
-    // Observe browser timing, without replacing the production API behavior.
+    // Browser-only stage timings. These wrappers retain the real fetch/blob/decode behavior.
     await page.addInitScript(() => {
-      const log: Array<{ action: string; at: number; body?: unknown; loading?: boolean }> = [];
+      const log: Array<{ action: string; at: number; apiAction?: string; loading?: boolean; method?: string }> = [];
       Object.assign(window, { __flowTiming: log });
       const original = window.fetch;
-      window.fetch = (input, init) => {
+      const photoBlobs = new WeakMap<Blob, string>();
+      const photoUrls = new Map<string, string>();
+      window.fetch = async (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        let body: Record<string, unknown> | undefined;
         if (typeof init?.body === 'string' && String(input).includes('/functions/v1/pet-api')) {
-          const body = JSON.parse(init.body); log.push({ action: body.action, at: performance.now(), body });
+          body = JSON.parse(init.body); log.push({ action: String(body!.action), at: performance.now() });
         }
-        return original(input, init);
+        const photo = url.includes('/e2e-photo/');
+        if (photo) log.push({ action: 'download-start', at: performance.now() });
+        const response = await original(input, init);
+        if (body) log.push({ action: 'api-response', apiAction: String(body.action), at: performance.now() });
+        if (photo) {
+          const originalBlob = response.blob.bind(response);
+          response.blob = async () => {
+            const blob = await originalBlob();
+            photoBlobs.set(blob, url);
+            log.push({ action: 'download-complete', at: performance.now() });
+            return blob;
+          };
+        }
+        return response;
+      };
+      const originalObjectUrl = URL.createObjectURL;
+      URL.createObjectURL = (object) => {
+        const objectUrl = originalObjectUrl(object);
+        const source = object instanceof Blob ? photoBlobs.get(object) : undefined;
+        if (source) photoUrls.set(objectUrl, source);
+        return objectUrl;
+      };
+      const originalDecode = HTMLImageElement.prototype.decode;
+      HTMLImageElement.prototype.decode = async function () {
+        const url = photoUrls.get(this.src);
+        if (url) log.push({ action: 'decode-start', at: performance.now() });
+        await originalDecode.call(this);
+        if (url) log.push({ action: 'decode-complete', at: performance.now() });
+      };
+      const recordInput = (event: Event, method: string) => {
+        const target = event.target instanceof Element ? event.target.closest('.feed-zone') : null;
+        const completed = target?.getAttribute('aria-label')?.match(/쓰다듬기, ([012])번 완료/);
+        if (completed) log.push({ action: ['first-input', 'second-input', 'third-input'][Number(completed[1])], at: performance.now(), method });
       };
       document.addEventListener('pointerup', (event) => {
-        const target = event.target instanceof Element ? event.target.closest('.feed-zone') : null;
-        if (target?.getAttribute('aria-label')?.includes('2번 완료')) log.push({ action: 'third-input', at: performance.now() });
+        recordInput(event, 'pointer');
+      }, true);
+      document.addEventListener('keydown', (event) => {
+        if (!event.repeat && (event.key === 'Enter' || event.key === ' ')) recordInput(event, 'keyboard');
+      }, true);
+      const visibleModals = new WeakSet<Element>();
+      const visiblePhotos = new WeakSet<Element>();
+      const recordVisiblePhoto = (image: HTMLImageElement) => {
+        if (!image.matches('.photo-frame img') || !photoUrls.has(image.src)) return;
+        if (image.complete && image.naturalWidth > 0 && !visiblePhotos.has(image)) {
+          visiblePhotos.add(image);
+          log.push({ action: 'photo-visible', at: performance.now() });
+        }
+      };
+      document.addEventListener('load', (event) => {
+        if (event.target instanceof HTMLImageElement && event.target.closest('[aria-label="강아지 실사 사진"]')) recordVisiblePhoto(event.target);
       }, true);
       const observer = new MutationObserver(() => {
-        if (document.querySelector('[aria-label="강아지 실사 사진"]') && log.at(-1)?.action !== 'modal-visible') {
-          if (log.some((entry) => entry.action === 'third-input')) log.push({ action: 'modal-visible', at: performance.now(),
-            loading: Boolean(document.querySelector('[aria-label="강아지 실사 사진"] .photo-skeleton')) });
+        const modal = document.querySelector('[aria-label="강아지 실사 사진"]');
+        if (modal && !visibleModals.has(modal)) {
+          visibleModals.add(modal);
+          log.push({ action: 'modal-visible', at: performance.now(), loading: Boolean(modal.querySelector('.photo-skeleton')) });
         }
+        modal?.querySelectorAll<HTMLImageElement>('img').forEach(recordVisiblePhoto);
       });
       observer.observe(document, { subtree: true, childList: true });
     });
     await page.route('**/*', async (route) => {
       const url = new URL(route.request().url());
       if (url.origin === 'http://127.0.0.1:4179') {
+        if (this.photoRequestInput === 3 && url.pathname === '/src/components/PlayScene.tsx') {
+          const response = await route.fetch();
+          const source = await response.text();
+          const trigger = 'if (next === 2) onPhotoRequest?.(method);';
+          expect(source.split(trigger)).toHaveLength(2);
+          this.baselineTransforms++;
+          await route.fulfill({ response, body: source.replace(trigger, 'if (next === 3) onPhotoRequest?.(method);') });
+          return;
+        }
         if (url.pathname === '/e2e-api/functions/v1/pet-api') {
-          try { await route.fulfill({ json: await this.answer(route.request().postDataJSON()) }); }
+          try {
+            const body = route.request().postDataJSON();
+            const result = await this.answer(body);
+            // Commit first, then hold the response to exercise leaving an in-flight request.
+            if (this.photoApiDelayMs && ['reveal', 'ownerPhoto', 'photoPrepare'].includes(body.action)) {
+              await new Promise((resolve) => setTimeout(resolve, this.photoApiDelayMs));
+            }
+            await route.fulfill({ json: result });
+          }
           catch (error) { this.errors.push(String(error)); await route.fulfill({ status: 500, json: { error: 'Fixture rejected request', code: 'FIXTURE_FAILURE' } }); }
           return;
         }

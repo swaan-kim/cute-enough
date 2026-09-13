@@ -40,7 +40,7 @@ assert.ok(binding, 'Actual bundle does not enable rewarded ads outside preview')
 assert.ok(new RegExp(`function ${esc(binding[1])}\\([\\w$]+="production",`).test(main), 'Actual bundle runtime is not production');
 for (const feature of ['svg-scene-v1','photoAdditionStatus','photoAdditionUpload','photoAdditionSubmit',
   'pet-smile-arc','사진을 불러오는 데 시간이 오래 걸려요. 다시 불러와 주세요.',
-  '세 번 쓸어주거나 톡톡 세 번 눌러도 좋아요','모은 사진','강아지 앨범',
+  '세 번 쓸어주거나 톡톡 세 번 눌러도 좋아요','두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요','모은 사진','강아지 앨범',
   '광고 보고 한 마리 더 만나기','어떤 친구를 만나볼까요?',
   '광고 화면이 열리지 않았나요?','받은 보상으로 계속하기']) {
   assert.ok(text.includes(feature), `Missing integrated feature: ${feature}`);

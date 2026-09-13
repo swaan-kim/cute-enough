@@ -120,6 +120,16 @@ export function createAlbumApi(client: AlbumClient) {
     return new Map(all.map((row) => [row.petId, row]));
   }
 
+  async function stateAfterRecord(ownerHash: string, petId: string, afterRecord?: () => Promise<void>) {
+    const [state, additionalRead] = await Promise.allSettled([
+      states(ownerHash, [petId]), Promise.resolve().then(afterRecord),
+    ]);
+    // Keep the original album-before-reward error priority if both reads fail.
+    if (state.status === 'rejected') throw state.reason;
+    if (additionalRead.status === 'rejected') throw additionalRead.reason;
+    return state.value.get(petId);
+  }
+
   async function album(ownerHash: string, body: Record<string, unknown>) {
     const cursor = cursorInput(body.cursor);
     const limit = body.limit === undefined ? 20 : body.limit;
@@ -157,13 +167,16 @@ export function createAlbumApi(client: AlbumClient) {
     return { apiVersion: 2, ...signed, ...albumSummaryFields(state), dailyProgress };
   }
 
-  async function reveal(ownerHash: string, body: Record<string, unknown>, date: string) {
+  async function reveal(
+    ownerHash: string, body: Record<string, unknown>, date: string,
+    afterRecord?: () => Promise<void>,
+  ) {
     const petId = requireUuid(body.petId);
     if (body.albumVersion === 2) {
       if (body.photoIntent !== 'collect' && body.photoIntent !== 'replay') {
         throw new ApiError('INVALID_PHOTO_INTENT', 400, '사진을 보려는 방법을 다시 확인해 주세요.');
       }
-      if (body.photoIntent === 'replay') return replay(ownerHash, petId, requireUuid(body.requestId), date);
+      if (body.photoIntent === 'replay') return replay(ownerHash, petId, requireUuid(body.requestId), date, afterRecord);
     }
     if (body.albumVersion !== 2 && body.revisit === true) {
       const state = (await states(ownerHash, [petId])).get(petId);
@@ -195,10 +208,14 @@ export function createAlbumApi(client: AlbumClient) {
       }
       signed = await sign(pinned);
     }
-    const state = (await states(ownerHash, [petId])).get(petId);
-    const dailyProgress = typeof result.revealDate === 'string' && result.revealDate !== date
+    const refreshDailyProgress = typeof result.revealDate === 'string' && result.revealDate !== date;
+    // Only independent reads overlap, after the receipt and any pinned-photo
+    // recovery. Cross-date retries keep their state -> progress -> status order.
+    const state = await stateAfterRecord(ownerHash, petId, refreshDailyProgress ? undefined : afterRecord);
+    const dailyProgress = refreshDailyProgress
       ? await rpc<unknown>('mark_daily_house_pet_met', { p_owner_hash: ownerHash, p_date: date, p_pet_id: petId })
       : result.dailyProgress;
+    if (refreshDailyProgress) await afterRecord?.();
     return {
       apiVersion: 2, ...signed, ...albumSummaryFields(state), dailyProgress,
       revealDate: result.revealDate, unlockMethod: result.unlockMethod, adSessionId: result.adSessionId,
@@ -206,7 +223,10 @@ export function createAlbumApi(client: AlbumClient) {
     };
   }
 
-  async function replay(ownerHash: string, petId: string, requestId: string, date: string) {
+  async function replay(
+    ownerHash: string, petId: string, requestId: string, date: string,
+    afterRecord?: () => Promise<void>,
+  ) {
     // A replay never dispatches a paid reveal, regardless of stale/malicious
     // unlockMethod or adSessionId fields included in the HTTP request.
     const args = { p_owner_hash: ownerHash, p_pet_id: petId, p_request_id: requestId };
@@ -228,7 +248,7 @@ export function createAlbumApi(client: AlbumClient) {
     const dailyProgress = result.revealDate && result.revealDate !== date
       ? await rpc<unknown>('mark_daily_house_pet_met', { p_owner_hash: ownerHash, p_date: date, p_pet_id: petId })
       : result.dailyProgress;
-    const state = (await states(ownerHash, [petId])).get(petId);
+    const state = await stateAfterRecord(ownerHash, petId, afterRecord);
     return { apiVersion: 2, ...signed, ...albumSummaryFields(state), dailyProgress,
       revealDate: result.revealDate, alreadyRevealed: true, reusedRequest: result.reusedRequest };
   }
