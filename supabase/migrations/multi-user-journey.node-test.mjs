@@ -53,11 +53,11 @@ before(async () => {
     create schema storage;
     create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
     create table storage.objects(id uuid default gen_random_uuid(),bucket_id text,name text,created_at timestamptz default now(),primary key(bucket_id,name));`);
-  const files = (await readdir(root)).filter((name) => /^\d+.*\.sql$/.test(name) && name < migration
+  const files = (await readdir(root)).filter((name) => /^\d+.*\.sql$/.test(name)
     // Existing harness exceptions: named operational data repair and pg_net
     // notification worker. Notification behavior has its own isolated suite.
     && !['20260829000100_fix_wooyoo_white_traits.sql', '20260905000400_recharge_notifications.sql'].includes(name)).sort();
-  for (const file of files) {
+  for (const file of files.filter((name) => name < migration)) {
     try { await db.exec(await readFile(new URL(file, root), 'utf8')); }
     catch (error) { throw new Error(`Migration ${file}: ${error.message}`, { cause: error }); }
   }
@@ -68,8 +68,23 @@ before(async () => {
   previousRateRows = (await db.query('select * from public.pet_api_rate_limits where owner_hash=$1 order by action', [rateOwner])).rows;
   await assert.rejects(rpc('check_pet_api_rate_limit', rateOwner, 'photoPrepare', 60, 30), /pet_api_rate_limits_action_check/);
   await db.exec(await readFile(new URL(migration, root), 'utf8'));
+  // Preserve the rate-limit upgrade assertions, then exercise the complete
+  // current schema for the journey. The reset migration is installed only;
+  // this suite never calls its operator-only reset RPC.
+  for (const file of files.filter((name) => name > migration)) {
+    try { await db.exec(await readFile(new URL(file, root), 'utf8')); }
+    catch (error) { throw new Error(`Migration ${file}: ${error.message}`, { cause: error }); }
+  }
 }, { timeout: 120000 });
 after(() => db.close());
+
+test('latest migration chain preserves an unexecuted reset and validates exact photo/dog grants', async () => {
+  assert.equal(await rpc('get_pet_album_collection_reset_status'), null);
+  assert.equal((await db.query('select count(*)::int n from pet_collection_reset_private.runs')).rows[0].n, 0);
+  assert.deepEqual((await db.query(`select convalidated, confdeltype, confupdtype from pg_constraint
+    where conrelid='public.user_photo_unlocks'::regclass and conname='user_photo_unlocks_photo_pet_fkey'`)).rows,
+  [{ convalidated: true, confdeltype: 'a', confupdtype: 'a' }]);
+});
 
 test('additive photoPrepare rate limit preserves old actions and counters; 30 allowed, 31 rejected, then window resets', async () => {
   assert.deepEqual((await db.query('select * from public.pet_api_rate_limits where owner_hash=$1 order by action', [rateOwner])).rows, previousRateRows);

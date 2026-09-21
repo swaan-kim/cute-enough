@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MAX_PET_API_REQUEST_BYTES, MAX_SOURCE_IMAGE_BYTES, readPetApiBody, requireDirectSubmissionDataUri, requireSubmissionDataUris, requireSubmissionPhotoIndex, requirePhotoUploadInput, hasSubmissionPhotoReceipts } from './submission-photos.ts';
 
 describe('submission photo contract', () => {
@@ -77,5 +77,79 @@ describe('bounded registration body', () => {
       await expect(readPetApiBody(new Request('http://localhost', { method: 'POST', body })))
         .rejects.toMatchObject({ code: 'INVALID_JSON' });
     }
+  });
+  it.each(['resolved', 'rejected', 'pending'] as const)('cancels a pending read on abort even when source cleanup is %s', async (cleanup) => {
+    const abortController = new AbortController();
+    const cancel = vi.fn(() => {
+      if (cleanup === 'rejected') return Promise.reject(new Error('Source cleanup failed'));
+      if (cleanup === 'pending') return new Promise<void>(() => undefined);
+    });
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    let notifyPendingRead!: () => void;
+    const pendingRead = new Promise<void>((resolve) => { notifyPendingRead = resolve; });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(new TextEncoder().encode('{"action":"submit"}'));
+      },
+      pull() { notifyPendingRead(); },
+      cancel,
+    }, { highWaterMark: 0 });
+    const request = new Request('http://localhost', {
+      method: 'POST', body: stream, duplex: 'half',
+    } as RequestInit);
+    // This suite uses jsdom's AbortController with Node's Request implementation.
+    Object.defineProperty(request, 'signal', { value: abortController.signal });
+    const addListener = vi.spyOn(request.signal, 'addEventListener');
+    const removeListener = vi.spyOn(request.signal, 'removeEventListener');
+    const outcome = readPetApiBody(request).then((body) => ({ body }), (error: unknown) => ({ error }));
+    await pendingRead;
+    abortController.abort();
+    // One event-loop turn exposes a stalled reader without hanging the test suite.
+    let turnTimer!: ReturnType<typeof setTimeout>;
+    const afterAbort = await Promise.race([
+      outcome,
+      new Promise<'still pending'>((resolve) => { turnTimer = setTimeout(() => resolve('still pending'), 0); }),
+    ]);
+    try {
+      expect(afterAbort).toMatchObject({ error: { code: 'REQUEST_CANCELLED', status: 408 } });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(stream.locked).toBe(false);
+      expect(removeListener).toHaveBeenCalledExactlyOnceWith('abort', addListener.mock.calls[0][1]);
+    } finally {
+      clearTimeout(turnTimer);
+      if (cancel.mock.calls.length === 0) streamController.close();
+      await outcome;
+    }
+  });
+  it('cancels an already-aborted body before acquiring a reader or parsing JSON', async () => {
+    const abortController = new AbortController();
+    abortController.abort();
+    const request = new Request('http://localhost', { method: 'POST', body: '{"action":"submit"}' });
+    Object.defineProperty(request, 'signal', { value: abortController.signal });
+    const cancel = vi.spyOn(request.body!, 'cancel');
+    const getReader = vi.spyOn(request.body!, 'getReader');
+    const addListener = vi.spyOn(request.signal, 'addEventListener');
+
+    await expect(readPetApiBody(request)).rejects.toMatchObject({ code: 'REQUEST_CANCELLED', status: 408 });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(getReader).not.toHaveBeenCalled();
+    expect(addListener).not.toHaveBeenCalled();
+    expect(request.body!.locked).toBe(false);
+  });
+  it.each(['valid', 'invalid', 'read failure', 'oversized'] as const)('releases the reader and abort listener after a %s body', async (kind) => {
+    const body = kind === 'read failure'
+      ? new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error('Read failed')); } })
+      : kind === 'invalid' ? '{' : '{"ok":true}';
+    const request = new Request('http://localhost', { method: 'POST', body, duplex: 'half' } as RequestInit);
+    const addListener = vi.spyOn(request.signal, 'addEventListener');
+    const removeListener = vi.spyOn(request.signal, 'removeEventListener');
+    const result = readPetApiBody(request, kind === 'oversized' ? 1 : undefined);
+
+    if (kind === 'valid') await expect(result).resolves.toEqual({ ok: true });
+    else await expect(result).rejects.toMatchObject({ code: kind === 'oversized' ? 'REQUEST_TOO_LARGE' : 'INVALID_JSON' });
+    expect(addListener).toHaveBeenCalledTimes(1);
+    expect(removeListener).toHaveBeenCalledExactlyOnceWith('abort', addListener.mock.calls[0][1]);
+    expect(request.body!.locked).toBe(false);
   });
 });

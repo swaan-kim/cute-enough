@@ -46,6 +46,33 @@ describe('anonymous key verification failures', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    new DOMException('response body timed out', 'TimeoutError'),
+    new TypeError('response body connection lost'),
+    new SyntaxError('truncated provider JSON'),
+  ])('keeps a failed successful-response body retryable: %s', async (bodyError) => {
+    const close = setup(200);
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200,
+      json: vi.fn().mockRejectedValue(bodyError) } as unknown as Response);
+    const key = `body-failure-${bodyError.name}`;
+    await expect(verifyAnonymousKey(key)).rejects.toMatchObject({ code: 'IDENTITY_VERIFY_UNAVAILABLE', status: 503 });
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ resultType: 'SUCCESS', success: true })));
+    await expect(verifyAnonymousKey(key)).resolves.toBeUndefined();
+    // A failed response was never accepted or cached; a later success is cached.
+    await verifyAnonymousKey(key);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain(bodyError.message);
+  });
+
+  it.each([401, 403])('preserves an explicit HTTP %s rejection without needing a valid body', async (status) => {
+    const close = setup(status);
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('not JSON', { status }));
+    await expect(verifyAnonymousKey(`invalid-body-${status}`)).rejects.toMatchObject({ code: 'INVALID_ANONYMOUS_KEY', status: 401 });
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('classifies an unavailable mTLS client as a server issue without exposing certificate errors', async () => {
     vi.stubGlobal('Deno', {
       env: { get: () => 'test-placeholder' },

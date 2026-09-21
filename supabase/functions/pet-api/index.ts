@@ -1066,7 +1066,10 @@ Deno.serve(async (request) => {
     return reply({ error: '알 수 없는 요청이에요.', code: 'INVALID_ACTION' }, 404);
   } catch (error) {
     let recovery: Record<string, unknown> = {};
-    if (verifiedOwnerHash && !photoAdditionRequest && !photoPrepareRequest) {
+    // A rejected admission must not trigger more DB work through error recovery.
+    const rateLimitRejected = error instanceof ApiError
+      && (error.code === 'RATE_LIMITED' || error.code === 'RATE_LIMIT_UNAVAILABLE');
+    if (verifiedOwnerHash && !photoAdditionRequest && !photoPrepareRequest && !rateLimitRejected) {
       try {
         const state = await currentRewardStatus(verifiedOwnerHash, albumRewardClient);
         recovery = { allowance: state.allowance, nextChargeAt: state.allowance.nextChargeAt };

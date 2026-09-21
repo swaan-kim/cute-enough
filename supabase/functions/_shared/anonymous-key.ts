@@ -57,10 +57,16 @@ export async function verifyAnonymousKey(anonymousKey: string): Promise<void> {
       signal: AbortSignal.timeout(4_000),
       client,
     } as RequestInit & { client: unknown });
-    const payload = await response.json().catch(() => null) as AnonymousKeyVerificationPayload | null;
     if (response.status === 429 || response.status >= 500) {
       throw new ApiError('IDENTITY_VERIFY_UNAVAILABLE', 503, '사용자 확인이 잠시 늦어지고 있어요. 잠시 뒤 다시 시도해 주세요.');
     }
+    const payload = await response.json().catch((error: unknown) => {
+      // A successful HTTP header is not a completed identity check. Body
+      // timeout, disconnect, or truncated JSON must stay retryable, not become
+      // a false "invalid user" response or a cached verification success.
+      if (response.ok) throw error;
+      return null;
+    }) as AnonymousKeyVerificationPayload | null;
     if (!response.ok || !parseAnonymousKeyVerificationSuccess(payload)) {
       console.warn('anonymous key verification rejected', {
         upstreamStatus: response.status,

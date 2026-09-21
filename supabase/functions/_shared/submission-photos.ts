@@ -55,19 +55,32 @@ export function requirePhotoUploadInput(body: Record<string, unknown>): { photoI
 /** Bound streamed bodies too: Content-Length may be absent or untrusted. */
 export async function readPetApiBody(request: Request, maxBytes = MAX_PET_API_REQUEST_BYTES): Promise<Record<string, unknown>> {
   const tooLarge = () => new ApiError('REQUEST_TOO_LARGE', 413, '요청한 사진 용량이 너무 커요.');
+  const cancelled = () => new ApiError('REQUEST_CANCELLED', 408, '요청이 취소되었어요. 다시 시도해 주세요.');
+  if (request.signal.aborted) {
+    void request.body?.cancel().catch(() => undefined);
+    throw cancelled();
+  }
   if (Number(request.headers.get('Content-Length') ?? 0) > maxBytes) throw tooLarge();
   const reader = request.body?.getReader();
   if (!reader) throw new ApiError('INVALID_JSON', 400, '요청 내용을 확인해 주세요.');
+  // cancel() settles pending reads immediately; source cleanup may finish later.
+  const cancelReader = () => { void reader.cancel().catch(() => undefined); };
   const decoder = new TextDecoder();
   let byteLength = 0;
   let source = '';
   try {
+    request.signal.addEventListener('abort', cancelReader, { once: true });
+    if (request.signal.aborted) {
+      cancelReader();
+      throw cancelled();
+    }
     while (true) {
       const { done, value } = await reader.read();
+      if (request.signal.aborted) throw cancelled();
       if (done) break;
       byteLength += value.byteLength;
       if (byteLength > maxBytes) {
-        await reader.cancel().catch(() => undefined);
+        cancelReader();
         throw tooLarge();
       }
       source += decoder.decode(value, { stream: true });
@@ -77,9 +90,11 @@ export async function readPetApiBody(request: Request, maxBytes = MAX_PET_API_RE
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Expected object');
     return body as Record<string, unknown>;
   } catch (error) {
+    if (request.signal.aborted) throw cancelled();
     if (error instanceof ApiError) throw error;
     throw new ApiError('INVALID_JSON', 400, '요청 내용을 확인해 주세요.');
   } finally {
+    request.signal.removeEventListener('abort', cancelReader);
     reader.releaseLock();
   }
 }
