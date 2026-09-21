@@ -39,15 +39,22 @@ describe('pet api error normalization', () => {
     expect(serverFailure).toMatchObject({ code: 'INTERNAL_ERROR', outcome: 'unknown', status: 500 });
   });
 
-  it('keeps an explicit capacity rejection definite even when it uses a 503 status', async () => {
+  it.each(['UPLOAD_CAPACITY_REACHED', 'UPLOADS_DISABLED', 'PET_PHOTO_MISSING', 'IDENTITY_VERIFY_UNAVAILABLE', 'RATE_LIMIT_UNAVAILABLE'])('keeps a proven rejection definite for %s with a 503 status', async (code) => {
     const error = await toPetApiError({
-      context: new Response(JSON.stringify({ code: 'UPLOAD_CAPACITY_REACHED', error: '오늘 받을 수 있는 사진이 모두 모였어요.' }), {
+      context: new Response(JSON.stringify({ code, error: '요청을 처리하기 전에 거절했어요.' }), {
         status: 503,
         headers: { 'Content-Type': 'application/json' },
       }),
     });
 
-    expect(error).toMatchObject({ code: 'UPLOAD_CAPACITY_REACHED', outcome: 'definite', status: 503 });
+    expect(error).toMatchObject({ code, outcome: 'definite', status: 503 });
+  });
+
+  it.each(['ALBUM_UNAVAILABLE', 'PHOTO_SIGNING_FAILED', 'PET_DESIGN_UNAVAILABLE', 'REVIEWED_ARTWORK_UNAVAILABLE', 'NOTIFICATION_SETTINGS_UNAVAILABLE', 'NEW_SERVER_FAILURE'])('keeps %s recoverable because a server failure may follow a commit', async (code) => {
+    const error = await toPetApiError({
+      context: new Response(JSON.stringify({ code, error: '결과를 불러오지 못했어요.', retryAfter: 5 }), { status: 503 }),
+    });
+    expect(error).toMatchObject({ code, outcome: 'unknown', status: 503, retryAfter: 5 });
   });
 
   it('does not erase an already normalized error', async () => {

@@ -89,6 +89,13 @@ function errorDetails(error: unknown): string {
     .join('|');
 }
 
+// These codes reject before business writes, or confirm a registration SQL rollback.
+// All other 5xx responses can follow a commit (including later reads or signing).
+const definiteServerRejections = new Set([
+  'IDENTITY_VERIFY_UNAVAILABLE', 'RATE_LIMIT_UNAVAILABLE', 'UPLOADS_DISABLED',
+  'UPLOAD_CAPACITY_REACHED', 'PET_PHOTO_MISSING',
+]);
+
 export async function toPetApiError(error: unknown): Promise<PetApiError> {
   if (error instanceof PetApiError) return error;
   const context = error && typeof error === 'object' && 'context' in error
@@ -100,7 +107,7 @@ export async function toPetApiError(error: unknown): Promise<PetApiError> {
       if (payload.error) return new PetApiError(
         payload.error,
         payload.code ?? 'FUNCTION_ERROR',
-        context.status >= 500 && (!payload.code || ['INTERNAL_ERROR', 'REWARD_UNAVAILABLE'].includes(payload.code)) ? 'unknown' : 'definite',
+        context.status >= 500 && !definiteServerRejections.has(payload.code ?? '') ? 'unknown' : 'definite',
         context.status,
         { allowance: payload.allowance, nextChargeAt: payload.nextChargeAt, serverNow: payload.serverNow, retryAfter: payload.retryAfter },
       );
@@ -113,15 +120,23 @@ export async function toPetApiError(error: unknown): Promise<PetApiError> {
   return new PetApiError('서버와 연결하지 못했어요. 네트워크를 확인한 뒤 다시 시도해 주세요.', 'NETWORK_ERROR', 'unknown');
 }
 
-function requestSignal(timeoutMs: number, externalSignal?: AbortSignal): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  if (!externalSignal) return timeoutSignal;
-  if (typeof AbortSignal.any === 'function') return AbortSignal.any([externalSignal, timeoutSignal]);
+function createRequestScope(timeoutMs: number, externalSignal?: AbortSignal): { signal: AbortSignal; dispose: () => void } {
   const controller = new AbortController();
-  const abort = () => controller.abort();
-  externalSignal.addEventListener('abort', abort, { once: true });
-  timeoutSignal.addEventListener('abort', abort, { once: true });
-  return controller.signal;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const abort = () => controller.abort(externalSignal?.reason);
+  const dispose = () => {
+    clearTimeout(timeout);
+    timeout = undefined;
+    externalSignal?.removeEventListener('abort', abort);
+    controller.signal.removeEventListener('abort', dispose);
+  };
+  controller.signal.addEventListener('abort', dispose, { once: true });
+  externalSignal?.addEventListener('abort', abort, { once: true });
+  if (externalSignal?.aborted) abort();
+  if (!controller.signal.aborted) {
+    timeout = setTimeout(() => controller.abort(new DOMException('요청 시간이 지났어요.', 'TimeoutError')), timeoutMs);
+  }
+  return { signal: controller.signal, dispose };
 }
 
 let pendingIdentity: Promise<string> | undefined;
@@ -133,13 +148,15 @@ function getRequestIdentity(signal: AbortSignal): Promise<string> {
   }
   const identity = pendingIdentity;
   return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', abort);
     const abort = () => {
+      cleanup();
       if (pendingIdentity === identity) pendingIdentity = undefined;
       reject(new DOMException('사용자 확인 시간이 지났어요.', 'TimeoutError'));
     };
     if (signal.aborted) { abort(); return; }
     signal.addEventListener('abort', abort, { once: true });
-    identity.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    identity.then((value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
   });
 }
 
@@ -148,9 +165,12 @@ export async function invokePetApi<T>(body: Record<string, unknown>, timeoutMs =
   if (externalSignal?.aborted) {
     throw new PetApiError('이전 요청을 취소했어요.', 'REQUEST_CANCELLED', 'definite');
   }
+  const { signal, dispose } = createRequestScope(timeoutMs, externalSignal);
+  let dispatched = false;
   try {
-    const signal = requestSignal(timeoutMs, externalSignal);
     const userHash = await getRequestIdentity(signal);
+    if (signal.aborted) throw signal.reason;
+    dispatched = true;
     const { data, error } = await client.invoke('pet-api', {
       body: { ...body, userHash, designFormat: 'svg-scene-v1' },
       signal,
@@ -161,9 +181,11 @@ export async function invokePetApi<T>(body: Record<string, unknown>, timeoutMs =
     return verified as T;
   } catch (error) {
     if (externalSignal?.aborted) {
-      throw new PetApiError('이전 요청을 취소했어요.', 'REQUEST_CANCELLED', 'definite');
+      throw new PetApiError('이전 요청을 취소했어요.', 'REQUEST_CANCELLED', dispatched ? 'unknown' : 'definite');
     }
     throw await toPetApiError(error);
+  } finally {
+    dispose();
   }
 }
 

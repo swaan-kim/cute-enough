@@ -46,6 +46,7 @@ const PetPhotoAdditionFlow = lazy(() => import('./components/PetPhotoAdditionFlo
 
 type PreparedVisit = {
   petId: string;
+  needsTreatAuthorization?: boolean;
   photoIntent?: 'collect' | 'replay';
   ownerPhoto?: boolean;
   method?: UnlockMethod;
@@ -114,6 +115,12 @@ export default function App() {
   const [photoReturnMode, setPhotoReturnMode] = useState<PhotoReturnMode>('overlay');
   const photoReturnModeRef = useRef<PhotoReturnMode>('overlay');
   const [preparedVisit, setPreparedVisit] = useState<PreparedVisit>();
+  const treatAuthorizationRef = useRef<{ petId: string; resolve: (allowed: boolean) => void }>();
+  useEffect(() => () => {
+    const pending = treatAuthorizationRef.current;
+    treatAuthorizationRef.current = undefined;
+    pending?.resolve(false);
+  }, []);
   const [adPromptPet, setAdPromptPet] = useState<PetSummary>();
   const [adPickerOpen, setAdPickerOpen] = useState(false);
   const adPickerOpenRef = useRef(false);
@@ -122,6 +129,7 @@ export default function App() {
   const adCreditsRef = useRef(new Map<string, string>());
   const earnedAdCompletionsRef = useRef(new Map<string, Extract<RewardRecoveryJob, { kind: 'adComplete' }>>());
   const adAbortRef = useRef<AbortController>();
+  const adAttemptRef = useRef<AbortController>();
   const shareAbortRef = useRef<AbortController>();
   const [shareBusy, setShareBusy] = useState(false);
   const shareBusyRef = useRef(false);
@@ -448,7 +456,7 @@ export default function App() {
     ticketPromptPetRef.current = refreshPrompt(ticketPromptPetRef.current);
     setAdPromptPet(adPromptPetRef.current);
     setTicketPromptPet(ticketPromptPetRef.current);
-    setSelected((current) => current ? apply(current) : current);
+    setSelected(refreshPrompt);
     setPets((current) => current.map(apply));
     setOwnerBonusPet((current) => current ? apply(current) : current);
     // Keep the full upload history; house/album responses never replace this list.
@@ -788,7 +796,8 @@ export default function App() {
       window.removeEventListener('focus', prepare);
       document.removeEventListener('visibilitychange', prepare);
       unsubscribe();
-      adAbortRef.current?.abort();
+      cancelAdAttempt(false);
+      adPromptPetRef.current = undefined;
     };
   }, []);
   useEffect(() => {
@@ -829,7 +838,8 @@ export default function App() {
     let midnightTimer: number | undefined;
     const refreshForNewDay = async () => {
       if (document.hidden || isAllowanceForToday(allowanceRef.current)) return;
-      adAbortRef.current?.abort();
+      cancelAdAttempt();
+      settleTreatAuthorization(false);
       adPromptPetRef.current = undefined;
       setAdPromptPet(undefined);
       await loadHouse(true);
@@ -926,6 +936,7 @@ export default function App() {
 
   function enterPlay(pet: PetSummary, visit: PreparedVisit, playGreeting = true) {
     clearPhotoPreparation();
+    setAdError('');
     if (playGreeting) playSound('bark', getPetSoundVariant(pet.id));
     setSelected(pet);
     const prepared = { photoIntent: 'collect' as const, ...visit, requestId: visit.requestId ?? crypto.randomUUID() };
@@ -938,6 +949,37 @@ export default function App() {
     setPhotoLoadError('');
   }
 
+  function settleTreatAuthorization(allowed: boolean, pet?: PetSummary, visit?: PreparedVisit) {
+    const pending = treatAuthorizationRef.current;
+    if (!pending) return false;
+    treatAuthorizationRef.current = undefined;
+    const current = getCurrentRoute(routeStackRef.current);
+    const canContinue = allowed && pet && visit && pending.petId === pet.id
+      && current.screen === 'play' && current.petId === pet.id;
+    if (canContinue) {
+      setSelected(pet);
+      setPreparedVisit({ photoIntent: 'collect', ...visit, needsTreatAuthorization: false, requestId: visit.requestId ?? crypto.randomUUID() });
+    }
+    pending.resolve(Boolean(canContinue));
+    return true;
+  }
+
+  function requestTreatAuthorization(): Promise<boolean> {
+    if (!selected || !preparedVisit?.needsTreatAuthorization || busyRef.current || shareBusyRef.current || treatAuthorizationRef.current
+      || (adAttemptRef.current && !adAttemptRef.current.signal.aborted)) return Promise.resolve(false);
+    const pet = publicationCache.apply(selected);
+    return new Promise((resolve) => {
+      treatAuthorizationRef.current = { petId: pet.id, resolve };
+      adPromptPetRef.current = pet;
+      if (continueRewardPrompt()) return;
+      setAdPromptPet(pet);
+      setAdError('');
+      trackProductEvent('rewarded_ad_entry', { source: 'treat' });
+      // Giving the selected treat is the explicit ad action. Do not ask again.
+      void confirmRewardedVisit();
+    });
+  }
+
   function clearPhotoPreparation() {
     photoPreparationRef.current?.dispose();
     photoPreparationRef.current = undefined;
@@ -945,7 +987,7 @@ export default function App() {
   }
 
   function beginPlayPhotoRequest(method: PetInteractionMethod) {
-    if (!selected || !preparedVisit?.requestId || preparedVisit.characterOnlyReason || busyRef.current || playCompletionRef.current) return;
+    if (!selected || !preparedVisit?.requestId || preparedVisit.needsTreatAuthorization || preparedVisit.characterOnlyReason || busyRef.current || playCompletionRef.current) return;
     // The second accepted gesture starts the existing authorized request once.
     void loadRevealCard().catch(() => undefined);
     playCompletionRef.current = { requestId: preparedVisit.requestId, petId: selected.id, generation: photoGenerationRef.current + 1 };
@@ -1124,13 +1166,8 @@ export default function App() {
     }
     const method = access.method;
     if (method === 'REWARDED') {
-      setAdError('');
-      playSound('bark', getPetSoundVariant(pet.id));
-      setSelected(pet);
       rewardPromptSourceRef.current = source;
-      adPromptPetRef.current = pet;
-      setAdPromptPet(pet);
-      if (['idle', 'error', 'unsupported'].includes(adStatus)) void preloadRewardedAd().catch((error) => setAdError(error instanceof Error ? error.message : '광고를 준비하지 못했어요. 다시 시도해 주세요.'));
+      enterPlay(pet, { petId: pet.id, needsTreatAuthorization: true });
       return;
     }
     enterPlay(pet, { petId: pet.id, method });
@@ -1157,6 +1194,19 @@ export default function App() {
     ticketPromptPetRef.current = undefined;
     setAdPromptPet(undefined);
     setTicketPromptPet(undefined);
+    if (treatAuthorizationRef.current?.petId === pet.id) {
+      const visit: PreparedVisit | undefined = access.kind === 'ownerPhoto' ? { petId: pet.id, ownerPhoto: true, photoIntent: 'replay' }
+        : access.kind === 'revisit' ? { petId: pet.id, photoIntent: 'replay' }
+        : access.kind === 'characterOnly' ? { petId: pet.id, characterOnlyReason: access.reason }
+        : access.kind === 'reveal' ? { petId: pet.id, method: access.method, adSessionId: adCreditsRef.current.get(pet.id) }
+        : undefined;
+      settleTreatAuthorization(Boolean(visit), pet, visit);
+      if (!visit) {
+        popCurrentRoute();
+        setToast('이 친구는 지금 잠시 쉬고 있어요.');
+      }
+      return true;
+    }
     choosePet(pet, rewardPromptSourceRef.current, access);
     return true;
   }
@@ -1170,6 +1220,8 @@ export default function App() {
     const previousRoute = getCurrentRoute(routeStackRef.current);
     const nextRoute = getCurrentRoute(next);
     if (previousRoute.screen === 'play' && (nextRoute.screen !== 'play' || nextRoute.petId !== previousRoute.petId)) {
+      cancelAdAttempt();
+      settleTreatAuthorization(false);
       photoGenerationRef.current += 1;
       clearPhotoPreparation();
       busyRef.current = false; setBusy(false);
@@ -1191,9 +1243,7 @@ export default function App() {
       return;
     }
     if (adPromptPetRef.current) {
-      adAbortRef.current?.abort();
-      adPromptPetRef.current = undefined;
-      setAdPromptPet(undefined);
+      closeAdPrompt();
       return;
     }
     if (photoOpenRef.current) {
@@ -1257,7 +1307,7 @@ export default function App() {
     photoGenerationRef.current += 1;
     photoIdRef.current = undefined; setPhotoId(undefined);
     busyRef.current = false; setBusy(false);
-    adAbortRef.current?.abort();
+    cancelAdAttempt();
     adPromptPetRef.current = undefined;
     setAdPromptPet(undefined);
     closeTicketPrompt();
@@ -1276,38 +1326,59 @@ export default function App() {
     if (houseNeedsRefreshRef.current || houseLoadedDateRef.current !== getKstDate()) void loadHouse(true);
   }
 
+  function cancelAdAttempt(updateUi = true) {
+    const attempt = adAttemptRef.current;
+    const native = adAbortRef.current;
+    // End ownership now, not when an uncancellable server response eventually
+    // arrives. Its finally must never release a newer photo/share/ad operation.
+    adAttemptRef.current = undefined;
+    adAbortRef.current = undefined;
+    attempt?.abort();
+    if (native !== attempt) native?.abort();
+    if (attempt || native) {
+      busyRef.current = false;
+      if (updateUi) {
+        setBusy(false);
+        void resumeSound(soundEnabled).catch(() => undefined);
+      }
+    }
+  }
+
   function closeAdPrompt() {
-    adAbortRef.current?.abort();
+    cancelAdAttempt();
+    settleTreatAuthorization(false);
     adPromptPetRef.current = undefined;
     setAdPromptPet(undefined);
-    setSelected(undefined);
+    if (getCurrentRoute(routeStackRef.current).screen !== 'play') setSelected(undefined);
     setAdError('');
   }
 
   async function confirmRewardedVisit() {
     const pet = adPromptPetRef.current;
-    if (!pet || busyRef.current || shareBusyRef.current || adAbortRef.current) return;
+    if (!pet || busyRef.current || shareBusyRef.current
+      || (adAttemptRef.current && !adAttemptRef.current.signal.aborted)) return;
     if (continueRewardPrompt()) return;
-    if (adStatus !== 'loaded') {
-      setAdError('');
-      void preloadRewardedAd().catch((error) => setAdError(error instanceof Error ? error.message : '광고를 준비하지 못했어요. 다시 시도해 주세요.'));
-      return;
-    }
 
     busyRef.current = true;
     setBusy(true);
     setToast('');
     setAdError('');
     const abort = new AbortController();
+    adAttemptRef.current = abort;
+    const authorization = treatAuthorizationRef.current;
+    const promptIsCurrent = () => !abort.signal.aborted && adPromptPetRef.current?.id === pet.id
+      && treatAuthorizationRef.current === authorization && adAttemptRef.current === abort;
     let sessionId: string | undefined;
     let startRequestId: string | undefined;
     let earned = false;
     let continueWithConfirmedAccess = false;
+    let stage: 'recovery' | 'preparation' | 'session_start' | 'native_show' | 'completion' = 'recovery';
     try {
       await recoverRewards();
       if (readPendingAdStarts().length > 0) throw new Error('이전 광고 요청을 확인하고 있어요. 연결을 확인한 뒤 다시 눌러 주세요.');
-      if (abort.signal.aborted || adPromptPetRef.current?.id !== pet.id) return;
-      if (confirmedPromptAccess(adPromptPetRef.current).kind !== 'exhausted') {
+      const currentPromptPet = adPromptPetRef.current;
+      if (!promptIsCurrent() || !currentPromptPet) return;
+      if (confirmedPromptAccess(currentPromptPet).kind !== 'exhausted') {
         continueWithConfirmedAccess = true;
         return;
       }
@@ -1315,6 +1386,18 @@ export default function App() {
         setToast('광고 만남은 잠시 준비 중이에요.');
         return;
       }
+      stage = 'preparation';
+      adAbortRef.current = abort;
+      // Join the existing cached load. An unloaded ad still opens from this one
+      // give action; cancelling this caller must not open it after navigating away.
+      await preloadRewardedAd(abort.signal);
+      const preparedPet = adPromptPetRef.current;
+      if (!promptIsCurrent() || !preparedPet) return;
+      if (confirmedPromptAccess(preparedPet).kind !== 'exhausted') {
+        continueWithConfirmedAccess = true;
+        return;
+      }
+      stage = 'session_start';
       assertRewardStorage();
       const pending = rememberPendingAdStart(pet.id);
       startRequestId = pending.requestId;
@@ -1322,14 +1405,17 @@ export default function App() {
       // same request while native UI is about to open.
       adAbortRef.current = abort;
       await suspendSound();
+      if (!promptIsCurrent()) throw new DOMException('광고 요청이 취소됐어요.', 'AbortError');
       const session = await startAdReward(pet.id, pending.requestId);
       sessionId = session.sessionId;
       markPendingAdStartNative(pet.id, pending.requestId, session.sessionId);
       rememberActiveRewardSession({ kind: 'ad', sessionId: session.sessionId });
       applyRewardStatus(session);
-      if (abort.signal.aborted || adPromptPetRef.current?.id !== pet.id) throw new DOMException('광고 요청이 취소됐어요.', 'AbortError');
+      if (!promptIsCurrent()) throw new DOMException('광고 요청이 취소됐어요.', 'AbortError');
+      stage = 'native_show';
       await showRewardedAd(abort.signal, () => {
         earned = true;
+        stage = 'completion';
         const completion = { kind: 'adComplete' as const, requestId: `ad-complete:${session.sessionId}`, sessionId: session.sessionId, petId: pet.id };
         earnedAdCompletionsRef.current.set(session.sessionId, completion);
         enqueueRewardRecovery(completion);
@@ -1338,19 +1424,23 @@ export default function App() {
         void recoverRewards();
       });
       if (!earned) throw new Error('광고 완료 결과를 확인하지 못했어요.');
+      stage = 'completion';
       await recoverRewards();
       if (readRewardRecovery().some((job) => job.kind === 'adComplete' && job.sessionId === session.sessionId)) await recoverRewards();
       // A confirmed reward survives cancellation, but a closed prompt must not
       // reopen play when the native dismissal/recovery arrives late.
-      if (abort.signal.aborted || adPromptPetRef.current?.id !== pet.id) return;
+      if (!promptIsCurrent()) return;
       adPromptPetRef.current = undefined;
       setAdPromptPet(undefined);
       if (!adCreditsRef.current.has(pet.id)) {
+        settleTreatAuthorization(false);
+        trackProductEvent('rewarded_ad_result', { result: 'completion_pending', stage });
         setToast('광고 보상을 저장하고 있어요. 연결되면 이 친구를 바로 만날 수 있어요.');
         return;
       }
-      enterPlay(pet, { petId: pet.id, method: 'REWARDED', adSessionId: session.sessionId }, false);
-      trackProductEvent('rewarded_ad_result', { result: 'rewarded' });
+      const visit: PreparedVisit = { petId: pet.id, method: 'REWARDED', adSessionId: session.sessionId };
+      if (!settleTreatAuthorization(true, pet, visit)) enterPlay(pet, visit, false);
+      trackProductEvent('rewarded_ad_result', { result: 'rewarded', stage });
     } catch (error) {
       applyErrorAllowance(error);
       if (sessionId && !earned) {
@@ -1361,19 +1451,32 @@ export default function App() {
       }
       trackProductEvent('rewarded_ad_result', {
         result: error instanceof DOMException && error.name === 'AbortError' ? 'cancelled' : 'failed',
+        stage,
       });
-      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      if (promptIsCurrent() && !(error instanceof DOMException && error.name === 'AbortError')) {
         const message = error instanceof Error ? error.message : '광고를 완료하지 못했어요.';
         setAdError(message);
         setToast(message);
       }
     } finally {
-      adAbortRef.current = undefined;
-      await resumeSound(soundEnabled);
-      busyRef.current = false;
-      setBusy(false);
+      if (adAbortRef.current === abort) adAbortRef.current = undefined;
+      if (adAttemptRef.current === abort) {
+        await resumeSound(soundEnabled).catch(() => undefined);
+        if (adAttemptRef.current === abort) {
+          adAttemptRef.current = undefined;
+          busyRef.current = false;
+          setBusy(false);
+          if (continueWithConfirmedAccess && !abort.signal.aborted && adPromptPetRef.current?.id === pet.id) continueRewardPrompt();
+          // Cancel/failure has no confirmation dialog to close. Release the
+          // pending treat so its same selection can be tried again immediately.
+          if (authorization && treatAuthorizationRef.current === authorization) {
+            settleTreatAuthorization(false);
+            adPromptPetRef.current = undefined;
+            setAdPromptPet(undefined);
+          }
+        }
+      }
       if (readPendingAdStarts().length > 0 || earnedAdCompletionsRef.current.size > 0) void recoverRewards();
-      if (continueWithConfirmedAccess && !abort.signal.aborted && adPromptPetRef.current?.id === pet.id) continueRewardPrompt();
     }
   }
 
@@ -1458,6 +1561,7 @@ export default function App() {
     const activePet = overridePet ?? selected;
     const activeVisit = overrideVisit ?? preparedVisit;
     if (!activePet || busyRef.current) return;
+    if (activeVisit?.needsTreatAuthorization) return;
     if (activeVisit?.characterOnlyReason) {
       setToast('이 친구의 캐릭터는 지금 만날 수 있어요\n실제 사진은 검수 후 공개돼요');
       return;
@@ -1564,7 +1668,6 @@ export default function App() {
     return { title: '이 친구를 만날 준비가 됐어요', description: '티켓이 준비됐어요. 이 친구에게 간식을 주면 새 사진을 만나요.', label: '티켓으로 이 친구 만나기' };
   }
 
-  const adContinuation = promptContinuationCopy(adPromptPet ? confirmedPromptAccess(adPromptPet) : undefined);
   const ticketContinuation = promptContinuationCopy(ticketPromptPet ? confirmedPromptAccess(ticketPromptPet) : undefined);
   const adManualReturn = adStatus === 'awaiting-confirmation' || adStatus === 'reward-earned';
   const adPickerPets = pets.filter((pet) => {
@@ -1588,28 +1691,20 @@ export default function App() {
     cancelButton={<ConfirmDialog.CancelButton onClick={closeAdPicker}>닫기</ConfirmDialog.CancelButton>}
     confirmButton={!adPickerPets.length ? <ConfirmDialog.ConfirmButton onClick={() => { closeAdPicker(); openAlbum(); }}>강아지 앨범 보기</ConfirmDialog.ConfirmButton> : undefined}
   />;
-  const adConfirmLabel = adStatus === 'loaded'
-    ? '광고 보고 이 친구 만나기'
-    : adStatus === 'error' || adStatus === 'idle'
-      ? '광고 다시 준비하기'
-      : adStatus === 'unsupported'
-        ? '광고 지원 다시 확인'
-        : '광고 준비 중';
   const adDialog = (
     <ConfirmDialog
-      open={Boolean(adPromptPet)}
-      title={adStatus === 'reward-earned' ? '광고 보상을 받았어요' : adStatus === 'awaiting-confirmation' ? '광고 화면이 열리지 않았나요?' : adContinuation?.title ?? '광고를 보고 지금 이 친구 만나기'}
-      description={<>{adManualReturn ? <span>{adStatus === 'reward-earned' ? '광고를 닫고 돌아왔다면 받은 보상으로 계속 만나요.' : '광고가 보이지 않는다면 아래 버튼으로 다시 확인해 주세요. 티켓은 차감되지 않아요.'}</span> : adContinuation?.description ?? <><span>{`광고를 끝까지 보면 바로 만날 수 있어요.\n오늘 ${allowance.rewardedUsed}/${rewardedLimit}번 사용${rechargeCopy ? ` · 또는 ${rechargeCopy}` : ''}`}</span>{shareAvailable && <button type="button" className="reward-alternative" disabled={shareBusy || busy} onClick={() => void inviteFriends()}>공유하고 티켓 받기</button>}</>}{adError && <span className="ad-inline-error" role="status">{adError}</span>}</>}
+      open={Boolean(adPromptPet) && adManualReturn}
+      title={adStatus === 'reward-earned' ? '광고 보상을 받았어요' : '광고 화면이 열리지 않았나요?'}
+      description={<span>{adStatus === 'reward-earned' ? '광고를 닫고 돌아왔다면 받은 보상으로 계속 만나요.' : '광고가 보이지 않는다면 아래 버튼으로 다시 확인해 주세요. 티켓은 차감되지 않아요.'}</span>}
       closeOnBackEvent={false}
       onClose={closeAdPrompt}
-      cancelButton={<ConfirmDialog.CancelButton onClick={closeAdPrompt}>{adContinuation ? '나중에 만나기' : '충전 기다리기'}</ConfirmDialog.CancelButton>}
+      cancelButton={<ConfirmDialog.CancelButton onClick={closeAdPrompt}>나중에 만나기</ConfirmDialog.CancelButton>}
       confirmButton={(
         <ConfirmDialog.ConfirmButton
-          onClick={() => { if (adManualReturn) confirmRewardedAdReturn(); else if (adContinuation) continueRewardPrompt(); else void confirmRewardedVisit(); }}
-          loading={!adManualReturn && (busy || shareBusy || (!adContinuation && (adStatus === 'loading' || adStatus === 'showing')))}
-          disabled={shareBusy || (!adManualReturn && (busy || (!adContinuation && adStatus === 'disabled')))}
+          onClick={() => confirmRewardedAdReturn()}
+          disabled={shareBusy}
         >
-          {adStatus === 'reward-earned' ? '받은 보상으로 계속하기' : adStatus === 'awaiting-confirmation' ? '광고 없이 돌아왔어요 · 다시 확인' : adContinuation?.label ?? adConfirmLabel}
+          {adStatus === 'reward-earned' ? '받은 보상으로 계속하기' : '광고 없이 돌아왔어요 · 다시 확인'}
         </ConfirmDialog.ConfirmButton>
       )}
     />
@@ -1848,8 +1943,13 @@ export default function App() {
       onMeet={() => choosePet(selected, 'shared')}
     /></Suspense>);
   }
+  const treatNeedsAd = Boolean(selected && preparedVisit?.needsTreatAuthorization && confirmedPromptAccess(selected).kind === 'exhausted');
   if (screen === 'play' && selected) return renderWithAppShell(
-    <Suspense fallback={screenFallback}><PlayScene pet={selected} photoHint={preparedVisit?.photoIntent === 'collect' && !preparedVisit.ownerPhoto && !preparedVisit.characterOnlyReason
+    <Suspense fallback={screenFallback}><PlayScene pet={selected} key={selected.id} onBeforeTreat={preparedVisit?.needsTreatAuthorization ? requestTreatAuthorization : undefined}
+      adRequired={treatNeedsAd} treatActionLabel={treatNeedsAd ? '광고 보고 간식 주기' : '간식 주기'}
+      treatError={preparedVisit?.needsTreatAuthorization ? adError : undefined}
+      onShareReward={treatNeedsAd && shareAvailable && remaining === 0 && bonusTickets === 0 ? () => void inviteFriends() : undefined}
+      sharePending={shareBusy} photoHint={preparedVisit?.needsTreatAuthorization ? treatNeedsAd ? '티켓 0장 · 간식을 주면 광고가 열려요.' : '간식을 주고 만나요. 광고는 열리지 않아요.' : preparedVisit?.photoIntent === 'collect' && !preparedVisit.ownerPhoto && !preparedVisit.characterOnlyReason
       ? preparedVisit.method === 'REWARDED' ? '받은 광고 보상으로 만나요. 티켓은 쓰지 않아요.'
         : preparedVisit.method === 'FREE' || preparedVisit.method === 'SHARE' ? '두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요' : undefined
       : undefined} onPhotoRequest={beginPlayPhotoRequest} onFed={finishPlayReaction} onSound={playSound} /></Suspense>,

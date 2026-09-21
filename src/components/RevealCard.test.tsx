@@ -32,6 +32,53 @@ afterEach(() => vi.useRealTimers());
 beforeEach(() => hapticMocks.playHaptic.mockClear());
 
 describe('RevealCard', () => {
+  it.each([
+    { loading: true },
+    { loadError: '사진을 다시 불러와 주세요' },
+    { photoUrl: '/haneul.jpg' },
+  ])('keeps the first Shift+Tab and both focus boundaries inside the photo dialog: %j', (state) => {
+    render(<TDSMobileAITProvider brandPrimaryColor="#FF6B8A"><RevealCard pet={{ ...pet, shareable: true }}
+      {...state} onClose={() => undefined} onUpload={() => undefined} onReport={() => undefined}
+      onShare={() => undefined} /></TDSMobileAITProvider>);
+    const dialog = screen.getByRole('dialog', { name: '강아지 실사 사진' });
+    const buttons = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).filter((button) => !button.disabled);
+    const close = screen.getByRole('button', { name: '사진 닫기' });
+    const last = buttons[buttons.length - 1];
+
+    expect(close).toHaveFocus();
+    expect(fireEvent.keyDown(close, { key: 'Tab', shiftKey: true })).toBe(false);
+    expect(last).toHaveFocus();
+    expect(fireEvent.keyDown(last, { key: 'Tab' })).toBe(false);
+    expect(close).toHaveFocus();
+  });
+
+  it('recovers root or lost focus on Tab and restores the opener when closed', () => {
+    const opener = document.createElement('button');
+    opener.textContent = '사진 열기';
+    document.body.append(opener);
+    opener.focus();
+    const onClose = vi.fn();
+    const { container, unmount } = render(<TDSMobileAITProvider brandPrimaryColor="#FF6B8A"><RevealCard
+      pet={pet} photoUrl="/haneul.jpg" onClose={onClose} onUpload={() => undefined} onReport={() => undefined}
+    /></TDSMobileAITProvider>);
+    try {
+      const card = container.querySelector<HTMLElement>('.photo-card')!;
+      card.focus();
+      expect(fireEvent.keyDown(card, { key: 'Tab', shiftKey: true })).toBe(false);
+      expect(screen.getByRole('button', { name: '이 사진 신고하기' })).toHaveFocus();
+      opener.focus();
+      expect(fireEvent.keyDown(opener, { key: 'Tab' })).toBe(false);
+      expect(screen.getByRole('button', { name: '사진 닫기' })).toHaveFocus();
+      fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+      expect(onClose).toHaveBeenCalledOnce();
+      unmount();
+      expect(opener).toHaveFocus();
+    } finally {
+      unmount();
+      opener.remove();
+    }
+  });
+
   it('keeps close and primary actions outside the scrolling photo content', () => {
     const stylesheet = document.createElement('style');
     stylesheet.textContent = appStyles;

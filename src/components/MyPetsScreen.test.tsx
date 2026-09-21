@@ -37,6 +37,48 @@ const pendingPet: OwnedPetSummary = {
 };
 
 describe('MyPetsScreen', () => {
+  it('keeps the existing list and owner actions while refreshing its status', () => {
+    const onMeet = vi.fn();
+    const onUpload = vi.fn();
+    const props = { pets: [pendingPet], loading: false, error: '', onRetry: vi.fn(),
+      onUpload, onMeet, onShare: vi.fn(), onAddPhotos: vi.fn() };
+    const { rerender } = render(<MyPetsScreen {...props} />);
+    const list = screen.getByRole('region', { name: '내가 소개한 강아지 목록' });
+
+    rerender(<MyPetsScreen {...props} loading />);
+
+    expect(screen.getByRole('region', { name: '내가 소개한 강아지 목록' })).toBe(list);
+    expect(screen.getByRole('status')).toHaveTextContent('등록 상태를 새로 확인하고 있어요');
+    fireEvent.click(screen.getByRole('button', { name: '사진 바로 보기' }));
+    expect(onMeet).toHaveBeenCalledWith(pendingPet);
+    expect(screen.getByRole('button', { name: '사진 더 올리기' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: '강아지 한 마리 더 소개하기' }));
+    expect(onUpload).toHaveBeenCalledOnce();
+  });
+
+  it('keeps cached pets through a failed refresh and updates them after an in-place retry', () => {
+    const props = { pets: [pendingPet], loading: false, error: '', onRetry: vi.fn(),
+      onUpload: vi.fn(), onMeet: vi.fn(), onShare: vi.fn() };
+    const { rerender } = render(<MyPetsScreen {...props} />);
+    const list = screen.getByRole('region', { name: '내가 소개한 강아지 목록' });
+
+    rerender(<MyPetsScreen {...props} error="올린 강아지를 불러오지 못했어요." />);
+
+    expect(screen.getByRole('region', { name: '내가 소개한 강아지 목록' })).toBe(list);
+    expect(screen.getByRole('status')).toHaveTextContent('올린 강아지를 불러오지 못했어요.');
+    expect(screen.getByRole('button', { name: '사진 바로 보기' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: '다시 불러오기' }));
+    expect(props.onRetry).toHaveBeenCalledOnce();
+
+    rerender(<MyPetsScreen {...props} loading />);
+    expect(screen.queryByRole('button', { name: '다시 불러오기' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '내가 소개한 강아지 목록' })).toBe(list);
+    rerender(<MyPetsScreen {...props} pets={[{ ...pendingPet, approvalStatus: 'approved' }]} />);
+    expect(screen.getByText('승인됨')).toBeInTheDocument();
+    expect(screen.queryByText('올린 강아지를 불러오지 못했어요.')).not.toBeInTheDocument();
+    expect(screen.queryByText('등록 상태를 새로 확인하고 있어요…')).not.toBeInTheDocument();
+  });
+
   it('offers the owner a direct photo action and character-only sharing while review is pending', () => {
     const onMeet = vi.fn();
     const onShare = vi.fn();

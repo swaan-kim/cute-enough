@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
-import { Asset, Top } from '@toss/tds-mobile';
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { Asset, Button, Top } from '@toss/tds-mobile';
 import type { SoundEffect } from '../lib/sound';
 import { playHaptic } from '../lib/haptics';
 import type { PetSummary } from '../types';
@@ -39,16 +39,27 @@ function getTreatDragLift(event: ReactPointerEvent<HTMLElement>, drag: DragState
   return TREAT_DRAG_MAX_LIFT_Y * easedProgress;
 }
 
-export function PlayScene({ pet, photoHint, onPhotoRequest, onFed, onSound }: {
+export function PlayScene({ pet, photoHint, onBeforeTreat, adRequired = true, treatActionLabel = '광고 보고 간식 주기', treatError, onShareReward, sharePending = false, onPhotoRequest, onFed, onSound }: {
   pet: PetSummary;
   photoHint?: string;
+  onBeforeTreat?: () => Promise<boolean>;
+  adRequired?: boolean;
+  treatActionLabel?: string;
+  treatError?: string;
+  onShareReward?: () => void;
+  sharePending?: boolean;
   onPhotoRequest?: (method: PetInteractionMethod) => void;
   onFed: (method: PetInteractionMethod) => void;
   onSound: (effect: SoundEffect, variant?: number) => void;
 }) {
   const artworkImage = usePetDesign(pet);
   const artworkReady = !artworkImage || artworkImage.snapshot.status === 'ready';
+  const photoHintId = useId();
   const [selectedTreat, setSelectedTreat] = useState<TreatId>();
+  const [treatPending, setTreatPending] = useState(false);
+  const pendingTreatRef = useRef<{ petId: string }>();
+  const currentPetIdRef = useRef(pet.id);
+  currentPetIdRef.current = pet.id;
   const [phase, setPhase] = useState<Phase>('treat');
   const [eating, setEating] = useState(false);
   const [greeting, setGreeting] = useState(true);
@@ -76,17 +87,44 @@ export function PlayScene({ pet, photoHint, onPhotoRequest, onFed, onSound }: {
     return () => timersRef.current.forEach(clearTimeout);
   }, []);
 
+  useEffect(() => {
+    pendingTreatRef.current = undefined;
+    setTreatPending(false);
+    return () => { pendingTreatRef.current = undefined; };
+  }, [pet.id]);
+
   const selected = TREATS.find((treat) => treat.id === selectedTreat);
   const hint = useMemo(() => {
     if (phase === 'happy') return `${selected?.objectLabel ?? '간식을'} 맛있게 먹고 있어요`;
     if (phase === 'petting') return '강아지를 살살 쓰다듬어 주세요';
     if (phase === 'done') return '마음이 전해졌어요';
+    if (onBeforeTreat && adRequired) return selected ? `광고를 보고 ${selected.objectLabel} 줄 수 있어요` : '간식을 고른 뒤 광고를 보고 줄 수 있어요';
     if (selected) return `${selected.objectLabel} 끌어주거나 강아지를 톡 눌러주세요`;
     return '간식을 끌어주거나 톡 눌러 골라주세요';
-  }, [phase, selected]);
+  }, [phase, selected, onBeforeTreat, adRequired]);
 
   function giveTreat(treatId: TreatId) {
-    if (phase !== 'treat' || !artworkReady) return;
+    if (phase !== 'treat' || !artworkReady || sharePending || pendingTreatRef.current) return;
+    if (!onBeforeTreat) { finishTreat(treatId); return; }
+    const pending = { petId: pet.id };
+    pendingTreatRef.current = pending;
+    setSelectedTreat(treatId);
+    setTreatPending(true);
+    void (async () => {
+      try {
+        const allowed = await onBeforeTreat();
+        if (allowed && pendingTreatRef.current === pending && currentPetIdRef.current === pending.petId) finishTreat(treatId);
+      } catch { /* Keep the selected treat available after cancellation or failure. */ }
+      finally {
+        if (pendingTreatRef.current === pending) {
+          pendingTreatRef.current = undefined;
+          setTreatPending(false);
+        }
+      }
+    })();
+  }
+
+  function finishTreat(treatId: TreatId) {
     onSound('eat');
     void playHaptic('treatSuccess');
     setSelectedTreat(treatId);
@@ -120,7 +158,7 @@ export function PlayScene({ pet, photoHint, onPhotoRequest, onFed, onSound }: {
   }
 
   function startTreatDrag(event: ReactPointerEvent<HTMLButtonElement>, treatId: TreatId) {
-    if (phase !== 'treat' || event.button !== 0 || treatDragRef.current) return;
+    if (phase !== 'treat' || event.button !== 0 || sharePending || treatDragRef.current || pendingTreatRef.current) return;
     onSound('pick');
     setSelectedTreat(treatId);
     treatDragRef.current = {
@@ -213,7 +251,7 @@ export function PlayScene({ pet, photoHint, onPhotoRequest, onFed, onSound }: {
         title={<Top.TitleParagraph size={28}>{withSubjectParticle(pet.name ?? '이 친구')} 기다리고 있어요</Top.TitleParagraph>}
         subtitleBottom={<Top.SubtitleParagraph><span aria-live="polite">{hint}</span></Top.SubtitleParagraph>}
       />
-      {photoHint && <p className="play-photo-hint">{photoHint}</p>}
+      {photoHint && <p className="play-photo-hint" id={photoHintId}>{photoHint}</p>}
 
       <div
         className={`feed-zone phase-${phase} ${greeting ? 'is-greeting' : ''} ${dragGhost ? 'is-dragging-treat' : ''} ${petReactionActive ? 'is-pet-reacting' : ''} ${petReactionSequence ? `pet-reaction-${petReactionSequence % 2 ? 'a' : 'b'}` : ''}`}
@@ -221,6 +259,8 @@ export function PlayScene({ pet, photoHint, onPhotoRequest, onFed, onSound }: {
         ref={zoneRef}
         role="button"
         tabIndex={0}
+        aria-disabled={treatPending || sharePending || undefined}
+        aria-describedby={photoHint ? photoHintId : undefined}
         aria-label={artworkImage?.snapshot.status === 'error' ? `${pet.name ?? '강아지'} 캐릭터 다시 불러오기` : phase === 'petting' ? `${pet.name ?? '강아지'} 쓰다듬기, ${petCount}번 완료` : phase === 'done' ? `${pet.name ?? '강아지'} 교감 완료` : selectedTreat ? `${pet.name ?? '강아지'}에게 간식 주기` : `${pet.name ?? '강아지'}`}
         onClick={useSelectedTreat}
         onKeyDown={(event) => {
@@ -258,13 +298,13 @@ export function PlayScene({ pet, photoHint, onPhotoRequest, onFed, onSound }: {
                 <button
                   key={treat.id}
                   type="button"
-                  disabled={!artworkReady}
+                  disabled={!artworkReady || treatPending || sharePending}
                   className={`treat-option ${selectedTreat === treat.id ? 'selected' : ''}`}
                   aria-label={`${treat.label} 간식${selectedTreat === treat.id ? ', 선택됨' : ''}`}
                   aria-pressed={selectedTreat === treat.id}
                   onPointerDown={(event) => startTreatDrag(event, treat.id)}
                   onClick={(event) => {
-                    if (phase !== 'treat') return;
+                    if (phase !== 'treat' || sharePending || pendingTreatRef.current) return;
                     if (event.detail === 0) onSound('pick');
                     setSelectedTreat(treat.id);
                   }}
@@ -274,6 +314,14 @@ export function PlayScene({ pet, photoHint, onPhotoRequest, onFed, onSound }: {
                 </button>
               ))}
             </div>
+            {onBeforeTreat && <Button className="ad-treat-action" display="full" size="large" aria-label={treatActionLabel} loading={treatPending}
+              disabled={!selectedTreat || !artworkReady || treatPending || sharePending} onClick={useSelectedTreat}>
+              {treatActionLabel}
+            </Button>}
+            {treatError && <span className="ad-inline-error" role="status">{treatError}</span>}
+            {onShareReward && <button type="button" className="treat-share-reward" disabled={treatPending || sharePending} onClick={onShareReward}>
+              {sharePending ? '공유 결과 확인 중…' : '공유하고 티켓 받기'}
+            </button>}
           </div>
         )}
 

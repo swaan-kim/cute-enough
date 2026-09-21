@@ -32,6 +32,7 @@ type RevealCardProps = {
 
 export function RevealCard({ pet, photoUrl, photoCaption, loading = false, loadError, onClose, onUpload, onReport, onShare, onSave, onRetryPhoto, retryPhotoLabel = '다시 불러오기', isFavorite = false, favoritePending = false, onFavoriteChange, onPreviousPhoto, onNextPhoto, photoPosition }: RevealCardProps) {
   const cardRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const captionRowRef = useRef<HTMLParagraphElement>(null);
   const onCloseRef = useRef(onClose);
   const heartIdRef = useRef(0);
@@ -53,7 +54,7 @@ export function RevealCard({ pet, photoUrl, photoCaption, loading = false, loadE
 
   useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-    cardRef.current?.focus();
+    closeButtonRef.current?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onCloseRef.current();
       if (event.key !== 'Tab' || !cardRef.current) return;
@@ -62,8 +63,12 @@ export function RevealCard({ pet, photoUrl, photoCaption, loading = false, loadE
       if (focusable.length === 0) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      const activeElement = document.activeElement;
+      if (activeElement === cardRef.current || !cardRef.current.contains(activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && activeElement === last) { event.preventDefault(); first.focus(); }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => {
@@ -162,7 +167,7 @@ export function RevealCard({ pet, photoUrl, photoCaption, loading = false, loadE
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="강아지 실사 사진">
       <article className="photo-card" ref={cardRef} tabIndex={-1} data-large-text={largeCaptionText ? 'true' : undefined}>
         <header className="photo-card-header photo-card-header--close-only">
-          <button type="button" onClick={onClose} aria-label="사진 닫기">×</button>
+          <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="사진 닫기">×</button>
         </header>
         <div className="photo-card-content">
         <div className="photo-card-main">

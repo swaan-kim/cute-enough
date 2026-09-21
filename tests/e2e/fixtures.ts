@@ -310,6 +310,11 @@ export async function native(page: Page, types: string[]) {
 export async function startAd(page: Page, name = names[2]) {
   await page.getByRole('button', { name: /광고 보고 한 마리 더 만나기/ }).tap();
   await page.getByRole('button', { name: new RegExp(name) }).filter({ hasText: name }).last().tap();
-  await page.getByRole('button', { name: '광고 보고 이 친구 만나기', exact: true }).tap();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'show'))).toEqual([]);
+  await page.getByRole('button', { name: '고구마 간식', exact: true }).tap();
+  expect(await page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'show'))).toEqual([]);
+  await page.getByRole('button', { name: '광고 보고 간식 주기', exact: true }).tap();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => (window as any).__nativeFixture.events.filter((e: any) => e.name === 'show').length)).toBe(1);
 }

@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { StrictMode } from 'react';
+import { StrictMode, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { getKstDate } from './lib/allowance';
@@ -68,6 +68,7 @@ const apiMocks = vi.hoisted(() => ({
 const rewardMocks = vi.hoisted(() => ({
   openShareReward: vi.fn(),
   supportsShareReward: vi.fn(() => true),
+  preloadRewardedAd: vi.fn(() => Promise.resolve()),
   showRewardedAd: vi.fn(),
   confirmRewardedAdReturn: vi.fn(() => false),
   requestRechargeNotificationAgreement: vi.fn(),
@@ -106,7 +107,7 @@ vi.mock('./lib/nativeNavigation', () => ({
 
 vi.mock('./lib/rewardedAd', () => ({
   getRewardedAdStatus: vi.fn(() => appHarness.adsEnabled ? 'loaded' : 'disabled'),
-  preloadRewardedAd: vi.fn(() => Promise.resolve()),
+  preloadRewardedAd: rewardMocks.preloadRewardedAd,
   showRewardedAd: rewardMocks.showRewardedAd,
   confirmRewardedAdReturn: rewardMocks.confirmRewardedAdReturn,
   subscribeRewardedAdStatus: vi.fn((listener) => { appHarness.adStatusListener = listener; return () => { appHarness.adStatusListener = undefined; }; }),
@@ -199,15 +200,33 @@ vi.mock('./components/PetArtwork', () => ({
 }));
 
 vi.mock('./components/PlayScene', () => ({
-  PlayScene: ({ pet, onFed, photoHint, onPhotoRequest }: { pet: typeof appHarness.submittedPet; onFed: (method: 'stroke' | 'tap' | 'keyboard') => void; photoHint?: string; onPhotoRequest?: (method: 'tap') => void }) => (
-    <main data-testid="play-scene" data-pet-id={pet.id} data-status={pet.approvalStatus} data-design-sha256={(pet as Partial<AlbumPetSummary>).publishedDesign?.sha256}>
+  PlayScene: ({ pet, onFed, photoHint, onPhotoRequest, onBeforeTreat, treatActionLabel, treatError, onShareReward }: {
+    pet: typeof appHarness.submittedPet;
+    onFed: (method: 'stroke' | 'tap' | 'keyboard') => void;
+    photoHint?: string;
+    onPhotoRequest?: (method: 'tap') => void;
+    onBeforeTreat?: () => Promise<boolean>;
+    treatActionLabel?: string;
+    treatError?: string;
+    onShareReward?: () => Promise<void> | void;
+  }) => {
+    const [treatAuthorized, setTreatAuthorized] = useState(false);
+    const [selectedTreat, setSelectedTreat] = useState('닭고기');
+    return <main data-testid="play-scene" data-pet-id={pet.id} data-status={pet.approvalStatus}
+      data-treat-authorized={treatAuthorized} data-selected-treat={selectedTreat} data-treat-error={treatError} data-design-sha256={(pet as Partial<AlbumPetSummary>).publishedDesign?.sha256}>
       {pet.name}와 노는 중
       {photoHint && <p>{photoHint}</p>}
+      <button type="button" onClick={() => setSelectedTreat('고구마')}>고구마 선택</button>
+      <button type="button" data-testid="treat-action" onClick={async () => {
+        const allowed = onBeforeTreat ? await onBeforeTreat() : true;
+        setTreatAuthorized(allowed);
+      }}>{onBeforeTreat ? treatActionLabel ?? '광고 보고 간식 주기' : `${pet.name}에게 간식 주기`}</button>
+      {onShareReward && <button type="button" onClick={() => { void onShareReward(); }}>공유하고 티켓 받기</button>}
       <button type="button" onClick={() => onFed('tap')}>간식 주기</button>
       <button type="button" onClick={() => undefined}>쓰다듬기 시작 신호</button>
       <button type="button" onClick={() => onPhotoRequest?.('tap')}>두 번째 입력 신호</button>
-    </main>
-  ),
+    </main>;
+  },
 }));
 
 vi.mock('./components/RevealCard', () => ({
@@ -250,6 +269,11 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function startTreatAd() {
+  fireEvent.click(screen.getByTestId('treat-action'));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 }
 
 async function openUploadAndSubmit() {
@@ -346,6 +370,7 @@ describe('App upload submission integration', () => {
     photoBufferMocks.dispose.mockReset();
     Object.values(rewardMocks).forEach((mock) => mock.mockReset());
     rewardMocks.supportsShareReward.mockReturnValue(true);
+    rewardMocks.preloadRewardedAd.mockResolvedValue(undefined);
     apiMocks.fetchRewardStatus.mockRejectedValue(new Error('legacy server'));
     apiMocks.fetchRechargeNotificationSettings.mockResolvedValue({ enabled: false, available: false });
     hapticMocks.playHaptic.mockClear();
@@ -1280,12 +1305,71 @@ describe('App upload submission integration', () => {
     }
 
     async function openPrompt(ads: boolean) {
-      render(<App />);
+      const mounted = render(<App />);
       fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
-      await screen.findByRole('dialog', { name: ads ? '광고를 보고 지금 이 친구 만나기' : '다음 친구도 만나볼까요?' });
+      if (ads) {
+        expect(await screen.findByTestId('play-scene')).toHaveAttribute('data-treat-authorized', 'false');
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+        expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+        expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      }
+      if (!ads) await screen.findByRole('dialog', { name: '다음 친구도 만나볼까요?' });
+      return mounted;
     }
 
-    it('connects the zero-ticket home button to pet choice, ad, play and photo without another ticket', async () => {
+    function expectTreatWaiting(ads = true) {
+      if (ads) expect(screen.getByTestId('play-scene')).toHaveAttribute('data-treat-authorized', 'false');
+      else expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+    }
+
+    async function expectTreatResumed(petId: string, ads = true) {
+      const scene = await screen.findByTestId('play-scene');
+      expect(scene).toHaveAttribute('data-pet-id', petId);
+      if (ads) await waitFor(() => expect(scene).toHaveAttribute('data-treat-authorized', 'true'));
+    }
+
+    it('starts the ad from the selected treat without a modal and keeps cancellation retryable', async () => {
+      const { pet, status } = exhaustedPrompt(true);
+      apiMocks.startAdReward.mockResolvedValue({ ...status, sessionId: 'cancelled-treat-ad' });
+      apiMocks.cancelAdReward.mockResolvedValue(status);
+      const dismissal = deferred<void>();
+      rewardMocks.showRewardedAd.mockReturnValueOnce(dismissal.promise).mockRejectedValue(new DOMException('광고 취소', 'AbortError'));
+      render(<App />);
+      fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
+      const scene = await screen.findByTestId('play-scene');
+      expect(scene).toHaveAttribute('data-pet-id', pet.id);
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '고구마 선택' }));
+      expect(scene).toHaveAttribute('data-selected-treat', '고구마');
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      const attemptPhotoWithoutAuthorization = () => {
+        fireEvent.click(screen.getByRole('button', { name: '두 번째 입력 신호' }));
+        fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
+        expect(apiMocks.revealPet).not.toHaveBeenCalled();
+        expect(apiMocks.openOwnerPhoto).not.toHaveBeenCalled();
+        expect(photoBufferMocks.resolve).not.toHaveBeenCalled();
+        expect(screen.queryByRole('dialog', { name: '강아지 실사 사진' })).not.toBeInTheDocument();
+      };
+      attemptPhotoWithoutAuthorization();
+      startTreatAd();
+      await waitFor(() => expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce());
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      attemptPhotoWithoutAuthorization();
+      await act(async () => { dismissal.reject(new DOMException('광고 취소', 'AbortError')); await dismissal.promise.catch(() => undefined); });
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByTestId('play-scene')).toBe(scene);
+      expect(scene).toHaveAttribute('data-selected-treat', '고구마');
+      expectTreatWaiting();
+      attemptPhotoWithoutAuthorization();
+      startTreatAd();
+      await waitFor(() => expect(rewardMocks.showRewardedAd).toHaveBeenCalledTimes(2));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expectTreatWaiting();
+    });
+
+    it('connects zero-ticket pet choice and one treat action directly to ad and photo without another ticket', async () => {
       const { pet, allowance, status } = exhaustedPrompt(true);
       let current = status;
       apiMocks.fetchRewardStatus.mockImplementation(async () => current);
@@ -1301,8 +1385,19 @@ describe('App upload submission integration', () => {
       const picker = await screen.findByRole('dialog', { name: '어떤 친구를 만나볼까요?' });
       expect(apiMocks.startAdReward).not.toHaveBeenCalled();
       fireEvent.click(within(picker).getByRole('button', { name: pet.name }));
-      fireEvent.click(await screen.findByRole('button', { name: '광고 보고 이 친구 만나기' }));
-      await screen.findByTestId('play-scene');
+      const scene = await screen.findByTestId('play-scene');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: '고구마 선택' }));
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      startTreatAd();
+      await expectTreatResumed(pet.id);
+      expect(screen.getByTestId('play-scene')).toBe(scene);
+      expect(scene).toHaveAttribute('data-selected-treat', '고구마');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       expect(screen.getByText('받은 광고 보상으로 만나요. 티켓은 쓰지 않아요.')).toBeInTheDocument();
       expect(screen.queryByText('두 번째로 쓰다듬으면 티켓 1장으로 사진을 준비해요')).not.toBeInTheDocument();
       expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce();
@@ -1311,6 +1406,236 @@ describe('App upload submission integration', () => {
       await screen.findByRole('dialog', { name: '강아지 실사 사진' });
       expect(apiMocks.revealPet).toHaveBeenCalledWith(expect.objectContaining({ id: pet.id }), 'REWARDED', 'home-ad', expect.any(String), 'collect');
       expect(JSON.parse(localStorage.getItem('cute-enough:allowance') ?? '{}').remaining).toBe(0);
+      expect(analyticsMocks.trackProductEvent.mock.calls.filter(([event]) => event === 'rewarded_ad_result')).toEqual([
+        ['rewarded_ad_result', { result: 'rewarded', stage: 'completion' }],
+      ]);
+    });
+
+    it.each(['session_start', 'native_show'] as const)('keeps %s failures retryable and excludes identifiers or raw errors from analytics', async (stage) => {
+      const { pet, status } = exhaustedPrompt(true);
+      const sessionId = 'private-ad-session';
+      let rawError = '';
+      apiMocks.startAdReward.mockResolvedValue({ ...status, sessionId });
+      apiMocks.cancelAdReward.mockResolvedValue(status);
+      if (stage === 'session_start') {
+        apiMocks.startAdReward.mockImplementationOnce(async (_petId, requestId) => {
+          rawError = `private-error ${pet.id} ${sessionId} ${requestId}`;
+          throw new Error(rawError);
+        });
+      } else {
+        rewardMocks.showRewardedAd.mockImplementation(async () => {
+          rawError = `private-error ${pet.id} ${sessionId} ${apiMocks.startAdReward.mock.calls[0][1]}`;
+          throw new Error(rawError);
+        });
+      }
+      await openPrompt(true);
+      fireEvent.click(screen.getByRole('button', { name: '고구마 선택' }));
+      startTreatAd();
+      await waitFor(() => expect(analyticsMocks.trackProductEvent).toHaveBeenCalledWith('rewarded_ad_result', { result: 'failed', stage }));
+      const results = analyticsMocks.trackProductEvent.mock.calls.filter(([event]) => event === 'rewarded_ad_result');
+      expect(results).toEqual([['rewarded_ad_result', { result: 'failed', stage }]]);
+      const logged = JSON.stringify(results);
+      for (const privateValue of [pet.id, sessionId, apiMocks.startAdReward.mock.calls[0][1], rawError]) {
+        expect(logged).not.toContain(privateValue);
+      }
+      expect(rewardMocks.showRewardedAd).toHaveBeenCalledTimes(stage === 'session_start' ? 0 : 1);
+      expect(apiMocks.completeAdReward).not.toHaveBeenCalled();
+      expectTreatWaiting();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      const scene = screen.getByTestId('play-scene');
+      expect(scene).toHaveAttribute('data-selected-treat', '고구마');
+      await waitFor(() => expect(scene).toHaveAttribute('data-treat-error', rawError));
+      await waitFor(() => expect(readPendingAdStarts()).toEqual([]));
+      let current = status;
+      apiMocks.fetchRewardStatus.mockImplementation(async () => current);
+      apiMocks.completeAdReward.mockImplementation(async () => {
+        current = { ...status, adCredits: [{ sessionId, petId: pet.id }] };
+        return current;
+      });
+      rewardMocks.showRewardedAd.mockImplementation(async (_signal, onEarned) => onEarned());
+      startTreatAd();
+      await expectTreatResumed(pet.id);
+      expect(screen.getByTestId('play-scene')).toBe(scene);
+      expect(scene).toHaveAttribute('data-selected-treat', '고구마');
+      expect(apiMocks.completeAdReward).toHaveBeenCalledOnce();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+    });
+
+    it('waits for ad preparation from one treat action and permits retry after preparation failure', async () => {
+      const { pet, status } = exhaustedPrompt(true);
+      let current = status;
+      apiMocks.fetchRewardStatus.mockImplementation(async () => current);
+      apiMocks.startAdReward.mockResolvedValue({ ...status, sessionId: 'prepared-treat-ad' });
+      apiMocks.completeAdReward.mockImplementation(async () => {
+        current = { ...status, adCredits: [{ sessionId: 'prepared-treat-ad', petId: pet.id }] };
+        return current;
+      });
+      rewardMocks.showRewardedAd.mockImplementation(async (_signal, onEarned) => onEarned());
+      await openPrompt(true);
+      fireEvent.click(screen.getByRole('button', { name: '고구마 선택' }));
+      const preparation = deferred<void>();
+      rewardMocks.preloadRewardedAd.mockReturnValueOnce(preparation.promise);
+      startTreatAd();
+      await waitFor(() => expect(rewardMocks.preloadRewardedAd).toHaveBeenCalledWith(expect.any(AbortSignal)));
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      await act(async () => { preparation.reject(new Error('광고 준비 실패')); await preparation.promise.catch(() => undefined); });
+      expect(analyticsMocks.trackProductEvent).toHaveBeenCalledWith('rewarded_ad_result', { result: 'failed', stage: 'preparation' });
+      expect(screen.getByTestId('play-scene')).toHaveAttribute('data-treat-error', '광고 준비 실패');
+      expectTreatWaiting();
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(apiMocks.cancelAdReward).not.toHaveBeenCalled();
+      startTreatAd();
+      await expectTreatResumed(pet.id);
+      expect(screen.getByTestId('play-scene')).toHaveAttribute('data-selected-treat', '고구마');
+      expect(apiMocks.startAdReward).toHaveBeenCalledOnce();
+      expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce();
+      expect(apiMocks.completeAdReward).toHaveBeenCalledOnce();
+    });
+
+    it.each(['owner', 'revisit', 'free', 'bonus'] as const)('resumes the chosen treat with newly confirmed %s access while ad preparation is pending', async (right) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-09-06T00:00:00.000Z'));
+      const { pet, allowance, status } = exhaustedPrompt(true, false, 60_000);
+      await openPrompt(true);
+      fireEvent.click(screen.getByRole('button', { name: '고구마 선택' }));
+      const scene = screen.getByTestId('play-scene');
+      const preparation = deferred<void>();
+      rewardMocks.preloadRewardedAd.mockReturnValueOnce(preparation.promise);
+      startTreatAd();
+      await waitFor(() => expect(rewardMocks.preloadRewardedAd).toHaveBeenCalledWith(expect.any(AbortSignal)));
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+
+      const refreshed = right === 'owner' ? { ...pet, isMine: true, ownerPhotoAvailable: true }
+        : right === 'revisit' ? { ...pet, unlockedPhotoCount: 1, albumPhotoId: 'existing-photo', collection: { collectedCount: 1, totalCount: 3, collectedToday: true, canCollectToday: false } }
+          : pet;
+      const confirmed = { ...allowance, remaining: right === 'free' ? 1 : 0, bonusTickets: right === 'bonus' ? 1 : 0 };
+      const updatedStatus = { ...status, allowance: confirmed };
+      apiMocks.fetchHouse.mockResolvedValue({ pets: [refreshed], allowance: confirmed, rewardStatus: updatedStatus });
+      apiMocks.fetchRewardStatus.mockResolvedValue(updatedStatus);
+      vi.setSystemTime(new Date('2026-09-06T00:01:01.000Z'));
+      await act(async () => window.dispatchEvent(new Event('focus')));
+      await waitFor(() => expect(apiMocks.fetchHouse).toHaveBeenCalledTimes(2));
+      expectTreatWaiting();
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      expect(apiMocks.openOwnerPhoto).not.toHaveBeenCalled();
+
+      await act(async () => { preparation.resolve(); await preparation.promise; });
+      await expectTreatResumed(pet.id);
+      expect(screen.getByTestId('play-scene')).toBe(scene);
+      expect(scene).toHaveAttribute('data-selected-treat', '고구마');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      expect(apiMocks.openOwnerPhoto).not.toHaveBeenCalled();
+      apiMocks.revealPet.mockResolvedValue({ ...collectedPhotoResponse(refreshed), allowance });
+      apiMocks.openOwnerPhoto.mockResolvedValue({ photoUrl: 'https://example.test/owner.jpg', photoId: 'owner-photo', signedUrlExpiresAt: '2099-09-05T12:00:00Z' });
+      fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
+      if (right === 'owner') {
+        await waitFor(() => expect(apiMocks.openOwnerPhoto).toHaveBeenCalledOnce());
+        expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      } else {
+        await waitFor(() => expect(apiMocks.revealPet).toHaveBeenCalledOnce());
+        if (right === 'revisit') expect(apiMocks.revealPet.mock.calls[0][4]).toBe('replay');
+        else expect(apiMocks.revealPet.mock.calls[0][1]).toBe(right === 'free' ? 'FREE' : 'SHARE');
+      }
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      expect(apiMocks.completeAdReward).not.toHaveBeenCalled();
+      expect(apiMocks.cancelAdReward).not.toHaveBeenCalled();
+    });
+
+    it('guards duplicate treat actions and repeated earned callbacks while one native ad is open', async () => {
+      const { pet, status } = exhaustedPrompt(true);
+      let current = status;
+      apiMocks.fetchRewardStatus.mockImplementation(async () => current);
+      const session = deferred<typeof status & { sessionId: string }>();
+      apiMocks.startAdReward.mockReturnValue(session.promise);
+      apiMocks.completeAdReward.mockImplementation(async () => {
+        current = { ...status, adCredits: [{ sessionId: 'single-treat-ad', petId: pet.id }] };
+        return current;
+      });
+      const dismissal = deferred<void>();
+      let earned!: () => void;
+      rewardMocks.showRewardedAd.mockImplementation((_signal, onEarned) => { earned = onEarned; return dismissal.promise; });
+      await openPrompt(true);
+      fireEvent.click(screen.getByRole('button', { name: '고구마 선택' }));
+      startTreatAd();
+      startTreatAd();
+      await waitFor(() => expect(apiMocks.startAdReward).toHaveBeenCalledOnce());
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      await act(async () => { session.resolve({ ...status, sessionId: 'single-treat-ad' }); await session.promise; });
+      await waitFor(() => expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce());
+      startTreatAd();
+      await act(async () => { earned(); earned(); });
+      await waitFor(() => expect(apiMocks.completeAdReward).toHaveBeenCalledOnce());
+      expectTreatWaiting();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      await act(async () => { dismissal.resolve(); await dismissal.promise; });
+      await expectTreatResumed(pet.id);
+      expect(screen.getByTestId('play-scene')).toHaveAttribute('data-selected-treat', '고구마');
+      expect(apiMocks.startAdReward).toHaveBeenCalledOnce();
+      expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce();
+      expect(apiMocks.completeAdReward).toHaveBeenCalledOnce();
+    });
+
+    it('records earned but unconfirmed completion separately from a display failure', async () => {
+      const { status } = exhaustedPrompt(true);
+      apiMocks.startAdReward.mockResolvedValue({ ...status, sessionId: 'pending-completion' });
+      apiMocks.completeAdReward.mockRejectedValue(new Error('private completion transport error'));
+      rewardMocks.showRewardedAd.mockImplementation(async (_signal, onEarned) => onEarned());
+      await openPrompt(true);
+      startTreatAd();
+      await waitFor(() => expect(analyticsMocks.trackProductEvent.mock.calls.filter(([event]) => event === 'rewarded_ad_result')).toEqual([
+        ['rewarded_ad_result', { result: 'completion_pending', stage: 'completion' }],
+      ]));
+      expect(readRewardRecovery()).toEqual([expect.objectContaining({ kind: 'adComplete', sessionId: 'pending-completion' })]);
+      expect(apiMocks.cancelAdReward).not.toHaveBeenCalled();
+      expectTreatWaiting();
+    });
+
+    it.each(['free', 'bonus', 'owner', 'replay'] as const)('never starts an ad for an available %s encounter even with ads enabled', async (kind) => {
+      const exhausted = exhaustedPrompt(true);
+      const allowance = { ...exhausted.allowance, remaining: kind === 'free' ? 1 : 0, bonusTickets: kind === 'bonus' ? 1 : 0 };
+      const pet = kind === 'owner' ? { ...exhausted.pet, isMine: true, ownerPhotoAvailable: true }
+        : kind === 'replay' ? { ...exhausted.pet, unlockedPhotoCount: 1, albumPhotoId: 'collected-photo', collection: { collectedCount: 1, totalCount: 3, collectedToday: true, canCollectToday: false } }
+          : exhausted.pet;
+      const status = { ...exhausted.status, allowance };
+      apiMocks.fetchHouse.mockResolvedValue({ pets: [pet], allowance, rewardStatus: status });
+      apiMocks.fetchRewardStatus.mockResolvedValue(status);
+      apiMocks.revealPet.mockResolvedValue({ ...collectedPhotoResponse(pet), allowance });
+      apiMocks.openOwnerPhoto.mockResolvedValue({ photoUrl: 'https://example.test/owner.jpg', photoId: 'owner-photo', signedUrlExpiresAt: '2099-09-05T12:00:00Z' });
+      render(<App />);
+      fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
+      const action = await screen.findByTestId('treat-action');
+      expect(action).toHaveTextContent('구르미에게 간식 주기');
+      fireEvent.click(action);
+      fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
+      if (kind === 'owner') await waitFor(() => expect(apiMocks.openOwnerPhoto).toHaveBeenCalledOnce());
+      else {
+        await waitFor(() => expect(apiMocks.revealPet).toHaveBeenCalledOnce());
+        if (kind === 'replay') expect(apiMocks.revealPet.mock.calls[0][4]).toBe('replay');
+        else expect(apiMocks.revealPet.mock.calls[0][1]).toBe(kind === 'free' ? 'FREE' : 'SHARE');
+      }
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+    });
+
+    it('keeps the ticket dialog when the daily ad limit is exhausted', async () => {
+      const exhausted = exhaustedPrompt(true);
+      const allowance = { ...exhausted.allowance, rewardedUsed: 2, rewardedRemaining: 0 };
+      const status = { ...exhausted.status, allowance };
+      apiMocks.fetchHouse.mockResolvedValue({ pets: [exhausted.pet], allowance, rewardStatus: status });
+      apiMocks.fetchRewardStatus.mockResolvedValue(status);
+      render(<App />);
+      fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
+      expect(await screen.findByRole('dialog', { name: '다음 친구도 만나볼까요?' })).toBeInTheDocument();
+      expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
     });
 
     it('offers only ad-eligible pets, not owner or free replays, and native back dismisses choice', async () => {
@@ -1348,7 +1673,7 @@ describe('App upload submission integration', () => {
       rewardMocks.showRewardedAd.mockReturnValue(dismissal.promise);
       apiMocks.cancelAdReward.mockResolvedValue(status);
       await openPrompt(true);
-      fireEvent.click(screen.getByRole('button', { name: '광고 보고 이 친구 만나기' }));
+      startTreatAd();
       await waitFor(() => expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce());
       act(() => appHarness.adStatusListener?.(phase));
       const resume = screen.getByRole('button', { name: phase === 'reward-earned' ? '받은 보상으로 계속하기' : '광고 없이 돌아왔어요 · 다시 확인' });
@@ -1369,15 +1694,17 @@ describe('App upload submission integration', () => {
       apiMocks.cancelAdReward.mockResolvedValue(status);
       rewardMocks.showRewardedAd.mockRejectedValue(new Error('테스트 광고 취소'));
       await openPrompt(true);
-      fireEvent.click(screen.getByRole('button', { name: '광고 보고 이 친구 만나기' }));
+      startTreatAd();
       await waitFor(() => expect(apiMocks.cancelAdReward).toHaveBeenCalledOnce());
       const firstId = apiMocks.startAdReward.mock.calls[0][1];
       expect(apiMocks.startAdReward.mock.calls[1]).toEqual([pet.id, firstId]);
       expect(readPendingAdStarts()).toHaveLength(0);
       expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      expectTreatWaiting();
       await act(async () => appHarness.navigationHandlers?.onBack());
       fireEvent.click(screen.getByRole('button', { name: '하늘 옮기기 또는 선택' }));
-      fireEvent.click(await screen.findByRole('button', { name: '광고 보고 이 친구 만나기' }));
+      await screen.findByTestId('treat-action');
+      startTreatAd();
       await waitFor(() => expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce());
       expect(apiMocks.startAdReward.mock.calls[2][0]).toBe(other.id);
       expect(apiMocks.startAdReward.mock.calls[2][1]).not.toBe(firstId);
@@ -1399,13 +1726,13 @@ describe('App upload submission integration', () => {
       rewardMocks.showRewardedAd.mockImplementation((_signal, onEarned) => { earned = onEarned; return dismissal.promise; });
       rewardMocks.confirmRewardedAdReturn.mockImplementation(() => { dismissal.resolve(); return true; });
       await openPrompt(true);
-      fireEvent.click(screen.getByRole('button', { name: '광고 보고 이 친구 만나기' }));
+      startTreatAd();
       await waitFor(() => expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce());
       await act(async () => { earned(); appHarness.adStatusListener?.('reward-earned'); });
       await waitFor(() => expect(apiMocks.completeAdReward).toHaveBeenCalledOnce());
-      expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+      expectTreatWaiting();
       fireEvent.click(screen.getByRole('button', { name: '받은 보상으로 계속하기' }));
-      expect(await screen.findByTestId('play-scene')).toHaveAttribute('data-pet-id', pet.id);
+      await expectTreatResumed(pet.id);
       expect(apiMocks.startAdReward).toHaveBeenCalledOnce();
       expect(apiMocks.completeAdReward).toHaveBeenCalledOnce();
       expect(apiMocks.cancelAdReward).not.toHaveBeenCalled();
@@ -1432,7 +1759,7 @@ describe('App upload submission integration', () => {
         onEarned();
       });
       await openPrompt(true);
-      fireEvent.click(screen.getByRole('button', { name: '광고 보고 이 친구 만나기' }));
+      startTreatAd();
       await waitFor(() => expect(apiMocks.completeAdReward).toHaveBeenCalledOnce());
       expect(readPendingAdStarts()).toEqual([expect.objectContaining({ phase: 'native', sessionId: 'earned-without-storage' })]);
       expect(readActiveRewardSessions()).toEqual([{ kind: 'ad', sessionId: 'earned-without-storage' }]);
@@ -1460,21 +1787,22 @@ describe('App upload submission integration', () => {
     it.each([
       { ads: false, kind: 'free' }, { ads: true, kind: 'free' },
       { ads: false, kind: 'bonus' }, { ads: true, kind: 'bonus' },
-    ])('changes the open ads=$ads prompt for confirmed $kind tickets without spending before snacks', async ({ ads, kind }) => {
+    ])('uses confirmed $kind tickets from the ads=$ads encounter without spending before snacks', async ({ ads, kind }) => {
       const { pet, allowance, status } = exhaustedPrompt(ads, true);
       await openPrompt(ads);
       const granted = kind === 'free' ? { ...allowance, remaining: 1, freeUsed: 1 } : { ...allowance, bonusTickets: 1 };
       apiMocks.fetchRewardStatus.mockResolvedValue({ ...status, allowance: granted });
       act(() => window.dispatchEvent(new Event('focus')));
-      const button = await screen.findByRole('button', { name: '티켓으로 이 친구 만나기' });
-      expect(screen.queryByRole('button', { name: '공유하고 티켓 받기' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: '광고 보고 이 친구 만나기' })).not.toBeInTheDocument();
-      expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByRole('button', { name: '공유하고 티켓 받기' })).not.toBeInTheDocument());
+      const button = ads ? screen.getByTestId('treat-action') : await screen.findByRole('button', { name: '티켓으로 이 친구 만나기' });
+      if (ads) expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      else expect(within(screen.getByRole('dialog')).queryByRole('button', { name: '광고 보고 간식 주기' })).not.toBeInTheDocument();
+      expectTreatWaiting(ads);
       expect(apiMocks.revealPet).not.toHaveBeenCalled();
       expect(apiMocks.startAdReward).not.toHaveBeenCalled();
       expect(apiMocks.startShareReward).not.toHaveBeenCalled();
       fireEvent.click(button);
-      expect(await screen.findByTestId('play-scene')).toHaveAttribute('data-pet-id', pet.id);
+      await expectTreatResumed(pet.id, ads);
       expect(apiMocks.revealPet).not.toHaveBeenCalled();
       apiMocks.revealPet.mockResolvedValue({ ...collectedPhotoResponse(pet), allowance: { ...granted, remaining: 0, bonusTickets: 0 } });
       fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
@@ -1492,8 +1820,9 @@ describe('App upload submission integration', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(60_500); });
       expect(apiMocks.fetchHouse).toHaveBeenCalledTimes(2);
       expect(screen.queryByRole('button', { name: '티켓으로 이 친구 만나기' })).not.toBeInTheDocument();
-      expect(screen.getByRole('dialog', { name: ads ? '광고를 보고 지금 이 친구 만나기' : '다음 친구도 만나볼까요?' })).toBeInTheDocument();
-      expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+      if (ads) expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      else expect(screen.getByRole('dialog', { name: '다음 친구도 만나볼까요?' })).toBeInTheDocument();
+      expectTreatWaiting(ads);
       expect(apiMocks.revealPet).not.toHaveBeenCalled();
       expect(apiMocks.startAdReward).not.toHaveBeenCalled();
     });
@@ -1503,11 +1832,11 @@ describe('App upload submission integration', () => {
       await openPrompt(true);
       const recovery = deferred<typeof status>();
       apiMocks.fetchRewardStatus.mockReturnValueOnce(recovery.promise);
-      fireEvent.click(screen.getByRole('button', { name: '광고 보고 이 친구 만나기' }));
+      startTreatAd();
       await waitFor(() => expect(apiMocks.fetchRewardStatus).toHaveBeenCalledTimes(2));
       expect(apiMocks.startAdReward).not.toHaveBeenCalled();
       await act(async () => { recovery.resolve({ ...status, allowance: { ...allowance, remaining: 1, freeUsed: 1 } }); await recovery.promise; });
-      expect(await screen.findByTestId('play-scene')).toHaveAttribute('data-pet-id', pet.id);
+      await expectTreatResumed(pet.id);
       expect(apiMocks.startAdReward).not.toHaveBeenCalled();
       expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
       expect(apiMocks.revealPet).not.toHaveBeenCalled();
@@ -1521,14 +1850,141 @@ describe('App upload submission integration', () => {
       await openPrompt(true);
       const recovery = deferred<typeof status>();
       apiMocks.fetchRewardStatus.mockReturnValueOnce(recovery.promise);
-      fireEvent.click(screen.getByRole('button', { name: '광고 보고 이 친구 만나기' }));
+      startTreatAd();
       await waitFor(() => expect(apiMocks.fetchRewardStatus).toHaveBeenCalledTimes(2));
       act(() => appHarness.navigationHandlers?.onBack());
       await act(async () => { recovery.resolve({ ...status, allowance: { ...allowance, remaining: 1, freeUsed: 1 } }); await recovery.promise; });
-      expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+      expectTreatWaiting();
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       expect(apiMocks.startAdReward).not.toHaveBeenCalled();
       expect(apiMocks.revealPet).not.toHaveBeenCalled();
+    });
+
+    it('accepts a new treat attempt immediately after cancelling an unfinished reward recovery', async () => {
+      const { pet, status } = exhaustedPrompt(true);
+      let current = status;
+      apiMocks.fetchRewardStatus.mockImplementation(async () => current);
+      apiMocks.startAdReward.mockResolvedValue({ ...status, sessionId: 'retry-after-cancel' });
+      apiMocks.completeAdReward.mockImplementation(async () => {
+        current = { ...status, adCredits: [{ sessionId: 'retry-after-cancel', petId: pet.id }] };
+        return current;
+      });
+      rewardMocks.showRewardedAd.mockImplementation(async (_signal, onEarned) => onEarned());
+      await openPrompt(true);
+      fireEvent.click(screen.getByRole('button', { name: '고구마 선택' }));
+      const scene = screen.getByTestId('play-scene');
+      const recovery = deferred<typeof status>();
+      apiMocks.fetchRewardStatus.mockReturnValueOnce(recovery.promise);
+      startTreatAd();
+      await waitFor(() => expect(apiMocks.fetchRewardStatus).toHaveBeenCalledTimes(2));
+      await act(async () => appHarness.navigationHandlers?.onBack());
+      expect(screen.getByTestId('play-scene')).toBe(scene);
+      expectTreatWaiting();
+      startTreatAd();
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      await act(async () => { recovery.resolve(status); await recovery.promise; });
+      await expectTreatResumed(pet.id);
+      expect(screen.getByTestId('play-scene')).toBe(scene);
+      expect(scene).toHaveAttribute('data-selected-treat', '고구마');
+      expect(apiMocks.startAdReward).toHaveBeenCalledOnce();
+      expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce();
+      expect(apiMocks.completeAdReward).toHaveBeenCalledOnce();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+    });
+
+    it('keeps a newer owner photo request busy when a cancelled ad session returns late', async () => {
+      const { pet, allowance, status } = exhaustedPrompt(true);
+      const owner = collectedFriend({ id: 'owner-after-cancel', name: '보리', isMine: true, ownerPhotoAvailable: true });
+      apiMocks.fetchHouse.mockResolvedValue({ pets: [pet, owner], allowance, rewardStatus: status });
+      const session = deferred<typeof status & { sessionId: string }>();
+      apiMocks.startAdReward.mockReturnValue(session.promise);
+      apiMocks.cancelAdReward.mockResolvedValue(status);
+      const ownerResult = { photoUrl: 'https://example.test/owner-after-cancel.jpg', photoId: 'owner-photo', signedUrlExpiresAt: '2099-09-05T12:00:00Z' };
+      const ownerPhoto = deferred<typeof ownerResult>();
+      apiMocks.openOwnerPhoto.mockReturnValue(ownerPhoto.promise);
+      await openPrompt(true);
+      startTreatAd();
+      await waitFor(() => expect(apiMocks.startAdReward).toHaveBeenCalledOnce());
+      await act(async () => appHarness.navigationHandlers?.onHome());
+      fireEvent.click(await screen.findByRole('button', { name: '보리 옮기기 또는 선택' }));
+      expect(await screen.findByTestId('play-scene')).toHaveAttribute('data-pet-id', owner.id);
+      fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
+      await waitFor(() => expect(apiMocks.openOwnerPhoto).toHaveBeenCalledOnce());
+      await act(async () => { session.resolve({ ...status, sessionId: 'cancelled-before-owner-photo' }); await session.promise; });
+      await waitFor(() => expect(apiMocks.cancelAdReward).toHaveBeenCalledWith('cancelled-before-owner-photo'));
+      fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
+      expect(apiMocks.openOwnerPhoto).toHaveBeenCalledOnce();
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      expect(apiMocks.completeAdReward).not.toHaveBeenCalled();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      await act(async () => { ownerPhoto.resolve(ownerResult); await ownerPhoto.promise; });
+      expect(await screen.findByRole('dialog', { name: '강아지 실사 사진' })).toHaveTextContent('보리 사진');
+      expect(screen.getByTestId('revealed-photo-url')).toHaveTextContent(ownerResult.photoUrl);
+      expect(apiMocks.openOwnerPhoto).toHaveBeenCalledOnce();
+    });
+
+    it('never starts a server session or native ad when recovery finishes after the app unmounts', async () => {
+      const { status } = exhaustedPrompt(true);
+      const { unmount } = await openPrompt(true);
+      const recovery = deferred<typeof status>();
+      apiMocks.fetchRewardStatus.mockReturnValueOnce(recovery.promise);
+      apiMocks.startAdReward.mockResolvedValue({ ...status, sessionId: 'unexpected-late-start' });
+      apiMocks.cancelAdReward.mockResolvedValue(status);
+      rewardMocks.showRewardedAd.mockResolvedValue(undefined);
+      startTreatAd();
+      await waitFor(() => expect(apiMocks.fetchRewardStatus).toHaveBeenCalledTimes(2));
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      unmount();
+      await act(async () => { recovery.resolve(status); await recovery.promise; });
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      expect(apiMocks.completeAdReward).not.toHaveBeenCalled();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      expect(readPendingAdStarts()).toEqual([]);
+    });
+
+    it('does not let an old recovery authorize the same dog after returning home and selecting it again', async () => {
+      const { pet, status } = exhaustedPrompt(true);
+      await openPrompt(true);
+      const recovery = deferred<typeof status>();
+      apiMocks.fetchRewardStatus.mockReturnValueOnce(recovery.promise);
+      apiMocks.startAdReward.mockResolvedValue({ ...status, sessionId: 'fresh-same-pet-ad' });
+      apiMocks.cancelAdReward.mockResolvedValue(status);
+      rewardMocks.showRewardedAd.mockResolvedValue(undefined);
+      startTreatAd();
+      await waitFor(() => expect(apiMocks.fetchRewardStatus).toHaveBeenCalledTimes(2));
+      await act(async () => appHarness.navigationHandlers?.onHome());
+      fireEvent.click(await screen.findByRole('button', { name: '구르미 옮기기 또는 선택' }));
+      const scene = await screen.findByTestId('play-scene');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      await act(async () => { recovery.resolve(status); await recovery.promise; });
+      expect(screen.getByTestId('play-scene')).toBe(scene);
+      expectTreatWaiting();
+      expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      expect(readPendingAdStarts()).toEqual([]);
+      startTreatAd();
+      await waitFor(() => expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce());
+      expect(apiMocks.startAdReward).toHaveBeenCalledOnce();
+      expect(apiMocks.startAdReward.mock.calls[0][0]).toBe(pet.id);
+    });
+
+    it('cancels a late server session after unmount without showing an ad or resuming the treat', async () => {
+      const { status } = exhaustedPrompt(true);
+      const session = deferred<typeof status & { sessionId: string }>();
+      apiMocks.startAdReward.mockReturnValue(session.promise);
+      apiMocks.cancelAdReward.mockResolvedValue(status);
+      const { unmount } = await openPrompt(true);
+      startTreatAd();
+      await waitFor(() => expect(apiMocks.startAdReward).toHaveBeenCalledOnce());
+      unmount();
+      await act(async () => { session.resolve({ ...status, sessionId: 'late-session-after-unmount' }); await session.promise; });
+      await waitFor(() => expect(apiMocks.cancelAdReward).toHaveBeenCalledWith('late-session-after-unmount'));
+      expect(rewardMocks.showRewardedAd).not.toHaveBeenCalled();
+      expect(apiMocks.completeAdReward).not.toHaveBeenCalled();
+      expect(apiMocks.revealPet).not.toHaveBeenCalled();
+      expect(readPendingAdStarts()).toEqual([]);
     });
 
     it.each([false, true])('keeps the selected dog after a share reward in ads=%s prompt and waits until native sharing closes', async (ads) => {
@@ -1548,17 +2004,25 @@ describe('App upload submission integration', () => {
       fireEvent.click(screen.getByRole('button', { name: '공유하고 티켓 받기' }));
       await waitFor(() => expect(rewardMocks.openShareReward).toHaveBeenCalledOnce());
       act(() => callbacks.onReward(1, 1, '티켓'));
-      const dialog = await screen.findByRole('dialog', { name: '이 친구를 만날 준비가 됐어요' });
-      const ready = within(dialog).getByRole('button', { name: '잠시만요…' });
-      expect(ready).toBeDisabled();
-      fireEvent.click(ready);
-      expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+      await waitFor(() => expect(apiMocks.recordShareReward).toHaveBeenCalledOnce());
+      let ready: HTMLElement;
+      if (ads) {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        ready = screen.getByTestId('treat-action');
+        fireEvent.click(ready);
+      } else {
+        const dialog = await screen.findByRole('dialog', { name: '이 친구를 만날 준비가 됐어요' });
+        ready = within(dialog).getByRole('button', { name: '잠시만요…' });
+        expect(ready).toBeDisabled();
+        fireEvent.click(ready);
+      }
+      expectTreatWaiting(ads);
       await act(async () => { callbacks.onClose({ sentRewardsCount: 1, sentRewardAmount: 1 }); nativeClose.resolve(); await nativeClose.promise; });
       await waitFor(() => expect(ready).toBeEnabled());
-      expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+      expectTreatWaiting(ads);
       expect(apiMocks.revealPet).not.toHaveBeenCalled();
       fireEvent.click(ready);
-      expect(await screen.findByTestId('play-scene')).toHaveAttribute('data-pet-id', pet.id);
+      await expectTreatResumed(pet.id, ads);
       expect(apiMocks.startShareReward).toHaveBeenCalledOnce();
       expect(apiMocks.startAdReward).not.toHaveBeenCalled();
     });
@@ -1568,8 +2032,11 @@ describe('App upload submission integration', () => {
       await openPrompt(ads);
       apiMocks.fetchRewardStatus.mockResolvedValue({ ...status, allowance: { ...allowance, remaining: 1, freeUsed: 1 }, adCredits: [{ sessionId: 'earned-prompt-credit', petId: pet.id }] });
       act(() => window.dispatchEvent(new Event('focus')));
-      fireEvent.click(await screen.findByRole('button', { name: '받은 보상으로 이 친구 만나기' }));
-      expect(await screen.findByTestId('play-scene')).toHaveAttribute('data-pet-id', pet.id);
+      if (ads) {
+        await waitFor(() => expect(apiMocks.fetchRewardStatus).toHaveBeenCalledTimes(2));
+        startTreatAd();
+      } else fireEvent.click(await screen.findByRole('button', { name: '받은 보상으로 이 친구 만나기' }));
+      await expectTreatResumed(pet.id, ads);
       expect(apiMocks.revealPet).not.toHaveBeenCalled();
       apiMocks.revealPet.mockResolvedValue({ ...collectedPhotoResponse(pet), allowance });
       fireEvent.click(screen.getByRole('button', { name: '간식 주기' }));
@@ -1591,20 +2058,19 @@ describe('App upload submission integration', () => {
       let earned!: () => void;
       rewardMocks.showRewardedAd.mockImplementation((_signal, onEarned) => { earned = onEarned; return dismissal.promise; });
       await openPrompt(true);
-      fireEvent.click(screen.getByRole('button', { name: '광고 보고 이 친구 만나기' }));
+      startTreatAd();
       await waitFor(() => expect(rewardMocks.showRewardedAd).toHaveBeenCalledOnce());
       act(() => earned());
-      const dialog = await screen.findByRole('dialog', { name: '이 친구를 만날 준비가 됐어요' });
-      const ready = within(dialog).getByRole('button', { name: '잠시만요…' });
-      expect(ready).toBeDisabled();
-      fireEvent.click(ready);
-      expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+      await waitFor(() => expect(apiMocks.completeAdReward).toHaveBeenCalledOnce());
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('treat-action'));
+      expectTreatWaiting();
       if (cancelled) act(() => appHarness.navigationHandlers?.onBack());
       await act(async () => { dismissal.resolve(); await dismissal.promise; });
       if (cancelled) {
-        expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+        expectTreatWaiting();
         expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      } else expect(await screen.findByTestId('play-scene')).toHaveAttribute('data-pet-id', pet.id);
+      } else await expectTreatResumed(pet.id);
       expect(apiMocks.startAdReward).toHaveBeenCalledOnce();
       expect(apiMocks.completeAdReward).toHaveBeenCalledOnce();
       expect(apiMocks.cancelAdReward).not.toHaveBeenCalled();
@@ -1628,12 +2094,15 @@ describe('App upload submission integration', () => {
       vi.setSystemTime(new Date('2026-09-06T00:01:01.000Z'));
       act(() => window.dispatchEvent(new Event('focus')));
       const label = right === 'revisit' ? '이 친구 다시 만나기' : right === 'owner' ? '우리 강아지 만나기' : '확인';
-      fireEvent.click(await screen.findByRole('button', { name: label }));
+      if (ads) {
+        await waitFor(() => expect(apiMocks.fetchHouse).toHaveBeenCalledTimes(2));
+        startTreatAd();
+      } else fireEvent.click(await screen.findByRole('button', { name: label }));
       if (right === 'rejected') {
         expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
         expect(apiMocks.revealPet).not.toHaveBeenCalled();
       } else {
-        expect(await screen.findByTestId('play-scene')).toHaveAttribute('data-pet-id', pet.id);
+        await expectTreatResumed(pet.id, ads);
         expect(apiMocks.revealPet).not.toHaveBeenCalled();
         expect(apiMocks.openOwnerPhoto).not.toHaveBeenCalled();
         apiMocks.revealPet.mockResolvedValue({ ...collectedPhotoResponse(pet), allowance });
@@ -1672,6 +2141,26 @@ describe('App upload submission integration', () => {
     expect(apiMocks.closeShareReward).toHaveBeenCalledOnce();
   });
 
+  it('keeps the ticket balance unchanged when contact sharing closes without sending', async () => {
+    const allowance = { date: getKstDate(), freeUsed: 2, remaining: 0, nextChargeAt: new Date(Date.now() + 3600000).toISOString(), rewardedUsed: 0, bonusTickets: 0, uploadCredit: false, uploadUsed: false };
+    const status = { allowance, capabilities: { ads: false, share: true }, adCredits: [] };
+    apiMocks.fetchHouse.mockResolvedValue({ pets: [], allowance, rewardStatus: status });
+    apiMocks.fetchRewardStatus.mockResolvedValue(status);
+    apiMocks.startShareReward.mockResolvedValue({ ...status, sessionId: 'cancelled-share-session' });
+    apiMocks.closeShareReward.mockResolvedValue(status);
+    rewardMocks.openShareReward.mockImplementation(async ({ onClose }) => {
+      onClose({ sentRewardsCount: 0, sentRewardAmount: 0 });
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '친구에게 공유하고 티켓 받기' }));
+    await waitFor(() => expect(apiMocks.closeShareReward).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: '친구에게 공유하고 티켓 받기' })).toBeEnabled());
+    expect(apiMocks.recordShareReward).not.toHaveBeenCalled();
+    expect(screen.queryByText(/보너스 티켓.*장을 받았어요/)).not.toBeInTheDocument();
+    expect(apiMocks.startAdReward).not.toHaveBeenCalled();
+    expect(apiMocks.revealPet).not.toHaveBeenCalled();
+  });
+
   it('uses a bonus ticket when free tickets are empty without opening an ad', async () => {
     const pet = { ...appHarness.submittedPet, publishedDesign: SAMPLE_PETS[0].publishedDesign, designVersion: 1, id: 'bonus-pet', isMine: false, ownerPinned: false, approvalStatus: 'approved' as const };
     const allowance = { date: getKstDate(), freeUsed: 2, remaining: 0, nextChargeAt: new Date(Date.now() + 3600000).toISOString(), rewardedUsed: 0, bonusTickets: 1, uploadCredit: false, uploadUsed: false };
@@ -1700,12 +2189,13 @@ describe('App upload submission integration', () => {
     rewardMocks.showRewardedAd.mockImplementation((_signal, earned) => { earned(); return dismissed.promise; });
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: '보리 옮기기 또는 선택' }));
-    fireEvent.click(await screen.findByRole('button', { name: '광고 보고 이 친구 만나기' }));
+    await screen.findByTestId('treat-action');
+    startTreatAd();
     await waitFor(() => expect(apiMocks.completeAdReward).toHaveBeenCalledWith('started-ad'));
     expect(apiMocks.startAdReward.mock.invocationCallOrder[0]).toBeLessThan(rewardMocks.showRewardedAd.mock.invocationCallOrder[0]);
-    expect(screen.queryByTestId('play-scene')).not.toBeInTheDocument();
+    expect(screen.getByTestId('play-scene')).toHaveAttribute('data-treat-authorized', 'false');
     await act(async () => { dismissed.resolve(); await dismissed.promise; });
-    expect(await screen.findByTestId('play-scene')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('play-scene')).toHaveAttribute('data-treat-authorized', 'true'));
     expect(apiMocks.cancelAdReward).not.toHaveBeenCalled();
   });
 
@@ -1986,6 +2476,9 @@ describe('App upload submission integration', () => {
     await waitFor(() => expect(tossMocks.sharePet).toHaveBeenCalledWith('submitted-pet', '보리'));
     expect(analyticsMocks.trackProductEvent).toHaveBeenCalledWith('share_complete', { entry_point: 'mine' });
     expect(await screen.findByText('공유할 곳을 골라주세요.')).toBeInTheDocument();
+    expect(rewardMocks.openShareReward).not.toHaveBeenCalled();
+    expect(apiMocks.startShareReward).not.toHaveBeenCalled();
+    expect(apiMocks.recordShareReward).not.toHaveBeenCalled();
   });
 
   it('cancels an older 내가 소개한 강아지 refresh before applying the newest list', async () => {

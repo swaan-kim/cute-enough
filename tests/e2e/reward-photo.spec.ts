@@ -1,6 +1,66 @@
 import { test, expect, names, petIds, openHome, choose, feed, petThree, expectPhoto, native, startAd, type FlowTiming } from './fixtures';
 
-test('two free dogs → ad reward → second input requests once → third input finishes before photo', async ({ page, flow }, testInfo) => {
+for (const giveMethod of ['CTA', 'dog tap', 'treat drop'] as const) {
+  test(`zero-ticket selection stays ad-free until ${giveMethod} directly starts the native ad`, async ({ page, flow }, testInfo) => {
+    flow.remaining = 0;
+    await openHome(page);
+    await choose(page, names[0]);
+    const action = page.getByRole('button', { name: '광고 보고 간식 주기', exact: true });
+    await expect(action).toBeDisabled();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(flow.count('rewardStart')).toBe(0);
+    expect(await page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'show'))).toEqual([]);
+    await page.getByRole('button', { name: '고기 간식', exact: true }).tap();
+    await expect(action).toBeEnabled();
+    const actionBounds = await action.boundingBox();
+    expect(actionBounds).toBeTruthy();
+    expect(actionBounds!.y).toBeGreaterThanOrEqual(0);
+    expect(actionBounds!.y + actionBounds!.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(flow.count('rewardStart')).toBe(0);
+    expect(flow.count('rewardComplete')).toBe(0);
+    expect(flow.count('reveal')).toBe(0);
+    expect(flow.count('photoPrepare')).toBe(0);
+    expect(flow.photos).toHaveLength(0);
+    expect(await page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'show'))).toEqual([]);
+    await page.screenshot({ path: testInfo.outputPath('zero-ticket-selected-treat.png') });
+    if (giveMethod === 'CTA') await action.tap();
+    else if (giveMethod === 'dog tap') await page.getByRole('button', { name: `${names[0]}에게 간식 주기`, exact: true }).tap();
+    else {
+      const treat = await page.getByRole('button', { name: '고기 간식, 선택됨', exact: true }).boundingBox();
+      const dog = await page.getByRole('button', { name: `${names[0]}에게 간식 주기`, exact: true }).boundingBox();
+      expect(treat).toBeTruthy(); expect(dog).toBeTruthy();
+      // Keep the mobile interaction a touch gesture, including pointer capture.
+      const touch = await page.context().newCDPSession(page);
+      const from = { x: treat!.x + treat!.width / 2, y: treat!.y + treat!.height / 2 };
+      const to = { x: dog!.x + dog!.width / 2, y: dog!.y + dog!.height / 2 };
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...from, id: 1 }] });
+      for (let step = 1; step <= 8; step++) {
+        await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{
+          x: from.x + (to.x - from.x) * step / 8, y: from.y + (to.y - from.y) * step / 8, id: 1,
+        }] });
+      }
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await touch.detach();
+    }
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: `${names[0]} 쓰다듬기, 0번 완료` })).toHaveCount(0);
+    await expect.poll(() => flow.count('rewardStart')).toBe(1);
+    await expect.poll(() => page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'show').length)).toBe(1);
+    expect(flow.count('rewardComplete')).toBe(0);
+    expect(flow.count('reveal')).toBe(0);
+    expect(flow.photos).toHaveLength(0);
+    await native(page, ['show', 'userEarnedReward', 'dismissed']);
+    await expect(page.getByText('고기를 맛있게 먹고 있어요', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: `${names[0]} 쓰다듬기, 0번 완료` })).toBeVisible();
+    expect(flow.count('rewardComplete')).toBe(1);
+    expect(flow.count('reveal')).toBe(0);
+    expect(flow.grantCount).toBe(0);
+    expect(flow.photos).toHaveLength(0);
+  });
+}
+
+test('two free dogs → selected treat → ad reward resumes treat → second input requests once → third finishes before photo', async ({ page, flow }, testInfo) => {
   await openHome(page);
   for (let i = 0; i < 2; i++) {
     await expect(page.getByRole('region', { name: new RegExp(`강아지 티켓 ${2 - i}장`) })).toBeVisible();
@@ -24,7 +84,7 @@ test('two free dogs → ad reward → second input requests once → third input
   expect(flow.count('reveal')).toBe(2);
   expect(flow.completionCount).toBe(0);
   await native(page, ['requested', 'show', 'userEarnedReward', 'dismissed']);
-  await feed(page, names[2]);
+  await expect(page.getByRole('button', { name: `${names[2]} 쓰다듬기, 0번 완료` })).toBeVisible();
   expect(flow.completionCount).toBe(1);
   expect(flow.grantCount).toBe(2);
   expect(flow.count('photoPrepare')).toBe(0);
@@ -52,26 +112,74 @@ test('two free dogs → ad reward → second input requests once → third input
   await page.screenshot({ path: testInfo.outputPath('reward-photo-mobile.png') });
 });
 
-test('ad dismissal without reward cancels the session and spends nothing', async ({ page, flow }) => {
+test('ad dismissal keeps the selected treat and a direct retry resumes it without spending early', async ({ page, flow }) => {
   flow.remaining = 0; await openHome(page); await startAd(page);
   await native(page, ['show', 'dismissed']);
   await expect.poll(() => flow.count('rewardCancel')).toBe(1);
   await expect(page.getByText('광고 시청을 완료해야 이 친구를 만날 수 있어요.', { exact: true }).first()).toBeVisible();
   expect(flow.count('rewardComplete')).toBe(0); expect(flow.count('reveal')).toBe(0); expect(flow.grantCount).toBe(0);
-  await page.getByRole('button', { name: '충전 기다리기' }).tap();
-  await expect(page.getByRole('region', { name: /강아지 티켓 0장/ })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '고구마 간식, 선택됨', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: '광고 보고 간식 주기', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: `${names[2]} 쓰다듬기, 0번 완료` })).toHaveCount(0);
+  expect(flow.photos).toHaveLength(0);
+  await page.getByRole('button', { name: '광고 보고 간식 주기', exact: true }).tap();
+  await expect.poll(() => flow.count('rewardStart')).toBe(2);
+  await expect.poll(() => page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'show').length)).toBe(2);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await native(page, ['show', 'userEarnedReward', 'dismissed']);
+  await expect(page.getByText('고구마를 맛있게 먹고 있어요', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: `${names[2]} 쓰다듬기, 0번 완료` })).toBeVisible();
+  expect(flow.count('rewardComplete')).toBe(1);
+  expect(flow.count('reveal')).toBe(0); expect(flow.grantCount).toBe(0); expect(flow.photos).toHaveLength(0);
 });
 
-test('failed native load offers retry and never opens a reward session', async ({ page, flow }) => {
+test('failed native load keeps the selected treat and retry directly starts the ad after loading', async ({ page, flow }) => {
   flow.remaining = 0;
   await page.addInitScript(() => { (window as any).__nativeAutoLoad = false; });
   await openHome(page);
   await page.getByRole('button', { name: /광고 보고 한 마리 더 만나기/ }).tap();
   await page.getByRole('button', { name: new RegExp(names[2]) }).last().tap();
+  await page.getByRole('button', { name: '고구마 간식', exact: true }).tap();
+  await page.getByRole('button', { name: '광고 보고 간식 주기', exact: true }).tap();
   await expect.poll(() => page.evaluate(() => (window as any).__nativeFixture.events.filter((e: any) => e.name === 'load').length)).toBeGreaterThan(0);
   await page.evaluate(() => (window as any).__nativeFixture.failLoad());
-  await expect(page.getByRole('button', { name: '광고 다시 준비하기' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '광고 보고 간식 주기', exact: true })).toBeEnabled();
+  await expect(page.getByText('로컬 광고 준비 실패', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '고구마 간식, 선택됨', exact: true })).toHaveAttribute('aria-pressed', 'true');
   expect(flow.count('rewardStart')).toBe(0); expect(flow.count('reveal')).toBe(0); expect(flow.count('rewardComplete')).toBe(0);
+  expect(await page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'show'))).toEqual([]);
+  const previousLoads = await page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'load').length);
+  await page.getByRole('button', { name: '광고 보고 간식 주기', exact: true }).tap();
+  await expect.poll(() => page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'load').length)).toBeGreaterThan(previousLoads);
+  expect(flow.count('rewardStart')).toBe(0);
+  await page.evaluate(() => (window as any).__nativeFixture.emitLoad());
+  await expect.poll(() => flow.count('rewardStart')).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'show').length)).toBe(1);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await native(page, ['show', 'userEarnedReward', 'dismissed']);
+  await expect(page.getByText('고구마를 맛있게 먹고 있어요', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: `${names[2]} 쓰다듬기, 0번 완료` })).toBeVisible();
+  expect(flow.count('rewardComplete')).toBe(1); expect(flow.count('reveal')).toBe(0); expect(flow.photos).toHaveLength(0);
+});
+
+test('native show error cancels the session and preserves the selected treat for retry', async ({ page, flow }) => {
+  flow.remaining = 0; await openHome(page); await startAd(page);
+  await page.evaluate(() => (window as any).__nativeFixture.failShow());
+  await expect.poll(() => flow.count('rewardCancel')).toBe(1);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '고구마 간식, 선택됨', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: `${names[2]}에게 간식 주기`, exact: true })).toBeEnabled();
+  expect(flow.count('rewardComplete')).toBe(0); expect(flow.count('reveal')).toBe(0); expect(flow.grantCount).toBe(0);
+  expect(flow.photos).toHaveLength(0);
+  await page.getByRole('button', { name: `${names[2]}에게 간식 주기`, exact: true }).tap();
+  await expect.poll(() => flow.count('rewardStart')).toBe(2);
+  await expect.poll(() => page.evaluate(() => (window as any).__nativeFixture.events.filter((event: any) => event.name === 'show').length)).toBe(2);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await native(page, ['show', 'userEarnedReward', 'dismissed']);
+  await expect(page.getByRole('button', { name: `${names[2]} 쓰다듬기, 0번 완료` })).toBeVisible();
+  expect(flow.count('rewardComplete')).toBe(1); expect(flow.count('reveal')).toBe(0); expect(flow.grantCount).toBe(0);
 });
 
 test('duplicate earned events and manual continue spend one reward once', async ({ page, flow }) => {
@@ -81,7 +189,8 @@ test('duplicate earned events and manual continue spend one reward once', async 
   await expect.poll(() => flow.completionCount).toBe(1);
   expect(flow.grantCount).toBe(0);
   await page.getByRole('button', { name: '받은 보상으로 계속하기', exact: true }).tap();
-  await feed(page, names[2]); await petThree(page, names[2]); await expectPhoto(page, names[2]);
+  await expect(page.getByRole('button', { name: `${names[2]} 쓰다듬기, 0번 완료` })).toBeVisible();
+  await petThree(page, names[2]); await expectPhoto(page, names[2]);
   await native(page, ['userEarnedReward', 'dismissed', 'dismissed']);
   expect(flow.count('rewardComplete')).toBe(1); expect(flow.grantCount).toBe(1); expect(flow.count('reveal')).toBe(1);
 });

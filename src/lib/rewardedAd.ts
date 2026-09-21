@@ -271,7 +271,26 @@ const rewardedAd = new RewardedAdController(
 
 export const getRewardedAdStatus = () => rewardedAd.getStatus();
 export const subscribeRewardedAdStatus = (listener: (status: RewardedAdStatus) => void) => rewardedAd.subscribe(listener);
-export const preloadRewardedAd = () => rewardedAd.preload();
+export const preloadRewardedAd = (signal?: AbortSignal): Promise<void> => {
+  if (!signal) return rewardedAd.preload();
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', abort);
+      settle();
+    };
+    const abort = () => finish(() => reject(abortError()));
+    signal.addEventListener('abort', abort, { once: true });
+    // Cancel only this caller's wait; the shared load can still warm the cache.
+    void rewardedAd.preload().then(
+      () => finish(resolve),
+      (error) => finish(() => reject(error)),
+    );
+  });
+};
 export const showRewardedAd = (signal?: AbortSignal, onEarnedReward?: () => void) => rewardedAd.show(signal, onEarnedReward);
 export const confirmRewardedAdReturn = () => rewardedAd.confirmReturn();
 export const disposeRewardedAd = () => rewardedAd.dispose();

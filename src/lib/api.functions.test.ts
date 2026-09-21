@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const functionMocks = vi.hoisted(() => ({
   constructorArgs: [] as Array<[string, { headers?: Record<string, string> } | undefined]>,
@@ -19,6 +19,7 @@ vi.mock('@supabase/functions-js', () => ({
 vi.mock('./toss', () => ({ getUserHash: functionMocks.getUserHash }));
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.resetModules();
   vi.unstubAllEnvs();
@@ -64,6 +65,27 @@ describe('production Edge Function client', () => {
     await expect(submitPet({ submissionId: 'completed-upload', name: '보리', dataUris: ['data:image/jpeg;base64,PHOTO'], traits: SAMPLE_PETS[0].traits!,
       style: { schemaVersion: 1, coatMode: 'point', furStyle: 'neat' }, accessorySelectionMode: 'reviewer' })).resolves.toMatchObject({ pet: { id: result.pet.id } });
     expect(functionMocks.invoke.mock.calls.map(([, options]) => options.body.action)).toEqual(['submitPhoto', 'submissionStatus']);
+  });
+
+  it.each(['PET_DESIGN_UNAVAILABLE', 'REVIEWED_ARTWORK_UNAVAILABLE'])('retries the same registration and receipts after %s', async (code) => {
+    vi.stubEnv('VITE_APP_RUNTIME', 'production');
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
+    const { SAMPLE_PETS } = await import('../data/samplePets');
+    const committed = { pet: { ...SAMPLE_PETS[0], approvalStatus: 'pending', isMine: true }, rewardGranted: true };
+    functionMocks.invoke.mockResolvedValueOnce({ data: { photoReceipt: 'same-photo-receipt' }, error: null })
+      .mockResolvedValueOnce({ data: null, error: {
+        context: new Response(JSON.stringify({ code, error: '등록 결과를 불러오지 못했어요.' }), { status: 503 }),
+      } }).mockResolvedValueOnce({ data: committed, error: null });
+    const { submitPet } = await import('./api');
+    const input = { submissionId: `committed-${code}`, name: '보리', dataUris: ['data:image/jpeg;base64,PHOTO'],
+      traits: SAMPLE_PETS[0].traits!, style: { schemaVersion: 1 as const, coatMode: 'point' as const, furStyle: 'neat' as const },
+      accessorySelectionMode: 'reviewer' as const };
+    await expect(submitPet(input)).rejects.toMatchObject({ code, outcome: 'unknown' });
+    await expect(submitPet(input)).resolves.toMatchObject({ pet: { id: committed.pet.id } });
+    const bodies = functionMocks.invoke.mock.calls.map(([, options]) => options.body);
+    expect(bodies.map((body) => body.action)).toEqual(['submitPhoto', 'submit', 'submit']);
+    expect(bodies[2]).toEqual(bodies[1]);
   });
 
   it('uploads five photos sequentially then confirms one registration using receipts only', async () => {
@@ -196,27 +218,29 @@ describe('production Edge Function client', () => {
   });
 
   it('times out a stuck identity lookup and lets the next request get a fresh identity', async () => {
+    vi.useFakeTimers();
     vi.stubEnv('VITE_APP_RUNTIME', 'production');
     vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
     vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
-    const timeout = new AbortController();
-    vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(timeout.signal);
     functionMocks.getUserHash.mockImplementationOnce(() => new Promise<string>(() => {}));
     const { fetchMyPets } = await import('./api');
     const failed = expect(fetchMyPets()).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT', outcome: 'unknown' });
-    timeout.abort();
+    await vi.advanceTimersByTimeAsync(12_000);
     await failed;
     expect(functionMocks.invoke).not.toHaveBeenCalled();
     functionMocks.invoke.mockResolvedValueOnce({ data: { pets: [] }, error: null });
     await expect(fetchMyPets()).resolves.toEqual([]);
     expect(functionMocks.getUserHash).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('keeps reveal request identity and original payment method on a transport retry', async () => {
+  it.each(['NETWORK_ERROR', 'ALBUM_UNAVAILABLE', 'PHOTO_SIGNING_FAILED'])('keeps reveal request identity and original payment method after %s', async (code) => {
     vi.stubEnv('VITE_APP_RUNTIME', 'production');
     vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
     vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
-    functionMocks.invoke.mockResolvedValueOnce({ data: null, error: new Error('Network failure') })
+    const error = code === 'NETWORK_ERROR' ? new Error('Network failure')
+      : { context: new Response(JSON.stringify({ code, error: '결과를 확인하지 못했어요.' }), { status: 503 }) };
+    functionMocks.invoke.mockResolvedValueOnce({ data: null, error })
       .mockResolvedValueOnce({ data: { photoUrl: 'https://photo.test/recovered', allowance: {} }, error: null });
     const { revealPet } = await import('./api');
     const { SAMPLE_PETS } = await import('../data/samplePets');
@@ -250,7 +274,7 @@ describe('production Edge Function client', () => {
     expect(albumPhotoMetadata({ collection })).toMatchObject({ collection });
   });
 
-  it('passes caller cancellation through mine and shared function requests', async () => {
+  it('detaches caller cancellation after mine and shared requests have completed', async () => {
     vi.stubEnv('VITE_APP_RUNTIME', 'production');
     vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
     vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
@@ -282,7 +306,137 @@ describe('production Edge Function client', () => {
     expect(sharedSignal.aborted).toBe(false);
     mineController.abort();
     sharedController.abort();
-    expect(mineSignal.aborted).toBe(true);
-    expect(sharedSignal.aborted).toBe(true);
+    expect(mineSignal.aborted).toBe(false);
+    expect(sharedSignal.aborted).toBe(false);
+  });
+});
+
+describe('request lifetime without AbortSignal.any', () => {
+  let anyDescriptor: PropertyDescriptor | undefined;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubEnv('VITE_APP_RUNTIME', 'production');
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://project.supabase.co');
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'public-anon-key');
+    anyDescriptor = Object.getOwnPropertyDescriptor(AbortSignal, 'any');
+    Object.defineProperty(AbortSignal, 'any', { configurable: true, value: undefined });
+  });
+  afterEach(() => {
+    if (anyDescriptor) Object.defineProperty(AbortSignal, 'any', anyDescriptor);
+    else delete (AbortSignal as { any?: unknown }).any;
+  });
+
+  it.each(['success', 'server error', 'transport error'] as const)('disposes the timeout and caller listener after %s', async (outcome) => {
+    const caller = new AbortController();
+    const add = vi.spyOn(caller.signal, 'addEventListener');
+    const remove = vi.spyOn(caller.signal, 'removeEventListener');
+    if (outcome === 'success') functionMocks.invoke.mockResolvedValueOnce({ data: { ok: true }, error: null });
+    else if (outcome === 'server error') functionMocks.invoke.mockResolvedValueOnce({ data: null, error: {
+      context: new Response(JSON.stringify({ code: 'RATE_LIMITED', error: '잠시 뒤 다시 시도해 주세요.' }), { status: 429 }),
+    } });
+    else functionMocks.invoke.mockRejectedValueOnce(new Error('Network failure'));
+    const { invokePetApi } = await import('./api');
+    const result = invokePetApi({ action: 'house' }, 1_000, caller.signal);
+    if (outcome === 'success') await expect(result).resolves.toEqual({ ok: true });
+    else await expect(result).rejects.toMatchObject({ code: outcome === 'server error' ? 'RATE_LIMITED' : 'NETWORK_ERROR' });
+    const signal = functionMocks.invoke.mock.calls[0][1].signal as AbortSignal;
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith('abort', add.mock.calls[0][1]);
+    expect(vi.getTimerCount()).toBe(0);
+    caller.abort();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(signal.aborted).toBe(false);
+  });
+
+  it.each(['caller', 'timeout'] as const)('cleans both caller and identity listeners when a stuck lookup is aborted by %s', async (source) => {
+    const caller = new AbortController();
+    const add = vi.spyOn(AbortSignal.prototype, 'addEventListener');
+    const remove = vi.spyOn(AbortSignal.prototype, 'removeEventListener');
+    functionMocks.getUserHash.mockImplementationOnce(() => new Promise<string>(() => {}));
+    const { invokePetApi } = await import('./api');
+    const cancelled = expect(invokePetApi({ action: 'house' }, 1_000, caller.signal))
+      .rejects.toMatchObject({ code: source === 'caller' ? 'REQUEST_CANCELLED' : 'REQUEST_TIMEOUT', outcome: source === 'caller' ? 'definite' : 'unknown' });
+    if (source === 'caller') caller.abort();
+    else await vi.advanceTimersByTimeAsync(1_000);
+    await cancelled;
+    expect(functionMocks.invoke).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    for (const [index, args] of add.mock.calls.entries()) {
+      if (args[0] !== 'abort') continue;
+      expect(remove.mock.calls.some((removed, removedIndex) => removed[0] === 'abort' && removed[1] === args[1]
+        && remove.mock.contexts[removedIndex] === add.mock.contexts[index])).toBe(true);
+    }
+    functionMocks.invoke.mockResolvedValueOnce({ data: {}, error: null });
+    await expect(invokePetApi({ action: 'house' })).resolves.toEqual({});
+    expect(functionMocks.getUserHash).toHaveBeenCalledTimes(2);
+  });
+
+  it('disposes request resources when identity lookup rejects before dispatch', async () => {
+    const caller = new AbortController();
+    const remove = vi.spyOn(caller.signal, 'removeEventListener');
+    functionMocks.getUserHash.mockRejectedValueOnce(new Error('Identity lookup failed'));
+    const { invokePetApi } = await import('./api');
+    await expect(invokePetApi({ action: 'house' }, 1_000, caller.signal)).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    expect(functionMocks.invoke).not.toHaveBeenCalled();
+    expect(remove).toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('rejects an initially aborted request without starting identity, transport, or timers', async () => {
+    const caller = new AbortController();
+    caller.abort();
+    const { invokePetApi } = await import('./api');
+    await expect(invokePetApi({ action: 'house' }, 1_000, caller.signal))
+      .rejects.toMatchObject({ code: 'REQUEST_CANCELLED', outcome: 'definite' });
+    expect(functionMocks.getUserHash).not.toHaveBeenCalled();
+    expect(functionMocks.invoke).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not dispatch when the caller aborts during identity acquisition', async () => {
+    const caller = new AbortController();
+    functionMocks.getUserHash.mockImplementationOnce(() => {
+      caller.abort();
+      return Promise.resolve('anonymous-user-key');
+    });
+    const { invokePetApi } = await import('./api');
+    await expect(invokePetApi({ action: 'house' }, 1_000, caller.signal))
+      .rejects.toMatchObject({ code: 'REQUEST_CANCELLED', outcome: 'definite' });
+    expect(functionMocks.invoke).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['caller', 'timeout'] as const)('keeps a dispatched outcome unknown on %s cancellation and cleans the request', async (source) => {
+    const caller = new AbortController();
+    const remove = vi.spyOn(caller.signal, 'removeEventListener');
+    let dispatched!: () => void;
+    const started = new Promise<void>((resolve) => { dispatched = resolve; });
+    functionMocks.invoke.mockImplementationOnce((_name, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      dispatched();
+    }));
+    const { invokePetApi } = await import('./api');
+    const cancelled = expect(invokePetApi({ action: 'submit' }, 1_000, caller.signal))
+      .rejects.toMatchObject({ code: source === 'caller' ? 'REQUEST_CANCELLED' : 'REQUEST_TIMEOUT', outcome: 'unknown' });
+    await started;
+    if (source === 'caller') caller.abort();
+    else await vi.advanceTimersByTimeAsync(1_000);
+    await cancelled;
+    expect(functionMocks.invoke).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not return a late response that races with caller cancellation', async () => {
+    const caller = new AbortController();
+    functionMocks.invoke.mockImplementationOnce(async () => {
+      caller.abort();
+      return { data: { ok: true }, error: null };
+    });
+    const { invokePetApi } = await import('./api');
+    await expect(invokePetApi({ action: 'submit' }, 1_000, caller.signal))
+      .rejects.toMatchObject({ code: 'REQUEST_CANCELLED', outcome: 'unknown' });
+    expect(functionMocks.invoke).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
