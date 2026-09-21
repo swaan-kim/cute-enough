@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-label="옆집 강아지 서비스 구조">
+  <defs>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="10" stdDeviation="15" flood-color="#183153" flood-opacity="0.08"/>
+    </filter>
+    <linearGradient id="toss" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#53A4FF"/>
+      <stop offset="1" stop-color="#1769E0"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#56D7A2"/>
+      <stop offset="1" stop-color="#1FAE78"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M1 1 L11 6 L1 11" fill="none" stroke="#193153" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .line { fill:none; stroke:#193153; stroke-width:5; stroke-linecap:round; stroke-linejoin:round; }
+      .soft { fill:none; stroke:#AAB8CB; stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+      .arrow { fill:none; stroke:#193153; stroke-width:5; stroke-linecap:round; marker-end:url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="#FFFFFF"/>
+
+  <!-- quiet service boundary -->
+  <rect x="338" y="224" width="1006" height="426" rx="48" fill="#FBFCFE" stroke="#AAB8CB" stroke-width="3"/>
+
+  <!-- person -->
+  <g transform="translate(68 370)" filter="url(#shadow)">
+    <circle cx="52" cy="38" r="31" fill="#193153"/>
+    <path d="M5 135 C5 88 27 70 52 70 C77 70 99 88 99 135 Z" fill="#193153"/>
+  </g>
+
+  <!-- Toss mark -->
+  <g transform="translate(210 379)" filter="url(#shadow)">
+    <circle cx="54" cy="54" r="52" fill="url(#toss)"/>
+    <rect x="25" y="43" width="60" height="22" rx="11" fill="#FFFFFF" transform="rotate(-28 55 54)"/>
+    <circle cx="73" cy="31" r="8" fill="#DDF0FF"/>
+  </g>
+
+  <path d="M170 433 H201" class="arrow"/>
+  <path d="M319 433 H382" class="arrow"/>
+
+  <!-- product icon -->
+  <g filter="url(#shadow)">
+    <rect x="388" y="323" width="220" height="220" rx="48" fill="#FFD6E0"/>
+    <image href="../../public/brand/app-icon-600.png" x="398" y="333" width="200" height="200" preserveAspectRatio="xMidYMid slice"/>
+  </g>
+
+  <!-- Toss capabilities orbit -->
+  <path d="M498 323 V190 H762" class="soft"/>
+  <g transform="translate(722 104)" filter="url(#shadow)">
+    <circle cx="38" cy="38" r="36" fill="#FFFFFF" stroke="#DCE4EF" stroke-width="3"/>
+    <path d="M27 46 L49 26 M31 25 H49 V43" class="line" stroke-width="4"/>
+  </g>
+  <g transform="translate(820 104)" filter="url(#shadow)">
+    <circle cx="38" cy="38" r="36" fill="#FFFFFF" stroke="#DCE4EF" stroke-width="3"/>
+    <path d="M23 43 H53 L49 34 C49 24 43 19 38 19 C33 19 27 24 27 34 Z M34 49 C35 55 41 55 42 49" class="line" stroke-width="4"/>
+  </g>
+  <g transform="translate(918 104)" filter="url(#shadow)">
+    <circle cx="38" cy="38" r="36" fill="#FFFFFF" stroke="#DCE4EF" stroke-width="3"/>
+    <path d="M23 25 H53 V49 H41 L33 57 V49 H23 Z" class="line" stroke-width="4"/>
+    <path d="M31 36 H45" class="line" stroke-width="4"/>
+  </g>
+  <path d="M800 142 H814" class="soft"/>
+  <path d="M898 142 H912" class="soft"/>
+
+  <!-- edge service / shield -->
+  <path d="M608 433 H690" class="arrow"/>
+  <g transform="translate(707 326)" filter="url(#shadow)">
+    <path d="M94 7 C70 25 46 31 18 37 V102 C18 152 49 184 94 204 C139 184 170 152 170 102 V37 C142 31 118 25 94 7 Z" fill="#FFFFFF" stroke="#193153" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M104 52 L67 111 H94 L82 159 L127 91 H98 Z" fill="url(#green)" stroke="#168E64" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+
+  <!-- data -->
+  <path d="M884 433 H968" class="arrow"/>
+  <g transform="translate(990 334)" filter="url(#shadow)">
+    <ellipse cx="83" cy="28" rx="73" ry="25" fill="#F0EDFF" stroke="#193153" stroke-width="5"/>
+    <path d="M10 28 V154 C10 177 156 177 156 154 V28" fill="#F8F7FF" stroke="#193153" stroke-width="5"/>
+    <path d="M10 91 C10 114 156 114 156 91 M10 151 C10 174 156 174 156 151" class="soft"/>
+    <circle cx="83" cy="91" r="11" fill="#7765E3"/>
+  </g>
+
+  <!-- memory / sharing -->
+  <path d="M1156 433 H1206" class="arrow"/>
+  <g transform="translate(1220 342)" filter="url(#shadow)">
+    <path d="M8 24 C8 11 19 0 32 0 H166 C179 0 190 11 190 24 V120 C190 133 179 144 166 144 H83 L50 174 V144 H32 C19 144 8 133 8 120 Z" fill="#FFFFFF" stroke="#193153" stroke-width="5" stroke-linejoin="round"/>
+    <rect x="34" y="27" width="73" height="84" rx="10" fill="#FFF0F4" stroke="#193153" stroke-width="4"/>
+    <circle cx="70" cy="60" r="19" fill="#FFD0DB"/>
+    <path d="M45 98 C52 79 63 76 70 76 C77 76 88 79 95 98" fill="#FF6B8A"/>
+    <path d="M125 66 L140 81 L168 48" class="line"/>
+  </g>
+
+  <!-- friend -->
+  <path d="M1410 433 H1460" class="arrow"/>
+  <g transform="translate(1470 372)">
+    <circle cx="34" cy="28" r="22" fill="#A9B7CC"/>
+    <path d="M2 94 C2 59 17 50 34 50 C51 50 66 59 66 94 Z" fill="#A9B7CC"/>
+    <circle cx="76" cy="40" r="18" fill="#D1D8E3"/>
+    <path d="M51 94 C51 66 63 59 76 59 C89 59 101 66 101 94 Z" fill="#D1D8E3"/>
+  </g>
+
+  <!-- reviewer loop -->
+  <path d="M1073 514 V692 H880" class="arrow"/>
+  <g transform="translate(658 678)" filter="url(#shadow)">
+    <circle cx="45" cy="34" r="26" fill="#193153"/>
+    <path d="M4 117 C4 75 22 59 45 59 C68 59 86 75 86 117 Z" fill="#193153"/>
+    <rect x="101" y="14" width="129" height="110" rx="17" fill="#FFFFFF" stroke="#193153" stroke-width="5"/>
+    <circle cx="151" cy="57" r="27" fill="none" stroke="#193153" stroke-width="5"/>
+    <path d="M171 77 L196 102" class="line"/>
+    <path d="M118 31 H207" class="soft"/>
+  </g>
+  <path d="M748 678 V589 H801" class="arrow"/>
+
+  <!-- return loop -->
+  <path d="M1308 516 V744 C1308 779 1279 808 1244 808 H280 C245 808 216 779 216 744 V503" class="arrow"/>
+</svg>

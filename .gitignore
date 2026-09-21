@@ -29,3 +29,7 @@ pw.txt
 *.crt
 *.p12
 *.pfx
+
+# Private operator material and unpublished character drafts stay local.
+docs/marketing/
+src/review/designs/

@@ -29,7 +29,7 @@ async function server() {
   // These use an ephemeral localhost review server, injected HTTP responses,
   // temporary fixture binaries, or pure configuration validation only.
   await node(['--test', '--test-concurrency=2', 'tools/review-console/server.node-test.mjs',
-    'scripts/ait-storage.node-test.mjs', 'scripts/validate-release.node-test.mjs', 'scripts/check-approved-pet-pool.node-test.mjs']);
+    'scripts/ait-storage.node-test.mjs', 'scripts/validate-release.node-test.mjs', 'scripts/check-approved-pet-pool.node-test.mjs', 'scripts/check-docs.node-test.mjs']);
   const denoCandidates = [process.env.DENO_BIN, path.join(root, 'node_modules/deno/deno.exe'), path.join(root, 'node_modules/deno/deno'),
     process.env.USERPROFILE && path.join(process.env.USERPROFILE, '.deno/bin/deno.exe')].filter(Boolean);
   const deno = denoCandidates.find(existsSync) ?? 'deno';

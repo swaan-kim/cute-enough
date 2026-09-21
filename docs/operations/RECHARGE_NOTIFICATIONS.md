@@ -1,13 +1,15 @@
-# 이용권 충전 알림 운영
+# 티켓 충전 알림 운영
 
-충전 알림은 별도 선택 기능이다. 코드와 SQL을 배포해도 발송되지 않으며, Toss 동의문·기능성 캠페인 승인과 실제 QR 검증을 마칠 때까지 아래 두 운영 스위치를 끈 상태로 유지한다. 이 작업에서 실제 사용자에게 알림을 보내지 않았다.
+충전 알림은 별도 선택 기능이다. 코드와 SQL을 배포해도 발송되지 않으며, Toss 동의문 문구 정리와 실제 QR 검증을 마칠 때까지 아래 두 운영 스위치를 끈 상태로 유지한다. 이 작업에서 실제 사용자에게 알림을 보내지 않았다.
+
+2026-09-05 현재 새 기능성 SERVER 템플릿 `cute-enough-ticket-recharged-v2`는 승인됐다(groupNo `11801`, materialNo `13665`, pushTemplateNo `99675`, termsId `120468`). 동의문에는 이전 명칭 `이용권`이 남아 있어 `티켓`으로 수정해야 한다. MCP는 동의문 조회·생성만 지원하므로 기존 동의문 수정은 콘솔 화면에서 확인한다. 이전 승인 템플릿 `cute-enough-ticket-recharged`(groupNo `11799`)는 수정할 수 없어 사용하지 않고 이력으로 남긴다.
 
 ## 동작과 보관
 
-- 무료 이용권 잔액이 0이 되면 기존 자연 충전 기준 시각 + 3시간에 작업을 예약한다. 1→2 충전, 광고 완료, 공유 보너스 적립은 예약 원인이 아니다.
+- 무료 티켓 잔액이 0이 되면 기존 자연 충전 기준 시각 + 3시간에 작업을 예약한다. 1→2 충전, 광고 완료, 공유 보너스 적립은 예약 원인이 아니다.
 - 발송 직전에 동의, 실제 무료 잔액, 충전 후 방문 여부, 오늘 공개견 4마리 완료 여부를 다시 확인한다. KST 21:00 이상~08:00 미만은 다음 08:00까지 보류한다.
 - KST 하루에 사용자당 한 번만 발송을 시도한다. 응답 유실처럼 결과를 확인할 수 없는 시도도 한도를 사용한다. 다음 날 새로운 자연 충전은 다시 대상이 될 수 있다.
-- 명시적인 `충전되면 알려주세요` 동작에서 Toss 동의를 받은 뒤만 신청한다. 알림 문구는 제목 `이용권 충전`, 본문 `강아지 이용권이 충전됐어요.`인 승인 템플릿을 사용한다.
+- 명시적인 `충전되면 알려주세요` 동작에서 Toss 동의를 받은 뒤만 신청한다. 승인된 새 템플릿의 제목은 `티켓 충전`, 저장된 본문은 `강아지 티켓이 충전됐어요. (옆집 강아지 알림)`이다.
 - 수신자 키는 별도 AES-256-GCM 키로 암호화하며 사용자 해시를 인증 데이터에 묶는다. 공개 API 응답, 클라이언트 환경 변수, 로그에 원본 키나 암호문을 출력하지 않는다.
 - 해제하면 암호화한 수신자 키·템플릿·동의 시각을 지우고 대기/선점 작업을 취소한다. 이미 외부 전송을 시작한 요청은 취소할 수 없다. 중복 방지용 결과 기록은 남긴다.
 - 운영 중단 중에도 기존 신청 상태 조회와 해제를 허용한다. 템플릿 코드를 바꾸면 이전 코드로 신청한 알림을 보내지 않으며 새 동의를 받아야 한다.
@@ -19,17 +21,19 @@
 | 이름 | 값/용도 |
 | --- | --- |
 | `RECHARGE_NOTIFICATIONS_ENABLED` | 초기값 `false`. 신규 신청과 Edge worker 발송을 켜는 스위치 |
-| `RECHARGE_NOTIFICATION_TEMPLATE_CODE` | 동의문이 연결되고 승인된 Toss 기능성 캠페인의 템플릿 코드 |
+| `RECHARGE_NOTIFICATION_TEMPLATE_CODE` | `cute-enough-ticket-recharged-v2`. 동의문이 연결되고 승인된 Toss 기능성 템플릿 코드 |
 | `NOTIFICATION_KEY_ENCRYPTION_KEY` | 암호학적으로 생성한 32바이트의 base64. 사용자 해시 salt와 별도 보관 |
 | `RECHARGE_NOTIFICATION_CRON_SECRET` | cron 전용으로 충분히 긴 무작위 비밀값 |
 | `AIT_MTLS_CERT_PEM` / `AIT_MTLS_PRIVATE_KEY_PEM` | 앱인토스 파트너 API용 기존 서버 mTLS 인증서와 개인 키 |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Supabase가 제공하는 서버 전용 기본 설정 |
 
+서버 암호화 키·cron secret, 일치하는 Vault secret과 worker URL은 설정했다. `RECHARGE_NOTIFICATION_TEMPLATE_CODE`도 새 승인 코드 `cute-enough-ticket-recharged-v2`로 설정했다. 인증한 worker 확인 요청은 HTTP 200, `enabled: false`를 반환했다. Edge 스위치와 DB worker 스위치는 계속 꺼져 있으며 실제 발송 결과가 아니다.
+
 암호화 키를 단순히 교체하면 기존 수신자 키를 복호화할 수 없게 된다. 별도의 서버 재암호화 또는 신청 해제·재동의 절차를 마련한 뒤 교체한다.
 
 ## 마이그레이션과 예약 작업
 
-`20260905000400_recharge_notifications.sql`은 알림 전용 테이블/RPC와 `pet_free_allowances` 예약 트리거를 만든다. `pets` 행이나 검수 상태를 변경하지 않는다. 무료 이용권/일별 배정 테이블과 공개 4마리 마이그레이션을 먼저 준비한다.
+`20260905000400_recharge_notifications.sql`은 알림 전용 테이블/RPC와 `pet_free_allowances` 예약 트리거를 만든다. `pets` 행이나 검수 상태를 변경하지 않는다. 무료 티켓/일별 배정 테이블과 공개 4마리 마이그레이션을 먼저 준비한다. 사용자에게 보이는 명칭은 `티켓`으로 통일하고 기존 API·DB 식별자는 유지한다.
 
 운영 마이그레이션 이력과 실제 함수 정의를 대조한 뒤 이 파일만 순서에 맞게 적용한다. 이 저장소에는 과거 개별 강아지 데이터 수정 SQL도 있으므로, 이력에 없다는 이유로 모든 과거 SQL을 일괄 재실행하지 않는다. 수동 적용한 SQL은 내용 확인 후 이력만 맞춘다.
 
@@ -50,9 +54,13 @@ worker는 한 번에 기본 5개를 처리한다. 외부 요청 제한 시간은
 
 ## 활성화 전 확인
 
-Toss 콘솔에서 알림 동의문을 만들고 위 문구의 기능성 캠페인에 연결한 뒤 승인된 템플릿 코드를 확인한다. SDK 동의 콜백과 발송 응답 계약은 [공식 동의 SDK 문서](https://developers-apps-in-toss.toss.im/bedrock/reference/framework/%EC%9D%B8%ED%84%B0%EB%A0%89%EC%85%98/requestNotificationAgreement.html)와 [스마트 발송 개발 문서](https://developers-apps-in-toss.toss.im/smart-message/develop.html)를 기준으로 한다.
+Toss 콘솔에서 termsId `120468`의 명칭·조건·발송 시점 설명을 모두 `티켓`으로 정리하고 새 승인 템플릿 연결을 확인한다. MCP의 중복 생성 제한을 피하려고 같은 조건의 동의문을 다시 만들지 않는다. SDK 동의 콜백과 발송 응답 계약은 [공식 동의 SDK 문서](https://developers-apps-in-toss.toss.im/bedrock/reference/framework/%EC%9D%B8%ED%84%B0%EB%A0%89%EC%85%98/requestNotificationAgreement.html)와 [스마트 발송 개발 문서](https://developers-apps-in-toss.toss.im/smart-message/develop.html)를 기준으로 한다.
+
+신규 방문을 유도하는 일반 광고성 푸시는 이 기능성 알림과 별도로 다룬다. 광고성 캠페인 생성은 현재 MCP 지원 범위 밖이므로 콘솔 웹에서 준비한다.
 
 실제 QR에서 Android/iOS의 동의·거절·재동의·해제를 확인한다. 발송 테스트는 사용자가 지정한 테스트 수신자와 범위로 별도 수행한다. 승인 대기견을 테스트 목적으로 승인하지 않는다. 테스트 통과 기록과 사용자 확인 후 Edge 스위치 및 DB worker 스위치를 켠다. 두 스위치 중 하나라도 꺼져 있으면 cron을 통한 새로운 발송 실행을 시작하지 않는다.
+
+동의 화면만 검증할 때는 Edge 설정을 켜고 DB worker 설정을 끈 상태로 분리할 수 있다. 단, DB worker 스위치는 cron dispatcher를 제어하며 Edge worker 직접 호출을 막지 않는다. 이 상태에서는 cron secret을 넣은 worker 호출이 실제 발송을 시작할 수 있으므로 설정 확인에 사용하지 않는다. 동의 가능 여부는 `notificationSettings` API로 확인한다. Edge 설정을 켜기 전 저장된 알림 작업과 검증 대상 범위를 먼저 확인한다.
 
 ## 중단과 장애 처리
 

@@ -17,6 +17,7 @@
     "deploy": "node scripts/deploy-ait.mjs",
     "ait:check": "node scripts/check-ait.mjs",
     "test:ait": "node --test scripts/ait-storage.node-test.mjs",
+    "docs:check": "node scripts/check-docs.mjs",
     "test": "vitest run --configLoader runner",
     "test:preflight": "node --test scripts/check-approved-pet-pool.node-test.mjs",
     "test:review": "node --test tools/review-console/server.node-test.mjs supabase/migrations/pet-svg-designs.node-test.mjs supabase/migrations/review-pet-photos.node-test.mjs supabase/migrations/existing-pet-photo-additions.node-test.mjs supabase/migrations/review-photo-additions.node-test.mjs",

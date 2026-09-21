@@ -1,14 +1,18 @@
 # 옆집 강아지 전체 QA 기준
 
-2026-09-13 · **정상 앱의 사용자 여정 + 서버 불변 조건 + Toss 실기기 확인**을 분리한다. [최근 점검·회귀 결과](SECOND_INTERACTION_PHOTO_20260913.md)
+2026-09-21 · **정상 앱의 사용자 여정 + 서버 불변 조건 + Toss 실기기 확인**을 분리한다. [최근 점검·회귀 결과](20260921-improvement-audit.md)
 
 자동 테스트가 통과해도 운영 DB 적용·Edge 배포·AIT 업로드·실기기 검증·출시가 완료된 것은 아니다. 기존 사용자 기록을 지우거나 별도 진단 화면으로 이동해야만 가능한 테스트를 기본 QA로 삼지 않는다.
+
+GitHub `Application quality`는 읽기 전용 권한으로 의존성 설치 → 문서 링크 → 전체 회귀/E2E → 샘플 웹 빌드만 실행한다. 운영 환경·서비스 역할 키·실제 광고·발송·승인 권한은 제공하지 않는다.
 
 ## 1. 실행 방법과 확인 수준
 
 ```powershell
 npm ci
 npx playwright install chromium
+npx deno cache --node-modules-dir=manual --config supabase/functions/deno.json supabase/functions/pet-api/index.ts
+npm run docs:check
 npm run test:flows
 ```
 
@@ -22,7 +26,7 @@ npm run test:flows
 
 브라우저 테스트는 360×640, 390×844, 430×844에서 실행한다. 각 테스트는 독립적인 브라우저 저장소와 사용자 상태로 시작하므로 운영자의 이미 모은 사진 때문에 티켓이 줄지 않는 문제 없이 `2→1→0`을 반복 검증한다. 실제 계정의 앨범·티켓은 초기화하지 않는다.
 
-자동 실행은 운영 환경 파일을 불러오지 않는다. Edge 네트워크는 거부하고, 브라우저의 예상하지 못한 외부 요청은 실패시킨다. 패키지·브라우저 설치는 최초 준비 단계에만 네트워크가 필요하다. 사진과 SVG는 테스트 전용 자료를 쓴다. [브라우저 테스트 경계](../tests/e2e/README.md).
+자동 실행은 운영 환경 파일을 불러오지 않는다. Edge 네트워크는 거부하고, 브라우저의 예상하지 못한 외부 요청은 실패시킨다. 패키지·브라우저 설치는 최초 준비 단계에만 네트워크가 필요하다. 사진과 SVG는 테스트 전용 자료를 쓴다. [브라우저 테스트 경계](../../tests/e2e/README.md).
 
 ## 2. 핵심 시나리오와 통과 기준
 
@@ -61,7 +65,7 @@ npm run test:flows
 8. A가 사진을 추가한다. 승인 전 B의 앨범과 공개 외형은 변하지 않는다.
 9. 추가 사진만 승인한다. 기존 사진 ID·수집·좋아요·등록 보상·SVG를 보존하며 전체 사진 수가 증가한다. 추가 사진이 자동으로 B의 수집 사진이 되지는 않는다.
 
-관련 코드: [다중 사용자 SQL](../supabase/migrations/multi-user-journey.node-test.mjs), [A/B 브라우저](../tests/e2e/multi-user.spec.ts).
+관련 코드: [다중 사용자 SQL](../../supabase/migrations/multi-user-journey.node-test.mjs), [A/B 브라우저](../../tests/e2e/multi-user.spec.ts).
 
 ## 4. 푸시 QA — 요청 성공과 실제 도착 구분
 
@@ -76,7 +80,7 @@ npm run test:flows
 
 실기기 단계에서는 사용자가 지정한 A/B 테스트 계정만 사용한다. A 동의·B 거절 → 허용된 테스트 주기 → A 기기 도착 확인 → 링크로 앱 진입 → 새 잔액 확인 → 해제 후 미발송을 확인한다. OS 알림 차단, 앱 종료/복귀, Android/iOS도 구분한다. 테스트 수신자·발송 범위를 정하기 전 운영 알림 스위치를 켜지 않는다.
 
-현재 운영 ON/OFF는 이 자동 실행으로 확인하지 않는다. 과거 문서의 스위치 상태를 현재 상태로 간주하지 않는다. [알림 운영 절차](RECHARGE_NOTIFICATIONS.md).
+현재 운영 ON/OFF는 이 자동 실행으로 확인하지 않는다. 과거 문서의 스위치 상태를 현재 상태로 간주하지 않는다. [알림 운영 절차](../operations/RECHARGE_NOTIFICATIONS.md).
 
 ## 5. 반복 주기와 출시 차단 기준
 
